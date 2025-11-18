@@ -7,6 +7,7 @@
 
 import Foundation
 import Combine
+import Accelerate
 
 /// Represents an HRIR preset
 struct HRIRPreset: Identifiable, Codable, Equatable, Hashable {
@@ -37,9 +38,23 @@ class HRIRManager: ObservableObject {
 
     // MARK: - Private Properties
 
-    private var leftConvolver: ConvolutionEngine?
-    private var rightConvolver: ConvolutionEngine?
+    // Convolvers for Binaural Mixing
+    // LL: Left Input -> Left Ear
+    // LR: Left Input -> Right Ear
+    // RL: Right Input -> Left Ear
+    // RR: Right Input -> Right Ear
+    private var convolverLL: ConvolutionEngine?
+    private var convolverLR: ConvolutionEngine?
+    private var convolverRL: ConvolutionEngine?
+    private var convolverRR: ConvolutionEngine?
+    
     private let processingBlockSize: Int = 512
+    
+    // Mixing Buffers (Pre-allocated)
+    private var bufferLL: [Float] = []
+    private var bufferLR: [Float] = []
+    private var bufferRL: [Float] = []
+    private var bufferRR: [Float] = []
 
     private let presetsDirectory: URL
 
@@ -52,6 +67,12 @@ class HRIRManager: ObservableObject {
 
         // Create directory if it doesn't exist
         try? FileManager.default.createDirectory(at: presetsDirectory, withIntermediateDirectories: true)
+        
+        // Pre-allocate mixing buffers
+        bufferLL = [Float](repeating: 0, count: processingBlockSize)
+        bufferLR = [Float](repeating: 0, count: processingBlockSize)
+        bufferRL = [Float](repeating: 0, count: processingBlockSize)
+        bufferRR = [Float](repeating: 0, count: processingBlockSize)
 
         // Load existing presets
         loadPresets()
@@ -119,8 +140,10 @@ class HRIRManager: ObservableObject {
         // Clear active preset if it was removed
         if activePreset?.id == preset.id {
             activePreset = nil
-            leftConvolver = nil
-            rightConvolver = nil
+            convolverLL = nil
+            convolverLR = nil
+            convolverRL = nil
+            convolverRR = nil
         }
 
         savePresets()
@@ -136,6 +159,7 @@ class HRIRManager: ObservableObject {
             let wavData = try WAVLoader.load(from: preset.fileURL)
 
             // Extract stereo channels
+            // Assuming standard HRIR: Ch0 = Left Ear, Ch1 = Right Ear (for Left Source)
             let (leftIR, rightIR) = try WAVLoader.extractStereoChannels(from: wavData)
 
             // Resample if needed
@@ -158,18 +182,27 @@ class HRIRManager: ObservableObject {
                 resampledRight = rightIR
             }
 
-            // Create convolution engines
-            guard let leftEngine = ConvolutionEngine(hrirSamples: resampledLeft, blockSize: processingBlockSize) else {
-                throw HRIRError.convolutionSetupFailed("Failed to create left channel convolver")
-            }
-
-            guard let rightEngine = ConvolutionEngine(hrirSamples: resampledRight, blockSize: processingBlockSize) else {
-                throw HRIRError.convolutionSetupFailed("Failed to create right channel convolver")
+            // Create convolution engines for Virtual Stereo Speaker setup
+            // Left Speaker Source:
+            // Input L -> Left Ear (Direct): Uses Ch0 (resampledLeft)
+            // Input L -> Right Ear (Cross): Uses Ch1 (resampledRight)
+            
+            // Right Speaker Source (Symmetric):
+            // Input R -> Left Ear (Cross): Uses Ch1 (resampledRight)
+            // Input R -> Right Ear (Direct): Uses Ch0 (resampledLeft)
+            
+            guard let engineLL = ConvolutionEngine(hrirSamples: resampledLeft, blockSize: processingBlockSize),
+                  let engineLR = ConvolutionEngine(hrirSamples: resampledRight, blockSize: processingBlockSize),
+                  let engineRL = ConvolutionEngine(hrirSamples: resampledRight, blockSize: processingBlockSize),
+                  let engineRR = ConvolutionEngine(hrirSamples: resampledLeft, blockSize: processingBlockSize) else {
+                throw HRIRError.convolutionSetupFailed("Failed to create convolution engines")
             }
 
             // Set engines
-            leftConvolver = leftEngine
-            rightConvolver = rightEngine
+            convolverLL = engineLL
+            convolverLR = engineLR
+            convolverRL = engineRL
+            convolverRR = engineRR
 
             DispatchQueue.main.async {
                 self.activePreset = preset
@@ -197,17 +230,11 @@ class HRIRManager: ObservableObject {
         rightOutput: inout [Float],
         frameCount: Int
     ) {
-        // TEMPORARILY DISABLED: Convolution not working yet
-        // Passthrough mode - copy input to output
-        for i in 0..<frameCount {
-            leftOutput[i] = leftInput[i]
-            rightOutput[i] = rightInput[i]
-        }
-
-        /* TODO: Fix convolution implementation
         guard convolutionEnabled,
-              let leftConv = leftConvolver,
-              let rightConv = rightConvolver else {
+              let convLL = convolverLL,
+              let convLR = convolverLR,
+              let convRL = convolverRL,
+              let convRR = convolverRR else {
             // Passthrough mode - copy input to output
             for i in 0..<frameCount {
                 leftOutput[i] = leftInput[i]
@@ -226,10 +253,22 @@ class HRIRManager: ObservableObject {
             return
         }
 
-        // Process through convolution
-        leftConv.process(input: leftInput, output: &leftOutput, frameCount: frameCount)
-        rightConv.process(input: rightInput, output: &rightOutput, frameCount: frameCount)
-        */
+        // 1. Perform Convolutions
+        // L -> L
+        convLL.process(input: leftInput, output: &bufferLL, frameCount: frameCount)
+        // L -> R
+        convLR.process(input: leftInput, output: &bufferLR, frameCount: frameCount)
+        // R -> L
+        convRL.process(input: rightInput, output: &bufferRL, frameCount: frameCount)
+        // R -> R
+        convRR.process(input: rightInput, output: &bufferRR, frameCount: frameCount)
+        
+        // 2. Mix Output
+        // Left Output = LL + RL
+        vDSP_vadd(bufferLL, 1, bufferRL, 1, &leftOutput, 1, vDSP_Length(frameCount))
+        
+        // Right Output = LR + RR
+        vDSP_vadd(bufferLR, 1, bufferRR, 1, &rightOutput, 1, vDSP_Length(frameCount))
     }
 
     // MARK: - Private Methods

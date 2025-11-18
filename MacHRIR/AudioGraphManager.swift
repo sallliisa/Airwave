@@ -44,6 +44,11 @@ class AudioGraphManager: ObservableObject {
     fileprivate var rightChannelBuffer: [Float] = []
     fileprivate var leftProcessedBuffer: [Float] = []
     fileprivate var rightProcessedBuffer: [Float] = []
+    
+    // Pre-allocated AudioBufferList for Input Callback
+    // We use UnsafeMutableRawPointer to hold the memory for the AudioBufferList + buffers
+    fileprivate var inputAudioBufferListPtr: UnsafeMutableRawPointer?
+    fileprivate var inputAudioBuffersPtr: [UnsafeMutableRawPointer] = []
 
     // Reference to HRIR manager for convolution
     var hrirManager: HRIRManager?
@@ -66,6 +71,7 @@ class AudioGraphManager: ObservableObject {
 
     deinit {
         stop()
+        deallocateInputBuffers()
     }
 
     // MARK: - Public Methods
@@ -147,6 +153,49 @@ class AudioGraphManager: ObservableObject {
         if isRunning {
             start()  // Restart with new device
         }
+    }
+    
+    // MARK: - Buffer Management
+    
+    private func allocateInputBuffers(channelCount: Int, maxFrames: Int) {
+        deallocateInputBuffers()
+        
+        let bytesPerChannel = maxFrames * MemoryLayout<Float>.size
+        
+        // Allocate AudioBufferList memory
+        // AudioBufferList = UInt32 mNumberBuffers + [AudioBuffer]
+        let bufferListSize = MemoryLayout<AudioBufferList>.size + max(0, channelCount - 1) * MemoryLayout<AudioBuffer>.size
+        inputAudioBufferListPtr = UnsafeMutableRawPointer.allocate(byteCount: bufferListSize, alignment: MemoryLayout<AudioBufferList>.alignment)
+        
+        // Initialize AudioBufferList
+        let abl = inputAudioBufferListPtr!.assumingMemoryBound(to: AudioBufferList.self)
+        abl.pointee.mNumberBuffers = UInt32(channelCount)
+        
+        // Allocate data buffers
+        for _ in 0..<channelCount {
+            let buffer = UnsafeMutableRawPointer.allocate(byteCount: bytesPerChannel, alignment: 16)
+            inputAudioBuffersPtr.append(buffer)
+        }
+        
+        // Link buffers to AudioBufferList
+        let buffers = UnsafeMutableAudioBufferListPointer(abl)
+        for (i, buffer) in inputAudioBuffersPtr.enumerated() {
+            buffers[i].mNumberChannels = 1
+            buffers[i].mDataByteSize = UInt32(bytesPerChannel)
+            buffers[i].mData = buffer
+        }
+    }
+    
+    private func deallocateInputBuffers() {
+        if let ptr = inputAudioBufferListPtr {
+            ptr.deallocate()
+            inputAudioBufferListPtr = nil
+        }
+        
+        for buffer in inputAudioBuffersPtr {
+            buffer.deallocate()
+        }
+        inputAudioBuffersPtr.removeAll()
     }
 
     // MARK: - Private Setup Methods
@@ -231,6 +280,9 @@ class AudioGraphManager: ObservableObject {
 
         inputChannelCount = deviceFormat.mChannelsPerFrame
         currentSampleRate = deviceFormat.mSampleRate
+        
+        // Pre-allocate buffers for callback
+        allocateInputBuffers(channelCount: Int(inputChannelCount), maxFrames: maxFramesPerCallback)
 
         // 7. Set stream format (non-interleaved)
         var streamFormat = AudioStreamBasicDescription(
@@ -410,60 +462,16 @@ private func inputRenderCallback(
     let manager = Unmanaged<AudioGraphManager>.fromOpaque(inRefCon).takeUnretainedValue()
 
     guard let inputUnit = manager.inputUnit else { return noErr }
-
-    // Get stream format to determine channel count
-    var streamFormat = AudioStreamBasicDescription()
-    var propertySize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
-
-    let formatStatus = AudioUnitGetProperty(
-        inputUnit,
-        kAudioUnitProperty_StreamFormat,
-        kAudioUnitScope_Output,
-        1,
-        &streamFormat,
-        &propertySize
-    )
-
-    guard formatStatus == noErr else { return formatStatus }
-
-    let channelCount = max(1, Int(streamFormat.mChannelsPerFrame))
-    let bytesPerChannel = Int(inNumberFrames) * 4  // 4 bytes per Float32
-
-    // Allocate AudioBufferList with proper size for variable-length array
-    let bufferListSize = MemoryLayout<AudioBufferList>.size +
-                         max(0, channelCount - 1) * MemoryLayout<AudioBuffer>.size
-
-    let bufferListPointer = UnsafeMutableRawPointer.allocate(
-        byteCount: bufferListSize,
-        alignment: MemoryLayout<AudioBufferList>.alignment
-    )
-    defer { bufferListPointer.deallocate() }
-
-    let audioBufferList = bufferListPointer.assumingMemoryBound(to: AudioBufferList.self)
-    audioBufferList.pointee.mNumberBuffers = UInt32(channelCount)
-
-    // Allocate data buffers (one per channel for non-interleaved)
-    var audioBuffers: [UnsafeMutableRawPointer] = []
-    for _ in 0..<channelCount {
-        let buffer = UnsafeMutableRawPointer.allocate(
-            byteCount: bytesPerChannel,
-            alignment: 16
-        )
-        audioBuffers.append(buffer)
-    }
-
-    defer {
-        for buffer in audioBuffers {
-            buffer.deallocate()
-        }
-    }
-
-    // Set up the AudioBuffer structures
-    let audioBuffersPtr = UnsafeMutableAudioBufferListPointer(audioBufferList)
-    for (index, buffer) in audioBuffers.enumerated() {
-        audioBuffersPtr[index].mNumberChannels = 1  // Non-interleaved
-        audioBuffersPtr[index].mDataByteSize = UInt32(bytesPerChannel)
-        audioBuffersPtr[index].mData = buffer
+    
+    // Use pre-allocated buffer list
+    guard let audioBufferListPtr = manager.inputAudioBufferListPtr else { return noErr }
+    let audioBufferList = audioBufferListPtr.assumingMemoryBound(to: AudioBufferList.self)
+    
+    // Update data size for this specific callback
+    let buffers = UnsafeMutableAudioBufferListPointer(audioBufferList)
+    let bytesPerChannel = Int(inNumberFrames) * 4
+    for i in 0..<buffers.count {
+        buffers[i].mDataByteSize = UInt32(bytesPerChannel)
     }
 
     // Pull audio from input device
@@ -483,15 +491,18 @@ private func inputRenderCallback(
         // Interleave the channels and write to circular buffer
         // This ensures proper channel ordering for the output callback
         let frameCount = Int(inNumberFrames)
+        let channelCount = buffers.count
         let totalSamples = frameCount * channelCount
 
         // Use pre-allocated buffer (no heap allocation)
         for frame in 0..<frameCount {
             for channel in 0..<channelCount {
-                let samples = audioBuffers[channel].assumingMemoryBound(to: Float.self)
-                let sample = samples[frame]
-                manager.inputInterleaveBuffer[frame * channelCount + channel] = sample
-                maxLevel = max(maxLevel, abs(sample))
+                if let data = buffers[channel].mData {
+                    let samples = data.assumingMemoryBound(to: Float.self)
+                    let sample = samples[frame]
+                    manager.inputInterleaveBuffer[frame * channelCount + channel] = sample
+                    maxLevel = max(maxLevel, abs(sample))
+                }
             }
         }
 
