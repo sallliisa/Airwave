@@ -151,6 +151,23 @@ class ConvolutionEngine {
             
             // Forward FFT
             vDSP_fft_zrip(fftSetup, &splitH, 1, log2n, FFTDirection(kFFTDirection_Forward))
+
+            // Debug: Check first partition energy
+            if p == 0 {
+                var energy: Float = 0
+                vDSP_sve(hrirReal[0], 1, &energy, vDSP_Length(fftSizeHalf))
+                print("[Convolution] Partition 0 real sum: \(energy)")
+            }
+        }
+
+        // Debug: Log HRIR FFT energy for first few partitions
+        for p in 0..<min(3, partitionCount) {
+            var realEnergy: Float = 0
+            var imagEnergy: Float = 0
+            vDSP_svesq(hrirReal[p], 1, &realEnergy, vDSP_Length(fftSizeHalf))
+            vDSP_svesq(hrirImag[p], 1, &imagEnergy, vDSP_Length(fftSizeHalf))
+            let totalEnergy = sqrt(realEnergy + imagEnergy)
+            print("[Convolution] Partition[\(p)] FFT energy: \(String(format: "%.6f", totalEnergy))")
         }
     }
     
@@ -265,6 +282,25 @@ class ConvolutionEngine {
                 process(input: inAddr, output: outAddr)
             }
         }
+    }
+    
+    /// Process and accumulate: convolve input and ADD result to existing output buffer
+    /// This is critical for multi-channel binaural mixing where multiple virtual speakers
+    /// contribute to the same stereo output.
+    /// - Parameters:
+    ///   - input: Input buffer pointer (must contain `blockSize` samples)
+    ///   - outputAccumulator: Output buffer pointer to accumulate into (must have capacity for `blockSize` samples)
+    func processAndAccumulate(input: UnsafePointer<Float>, outputAccumulator: UnsafeMutablePointer<Float>) {
+        // We need a temporary buffer to hold the convolution result
+        // Then we add it to the accumulator
+        let tempOutput = UnsafeMutablePointer<Float>.allocate(capacity: blockSize)
+        defer { tempOutput.deallocate() }
+        
+        // Perform convolution
+        process(input: input, output: tempOutput)
+        
+        // Add to accumulator using vDSP
+        vDSP_vadd(outputAccumulator, 1, tempOutput, 1, outputAccumulator, 1, vDSP_Length(blockSize))
     }
     
     /// Reset the engine state

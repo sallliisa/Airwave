@@ -89,7 +89,9 @@ struct ContentView: View {
                     Picker("Preset", selection: Binding(
                         get: { hrirManager.activePreset },
                         set: { if let preset = $0 {
-                            hrirManager.activatePreset(preset, targetSampleRate: audioManager.outputDevice?.sampleRate ?? 48000.0)
+                            let sampleRate = audioManager.outputDevice?.sampleRate ?? 48000.0
+                            let inputLayout = InputLayout.detect(channelCount: 2) // Will be updated when audio starts
+                            hrirManager.activatePreset(preset, targetSampleRate: sampleRate, inputLayout: inputLayout)
                         } }
                     )) {
                         Text("None").tag(nil as HRIRPreset?)
@@ -127,6 +129,22 @@ struct ContentView: View {
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
+                }
+
+                // Balance Control
+                BalanceControlView(hrirManager: hrirManager)
+
+                // Spatial Compensation Toggle
+                HStack {
+                    Text("Auto Compensation:")
+                        .frame(width: 120, alignment: .trailing)
+                    Toggle("Enable Automatic Spatial Compensation", isOn: $hrirManager.spatialCompensationEnabled)
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+
+                    Text("(fixes L/R spatial asymmetry)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
             }
             .padding()
@@ -276,7 +294,8 @@ struct ContentView: View {
         // Restore active preset
         if let presetID = settings.activePresetID,
            let preset = hrirManager.presets.first(where: { $0.id == presetID }) {
-            hrirManager.activatePreset(preset, targetSampleRate: settings.targetSampleRate)
+            let inputLayout = InputLayout.detect(channelCount: 2) // Will be updated when audio starts
+            hrirManager.activatePreset(preset, targetSampleRate: settings.targetSampleRate, inputLayout: inputLayout)
         }
 
         // Restore convolution state
