@@ -236,7 +236,7 @@ class ConvolutionEngine {
         vDSP_fft_zrip(fftSetup, &accumulator, 1, log2n, FFTDirection(kFFTDirection_Inverse))
         
         // 6. Scale Output
-        let scaleFactor = 0.5 / Float(fftSize)
+        let scaleFactor = 0.25 / Float(fftSize)
         vDSP_vsmul(accumulator.realp, 1, [scaleFactor], accumulator.realp, 1, vDSP_Length(fftSizeHalf))
         vDSP_vsmul(accumulator.imagp, 1, [scaleFactor], accumulator.imagp, 1, vDSP_Length(fftSizeHalf))
         
