@@ -243,32 +243,70 @@ class HRIRManager: ObservableObject {
             return
         }
 
-        // Check if frame count matches block size
-        if frameCount != processingBlockSize {
-            // Size mismatch - passthrough for this block
-            for i in 0..<frameCount {
+        // Process in chunks of processingBlockSize
+        var offset = 0
+        
+        // Access raw pointers to avoid array slicing allocations
+        leftInput.withUnsafeBufferPointer { leftInPtr in
+            rightInput.withUnsafeBufferPointer { rightInPtr in
+                leftOutput.withUnsafeMutableBufferPointer { leftOutPtr in
+                    rightOutput.withUnsafeMutableBufferPointer { rightOutPtr in
+                        
+                        guard let lInBase = leftInPtr.baseAddress,
+                              let rInBase = rightInPtr.baseAddress,
+                              let lOutBase = leftOutPtr.baseAddress,
+                              let rOutBase = rightOutPtr.baseAddress else { return }
+                        
+                        // Use bufferLL/bufferRL etc as scratch buffers for convolution outputs
+                        // We need pointers to them
+                        bufferLL.withUnsafeMutableBufferPointer { bLL in
+                        bufferLR.withUnsafeMutableBufferPointer { bLR in
+                        bufferRL.withUnsafeMutableBufferPointer { bRL in
+                        bufferRR.withUnsafeMutableBufferPointer { bRR in
+                            
+                            guard let ptrLL = bLL.baseAddress,
+                                  let ptrLR = bLR.baseAddress,
+                                  let ptrRL = bRL.baseAddress,
+                                  let ptrRR = bRR.baseAddress else { return }
+                            
+                            while offset + processingBlockSize <= frameCount {
+                                let currentLeftIn = lInBase.advanced(by: offset)
+                                let currentRightIn = rInBase.advanced(by: offset)
+                                let currentLeftOut = lOutBase.advanced(by: offset)
+                                let currentRightOut = rOutBase.advanced(by: offset)
+                                
+                                // 1. Perform Convolutions
+                                // L -> L
+                                convLL.process(input: currentLeftIn, output: ptrLL)
+                                // L -> R
+                                convLR.process(input: currentLeftIn, output: ptrLR)
+                                // R -> L
+                                convRL.process(input: currentRightIn, output: ptrRL)
+                                // R -> R
+                                convRR.process(input: currentRightIn, output: ptrRR)
+                                
+                                // 2. Mix Output
+                                // Left Output = LL + RL
+                                vDSP_vadd(ptrLL, 1, ptrRL, 1, currentLeftOut, 1, vDSP_Length(processingBlockSize))
+                                
+                                // Right Output = LR + RR
+                                vDSP_vadd(ptrLR, 1, ptrRR, 1, currentRightOut, 1, vDSP_Length(processingBlockSize))
+                                
+                                offset += processingBlockSize
+                            }
+                        }}}} // End of buffer closures
+                    }
+                }
+            }
+        }
+        
+        // Handle remaining frames (passthrough)
+        if offset < frameCount {
+            for i in offset..<frameCount {
                 leftOutput[i] = leftInput[i]
                 rightOutput[i] = rightInput[i]
             }
-            return
         }
-
-        // 1. Perform Convolutions
-        // L -> L
-        convLL.process(input: leftInput, output: &bufferLL, frameCount: frameCount)
-        // L -> R
-        convLR.process(input: leftInput, output: &bufferLR, frameCount: frameCount)
-        // R -> L
-        convRL.process(input: rightInput, output: &bufferRL, frameCount: frameCount)
-        // R -> R
-        convRR.process(input: rightInput, output: &bufferRR, frameCount: frameCount)
-        
-        // 2. Mix Output
-        // Left Output = LL + RL
-        vDSP_vadd(bufferLL, 1, bufferRL, 1, &leftOutput, 1, vDSP_Length(frameCount))
-        
-        // Right Output = LR + RR
-        vDSP_vadd(bufferLR, 1, bufferRR, 1, &rightOutput, 1, vDSP_Length(frameCount))
     }
 
     // MARK: - Private Methods

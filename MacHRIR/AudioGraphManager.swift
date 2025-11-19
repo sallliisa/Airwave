@@ -10,6 +10,7 @@ import Foundation
 import CoreAudio
 import AVFoundation
 import Combine
+import Accelerate
 
 /// Manages audio input/output using separate CoreAudio units
 class AudioGraphManager: ObservableObject {
@@ -33,6 +34,10 @@ class AudioGraphManager: ObservableObject {
     private var inputChannelCount: UInt32 = 2
     private var outputChannelCount: UInt32 = 2
     private var currentSampleRate: Double = 48000.0
+    
+    // UI Update Throttling
+    fileprivate var lastUIUpdateTime: Double = 0.0
+    fileprivate let uiUpdateInterval: Double = 0.05 // Update UI every 50ms
 
     // Pre-allocated buffers for interleaving (avoid allocations in callbacks)
     fileprivate var inputInterleaveBuffer: [Float] = []
@@ -494,14 +499,24 @@ private func inputRenderCallback(
         let channelCount = buffers.count
         let totalSamples = frameCount * channelCount
 
-        // Use pre-allocated buffer (no heap allocation)
-        for frame in 0..<frameCount {
-            for channel in 0..<channelCount {
-                if let data = buffers[channel].mData {
-                    let samples = data.assumingMemoryBound(to: Float.self)
-                    let sample = samples[frame]
-                    manager.inputInterleaveBuffer[frame * channelCount + channel] = sample
-                    maxLevel = max(maxLevel, abs(sample))
+        // Use cblas_scopy for fast strided copy (Interleaving)
+        for channel in 0..<channelCount {
+            if let data = buffers[channel].mData {
+                let samples = data.assumingMemoryBound(to: Float.self)
+                
+                // Calculate max level for UI
+                var channelMax: Float = 0.0
+                vDSP_maxmgv(samples, 1, &channelMax, vDSP_Length(frameCount))
+                maxLevel = max(maxLevel, channelMax)
+                
+                // Copy with stride
+                // Source: samples (stride 1)
+                // Dest: inputInterleaveBuffer starting at offset 'channel' (stride channelCount)
+                manager.inputInterleaveBuffer.withUnsafeMutableBufferPointer { ptr in
+                    if let baseAddr = ptr.baseAddress {
+                        var one: Float = 1.0
+                        vDSP_vsmul(samples, 1, &one, baseAddr.advanced(by: channel), vDSP_Stride(channelCount), vDSP_Length(frameCount))
+                    }
                 }
             }
         }
@@ -513,9 +528,12 @@ private func inputRenderCallback(
             }
         }
 
-        // Update input level (on main thread periodically)
-        DispatchQueue.main.async {
-            manager.inputLevel = maxLevel
+        // Update input level (throttled)
+        let currentTime = CFAbsoluteTimeGetCurrent()
+        if currentTime - manager.lastUIUpdateTime > manager.uiUpdateInterval {
+            DispatchQueue.main.async {
+                manager.inputLevel = maxLevel
+            }
         }
     }
 
@@ -559,13 +577,35 @@ private func outputRenderCallback(
         }
     }
 
-    // De-interleave into separate channel buffers
-    for frame in 0..<frameCount {
-        manager.leftChannelBuffer[frame] = manager.outputInterleaveBuffer[frame * channelCount]
+    // De-interleave into separate channel buffers using vDSP_vsmul (multiplication by 1.0 is a copy)
+    // Left Channel (0)
+    manager.outputInterleaveBuffer.withUnsafeBufferPointer { srcPtr in
+        guard let srcBase = srcPtr.baseAddress else { return }
+        
+        var one: Float = 1.0
+        
+        // Left
+        manager.leftChannelBuffer.withUnsafeMutableBufferPointer { dstPtr in
+            if let dstBase = dstPtr.baseAddress {
+                vDSP_vsmul(srcBase, vDSP_Stride(channelCount), &one, dstBase, 1, vDSP_Length(frameCount))
+            }
+        }
+        
+        // Right
         if channelCount > 1 {
-            manager.rightChannelBuffer[frame] = manager.outputInterleaveBuffer[frame * channelCount + 1]
+            manager.rightChannelBuffer.withUnsafeMutableBufferPointer { dstPtr in
+                if let dstBase = dstPtr.baseAddress {
+                    vDSP_vsmul(srcBase.advanced(by: 1), vDSP_Stride(channelCount), &one, dstBase, 1, vDSP_Length(frameCount))
+                }
+            }
         } else {
-            manager.rightChannelBuffer[frame] = manager.leftChannelBuffer[frame]
+            // Mono -> Stereo copy
+            let byteCount = frameCount * MemoryLayout<Float>.size
+            manager.rightChannelBuffer.withUnsafeMutableBytes { dst in
+                manager.leftChannelBuffer.withUnsafeBytes { src in
+                    memcpy(dst.baseAddress!, src.baseAddress!, byteCount)
+                }
+            }
         }
     }
 
@@ -582,12 +622,6 @@ private func outputRenderCallback(
     }
 
     if shouldProcess {
-        // Ensure output buffers are properly sized
-        if manager.leftProcessedBuffer.count < frameCount {
-            manager.leftProcessedBuffer = [Float](repeating: 0, count: manager.maxFramesPerCallback)
-            manager.rightProcessedBuffer = [Float](repeating: 0, count: manager.maxFramesPerCallback)
-        }
-
         // Process audio - buffers are pre-allocated, just pass them
         manager.hrirManager?.processAudio(
             leftInput: manager.leftChannelBuffer,
@@ -597,10 +631,17 @@ private func outputRenderCallback(
             frameCount: frameCount
         )
     } else {
-        // Passthrough mode - copy input to output
-        for i in 0..<frameCount {
-            manager.leftProcessedBuffer[i] = manager.leftChannelBuffer[i]
-            manager.rightProcessedBuffer[i] = manager.rightChannelBuffer[i]
+        // Passthrough mode - fast copy using memcpy
+        let byteCount = frameCount * MemoryLayout<Float>.size
+        manager.leftProcessedBuffer.withUnsafeMutableBytes { dst in
+            manager.leftChannelBuffer.withUnsafeBytes { src in
+                memcpy(dst.baseAddress!, src.baseAddress!, byteCount)
+            }
+        }
+        manager.rightProcessedBuffer.withUnsafeMutableBytes { dst in
+            manager.rightChannelBuffer.withUnsafeBytes { src in
+                memcpy(dst.baseAddress!, src.baseAddress!, byteCount)
+            }
         }
     }
 
@@ -609,17 +650,27 @@ private func outputRenderCallback(
         if let data = buffers[i].mData {
             let samples = data.assumingMemoryBound(to: Float.self)
             let sourceBuffer = (i == 0) ? manager.leftProcessedBuffer : manager.rightProcessedBuffer
-            for frame in 0..<frameCount {
-                let sample = sourceBuffer[frame]
-                samples[frame] = sample
-                maxLevel = max(maxLevel, abs(sample))
+            
+            // Copy to output buffer
+            let byteCount = frameCount * MemoryLayout<Float>.size
+            sourceBuffer.withUnsafeBytes { src in
+                memcpy(samples, src.baseAddress!, byteCount)
             }
+            
+            // Calculate level for UI
+            var channelMax: Float = 0.0
+            vDSP_maxmgv(samples, 1, &channelMax, vDSP_Length(frameCount))
+            maxLevel = max(maxLevel, channelMax)
         }
     }
 
-    // Update output level
-    DispatchQueue.main.async {
-        manager.outputLevel = maxLevel
+    // Update output level (throttled)
+    let currentTime = CFAbsoluteTimeGetCurrent()
+    if currentTime - manager.lastUIUpdateTime > manager.uiUpdateInterval {
+        manager.lastUIUpdateTime = currentTime
+        DispatchQueue.main.async {
+            manager.outputLevel = maxLevel
+        }
     }
 
     return noErr

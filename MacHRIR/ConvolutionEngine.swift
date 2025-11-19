@@ -2,13 +2,15 @@
 //  ConvolutionEngine.swift
 //  MacHRIR
 //
-//  Fast convolution using Accelerate framework's FFT (Overlap-Save method)
+//  Uniform Partitioned Convolution using Accelerate framework
+//  Implements the Uniform Partitioned Overlap-Save (UPOLS) algorithm
+//  to efficiently handle long HRIR filters with zero added latency.
 //
 
 import Foundation
 import Accelerate
 
-/// Real-time convolution engine using Accelerate's FFT (Overlap-Save)
+/// Real-time partitioned convolution engine
 class ConvolutionEngine {
 
     // MARK: - Properties
@@ -17,175 +19,262 @@ class ConvolutionEngine {
     private let fftSize: Int
     private let fftSizeHalf: Int
     private let blockSize: Int
+    private let partitionCount: Int
     
     private let fftSetup: FFTSetup
     
-    // Buffers (Manual Memory Management)
+    // Input Buffering (Overlap-Save)
     private let inputBuffer: UnsafeMutablePointer<Float>
-    private let outputBuffer: UnsafeMutablePointer<Float>
+    private let inputOverlapBuffer: UnsafeMutablePointer<Float> // Stores previous block
     
-    // Split Complex Buffers
-    private let splitComplexReal: UnsafeMutablePointer<Float>
-    private let splitComplexImag: UnsafeMutablePointer<Float>
-    private var splitComplex: DSPSplitComplex
+    // Frequency Domain Delay Line (FDL)
+    // We store the FFT of past input blocks.
+    // fdlReal[i] points to the real part of the i-th past block
+    private var fdlReal: [UnsafeMutablePointer<Float>] = []
+    private var fdlImag: [UnsafeMutablePointer<Float>] = []
+    private var fdlIndex: Int = 0
     
-    // HRIR Frequency Domain Representation
-    private let hrirReal: UnsafeMutablePointer<Float>
-    private let hrirImag: UnsafeMutablePointer<Float>
-    private var hrirSplitComplex: DSPSplitComplex
+    // HRIR Partitions (Frequency Domain)
+    // hrirReal[i] points to the real part of the i-th partition of the filter
+    private var hrirReal: [UnsafeMutablePointer<Float>] = []
+    private var hrirImag: [UnsafeMutablePointer<Float>] = []
+    
+    // Processing Buffers
+    private let splitComplexInputReal: UnsafeMutablePointer<Float>
+    private let splitComplexInputImag: UnsafeMutablePointer<Float>
+    private var splitComplexInput: DSPSplitComplex
+    
+    private let accumulatorReal: UnsafeMutablePointer<Float>
+    private let accumulatorImag: UnsafeMutablePointer<Float>
+    private var accumulator: DSPSplitComplex
+    
+    private let tempMulReal: UnsafeMutablePointer<Float>
+    private let tempMulImag: UnsafeMutablePointer<Float>
+    private var tempMul: DSPSplitComplex
     
     private var debugCounter: Int = 0
 
     // MARK: - Initialization
 
-    /// Initialize convolution engine
+    /// Initialize convolution engine with partitioned convolution
     /// - Parameters:
-    ///   - hrirSamples: Impulse response samples
+    ///   - hrirSamples: Impulse response samples (can be long)
     ///   - blockSize: Processing block size (typically 512)
     init?(hrirSamples: [Float], blockSize: Int = 512) {
         self.blockSize = blockSize
         
-        // 1. Determine FFT size
-        let minSize = blockSize + hrirSamples.count - 1
-        let log2n = vDSP_Length(ceil(log2(Double(minSize))))
-        self.log2n = log2n
-        self.fftSize = 1 << Int(log2n)
+        // 1. Setup FFT (Size = 2 * BlockSize for Overlap-Save)
+        self.fftSize = blockSize * 2
         self.fftSizeHalf = fftSize / 2
+        self.log2n = vDSP_Length(log2(Double(fftSize)))
         
-        print("[Convolution] Init: BlockSize=\(blockSize), HRIR=\(hrirSamples.count), FFTSize=\(fftSize)")
-        
-        // 2. Create FFT Setup
         guard let setup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2)) else {
             print("[Convolution] Failed to create FFT setup")
             return nil
         }
         self.fftSetup = setup
         
-        // 3. Allocate Buffers
+        // 2. Calculate Partitions
+        // We pad the HRIR to be a multiple of blockSize
+        self.partitionCount = Int(ceil(Double(hrirSamples.count) / Double(blockSize)))
+        
+        print("[Convolution] Init: BlockSize=\(blockSize), HRIR=\(hrirSamples.count), Partitions=\(partitionCount)")
+        
+        // 3. Allocate Input Buffers
         self.inputBuffer = UnsafeMutablePointer<Float>.allocate(capacity: fftSize)
         self.inputBuffer.initialize(repeating: 0, count: fftSize)
         
-        self.outputBuffer = UnsafeMutablePointer<Float>.allocate(capacity: fftSize)
-        self.outputBuffer.initialize(repeating: 0, count: fftSize)
+        self.inputOverlapBuffer = UnsafeMutablePointer<Float>.allocate(capacity: blockSize)
+        self.inputOverlapBuffer.initialize(repeating: 0, count: blockSize)
         
-        self.splitComplexReal = UnsafeMutablePointer<Float>.allocate(capacity: fftSizeHalf)
-        self.splitComplexImag = UnsafeMutablePointer<Float>.allocate(capacity: fftSizeHalf)
-        self.splitComplex = DSPSplitComplex(realp: splitComplexReal, imagp: splitComplexImag)
+        // 4. Allocate Processing Buffers
+        self.splitComplexInputReal = UnsafeMutablePointer<Float>.allocate(capacity: fftSizeHalf)
+        self.splitComplexInputImag = UnsafeMutablePointer<Float>.allocate(capacity: fftSizeHalf)
+        self.splitComplexInput = DSPSplitComplex(realp: splitComplexInputReal, imagp: splitComplexInputImag)
         
-        self.hrirReal = UnsafeMutablePointer<Float>.allocate(capacity: fftSizeHalf)
-        self.hrirImag = UnsafeMutablePointer<Float>.allocate(capacity: fftSizeHalf)
-        self.hrirSplitComplex = DSPSplitComplex(realp: hrirReal, imagp: hrirImag)
+        self.accumulatorReal = UnsafeMutablePointer<Float>.allocate(capacity: fftSizeHalf)
+        self.accumulatorImag = UnsafeMutablePointer<Float>.allocate(capacity: fftSizeHalf)
+        self.accumulator = DSPSplitComplex(realp: accumulatorReal, imagp: accumulatorImag)
         
-        // 4. Prepare HRIR (Filter Kernel)
-        var tempHrir = [Float](repeating: 0, count: fftSize)
-        for i in 0..<min(hrirSamples.count, fftSize) {
-            tempHrir[i] = hrirSamples[i]
+        self.tempMulReal = UnsafeMutablePointer<Float>.allocate(capacity: fftSizeHalf)
+        self.tempMulImag = UnsafeMutablePointer<Float>.allocate(capacity: fftSizeHalf)
+        self.tempMul = DSPSplitComplex(realp: tempMulReal, imagp: tempMulImag)
+        
+        // 5. Initialize FDL and HRIR Arrays
+        for _ in 0..<partitionCount {
+            // FDL
+            let fReal = UnsafeMutablePointer<Float>.allocate(capacity: fftSizeHalf)
+            let fImag = UnsafeMutablePointer<Float>.allocate(capacity: fftSizeHalf)
+            fReal.initialize(repeating: 0, count: fftSizeHalf)
+            fImag.initialize(repeating: 0, count: fftSizeHalf)
+            fdlReal.append(fReal)
+            fdlImag.append(fImag)
+            
+            // HRIR
+            let hReal = UnsafeMutablePointer<Float>.allocate(capacity: fftSizeHalf)
+            let hImag = UnsafeMutablePointer<Float>.allocate(capacity: fftSizeHalf)
+            hrirReal.append(hReal)
+            hrirImag.append(hImag)
         }
         
-        // Pack real data into split complex format
-        tempHrir.withUnsafeBufferPointer { ptr in
-            ptr.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: fftSizeHalf) { complexPtr in
-                vDSP_ctoz(complexPtr, 2, &hrirSplitComplex, 1, vDSP_Length(fftSizeHalf))
+        // 6. Process HRIR Partitions
+        var tempPadBuffer = [Float](repeating: 0, count: fftSize)
+        
+        for p in 0..<partitionCount {
+            // Clear temp buffer
+            memset(tempPadBuffer.withUnsafeMutableBufferPointer { $0.baseAddress! }, 0, fftSize * MemoryLayout<Float>.size)
+            
+            // Copy HRIR chunk
+            let startIdx = p * blockSize
+            let endIdx = min(startIdx + blockSize, hrirSamples.count)
+            let copyCount = endIdx - startIdx
+            
+            if copyCount > 0 {
+                for i in 0..<copyCount {
+                    tempPadBuffer[i] = hrirSamples[startIdx + i]
+                }
             }
+            
+            // FFT this partition
+            // We use the temp buffer as input to FFT.
+            // Note: For real-to-complex FFT, we pack the input.
+            // But here we can just use our split complex buffers directly if we cast.
+            
+            // Pack into split complex (using hrirReal/Imag as destination)
+            var splitH = DSPSplitComplex(realp: hrirReal[p], imagp: hrirImag[p])
+            
+            tempPadBuffer.withUnsafeBufferPointer { ptr in
+                ptr.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: fftSizeHalf) { complexPtr in
+                    vDSP_ctoz(complexPtr, 2, &splitH, 1, vDSP_Length(fftSizeHalf))
+                }
+            }
+            
+            // Forward FFT
+            vDSP_fft_zrip(fftSetup, &splitH, 1, log2n, FFTDirection(kFFTDirection_Forward))
         }
-        
-        // Compute FFT of HRIR
-        vDSP_fft_zrip(fftSetup, &hrirSplitComplex, 1, log2n, FFTDirection(kFFTDirection_Forward))
     }
     
     deinit {
         vDSP_destroy_fftsetup(fftSetup)
         
         inputBuffer.deallocate()
-        outputBuffer.deallocate()
-        splitComplexReal.deallocate()
-        splitComplexImag.deallocate()
-        hrirReal.deallocate()
-        hrirImag.deallocate()
+        inputOverlapBuffer.deallocate()
+        
+        splitComplexInputReal.deallocate()
+        splitComplexInputImag.deallocate()
+        
+        accumulatorReal.deallocate()
+        accumulatorImag.deallocate()
+        
+        tempMulReal.deallocate()
+        tempMulImag.deallocate()
+        
+        for ptr in fdlReal { ptr.deallocate() }
+        for ptr in fdlImag { ptr.deallocate() }
+        for ptr in hrirReal { ptr.deallocate() }
+        for ptr in hrirImag { ptr.deallocate() }
     }
 
     // MARK: - Public Methods
 
-    /// Process a block of audio samples using Overlap-Save FFT convolution
+    /// Process a block of audio samples using Uniform Partitioned Overlap-Save
     /// - Parameters:
-    ///   - input: Input samples buffer (must be size `blockSize`)
-    ///   - output: Output buffer (must be size `blockSize`)
-    ///   - frameCount: Number of frames to process (must match `blockSize`)
-    func process(input: [Float], output: inout [Float], frameCount: Int? = nil) {
-        let count = frameCount ?? blockSize
+    ///   - input: Input buffer pointer (must contain `blockSize` samples)
+    ///   - output: Output buffer pointer (must have capacity for `blockSize` samples)
+    func process(input: UnsafePointer<Float>, output: UnsafeMutablePointer<Float>) {
+        // 1. Prepare Input (Overlap-Save)
+        // Construct buffer: [PreviousBlock | CurrentBlock]
         
-        guard count == blockSize else {
-            return
+        // Copy previous block to first half of inputBuffer
+        memcpy(inputBuffer, inputOverlapBuffer, blockSize * MemoryLayout<Float>.size)
+        
+        // Copy new input to second half
+        memcpy(inputBuffer.advanced(by: blockSize), input, blockSize * MemoryLayout<Float>.size)
+        
+        // Save current input as next overlap
+        memcpy(inputOverlapBuffer, input, blockSize * MemoryLayout<Float>.size)
+        
+        // 2. FFT Input
+        // Pack to split complex
+        inputBuffer.withMemoryRebound(to: DSPComplex.self, capacity: fftSizeHalf) { complexPtr in
+            vDSP_ctoz(complexPtr, 2, &splitComplexInput, 1, vDSP_Length(fftSizeHalf))
         }
         
-        // 1. Prepare Input Buffer (Overlap-Save)
-        let overlapSize = fftSize - blockSize
+        // Forward FFT
+        vDSP_fft_zrip(fftSetup, &splitComplexInput, 1, log2n, FFTDirection(kFFTDirection_Forward))
         
-        // Shift buffer left by blockSize using memmove (fastest)
-        // inputBuffer[0...overlapSize] = inputBuffer[blockSize...fftSize]
-        memmove(inputBuffer, inputBuffer.advanced(by: blockSize), overlapSize * MemoryLayout<Float>.size)
+        // 3. Update FDL (Frequency Delay Line)
+        // Write current FFT to FDL at current index
+        fdlIndex = (fdlIndex - 1 + partitionCount) % partitionCount
         
-        // Copy new input to tail
-        // We need to copy from the Swift Array 'input' to the UnsafeMutablePointer 'inputBuffer'
-        // Using withUnsafeBufferPointer is the safe way to get the array's pointer
-        input.withUnsafeBufferPointer { inputPtr in
-            guard let baseAddr = inputPtr.baseAddress else { return }
-            // Copy min(count, input.count)
-            let copyCount = min(count, input.count)
-            memcpy(inputBuffer.advanced(by: overlapSize), baseAddr, copyCount * MemoryLayout<Float>.size)
+        // Copy current FFT to FDL head
+        memcpy(fdlReal[fdlIndex], splitComplexInput.realp, fftSizeHalf * MemoryLayout<Float>.size)
+        memcpy(fdlImag[fdlIndex], splitComplexInput.imagp, fftSizeHalf * MemoryLayout<Float>.size)
+        
+        // 4. Convolution Sum (Partitioned)
+        // Accumulator = Sum(FDL[i] * HRIR[i])
+        
+        // Reset accumulator to 0
+        memset(accumulator.realp, 0, fftSizeHalf * MemoryLayout<Float>.size)
+        memset(accumulator.imagp, 0, fftSizeHalf * MemoryLayout<Float>.size)
+        
+        for p in 0..<partitionCount {
+            let fdlIdx = (fdlIndex + p) % partitionCount
             
-            // Zero pad if needed (though we expect full blocks)
-            if copyCount < blockSize {
-                memset(inputBuffer.advanced(by: overlapSize + copyCount), 0, (blockSize - copyCount) * MemoryLayout<Float>.size)
+            var fdlSplit = DSPSplitComplex(realp: fdlReal[fdlIdx], imagp: fdlImag[fdlIdx])
+            var hrirSplit = DSPSplitComplex(realp: hrirReal[p], imagp: hrirImag[p])
+            
+            if p == 0 {
+                vDSP_zvmul(&fdlSplit, 1, &hrirSplit, 1, &accumulator, 1, vDSP_Length(fftSizeHalf), 1)
+            } else {
+                vDSP_zvmul(&fdlSplit, 1, &hrirSplit, 1, &tempMul, 1, vDSP_Length(fftSizeHalf), 1)
+                vDSP_zvadd(&tempMul, 1, &accumulator, 1, &accumulator, 1, vDSP_Length(fftSizeHalf))
             }
         }
         
-        // 2. Forward FFT
-        // Cast inputBuffer (Float*) to DSPComplex* for vDSP_ctoz
-        inputBuffer.withMemoryRebound(to: DSPComplex.self, capacity: fftSizeHalf) { complexPtr in
-            vDSP_ctoz(complexPtr, 2, &splitComplex, 1, vDSP_Length(fftSizeHalf))
-        }
+        // 5. Inverse FFT
+        vDSP_fft_zrip(fftSetup, &accumulator, 1, log2n, FFTDirection(kFFTDirection_Inverse))
         
-        vDSP_fft_zrip(fftSetup, &splitComplex, 1, log2n, FFTDirection(kFFTDirection_Forward))
-        
-        // 3. Complex Multiplication
-        vDSP_zvmul(&splitComplex, 1, &hrirSplitComplex, 1, &splitComplex, 1, vDSP_Length(fftSizeHalf), 1)
-        
-        // 4. Inverse FFT
-        vDSP_fft_zrip(fftSetup, &splitComplex, 1, log2n, FFTDirection(kFFTDirection_Inverse))
-        
-        // 5. Unpack and Scale
+        // 6. Scale Output
         let scaleFactor = 0.5 / Float(fftSize)
-        vDSP_vsmul(splitComplex.realp, 1, [scaleFactor], splitComplex.realp, 1, vDSP_Length(fftSizeHalf))
-        vDSP_vsmul(splitComplex.imagp, 1, [scaleFactor], splitComplex.imagp, 1, vDSP_Length(fftSizeHalf))
+        vDSP_vsmul(accumulator.realp, 1, [scaleFactor], accumulator.realp, 1, vDSP_Length(fftSizeHalf))
+        vDSP_vsmul(accumulator.imagp, 1, [scaleFactor], accumulator.imagp, 1, vDSP_Length(fftSizeHalf))
         
-        outputBuffer.withMemoryRebound(to: DSPComplex.self, capacity: fftSizeHalf) { complexPtr in
-            vDSP_ztoc(&splitComplex, 1, complexPtr, 2, vDSP_Length(fftSizeHalf))
+        // 7. Unpack and Extract Valid Output
+        inputBuffer.withMemoryRebound(to: DSPComplex.self, capacity: fftSizeHalf) { complexPtr in
+            vDSP_ztoc(&accumulator, 1, complexPtr, 2, vDSP_Length(fftSizeHalf))
         }
         
-        // 6. Overlap-Save Output Extraction
-        // Copy valid part to output array
-        let validStartIndex = fftSize - blockSize
-        
-        // We need to copy FROM outputBuffer TO output (Swift Array)
-        // output is inout [Float]
-        // We can use output.withUnsafeMutableBufferPointer
-        
-        output.withUnsafeMutableBufferPointer { outPtr in
-            guard let baseAddr = outPtr.baseAddress else { return }
-            memcpy(baseAddr, outputBuffer.advanced(by: validStartIndex), blockSize * MemoryLayout<Float>.size)
-        }
+        // The valid output is the second half
+        memcpy(output, inputBuffer.advanced(by: blockSize), blockSize * MemoryLayout<Float>.size)
         
         if debugCounter < 2 {
-            print("[Convolution] Processed block")
+            print("[Convolution] Processed partitioned block. Partitions: \(partitionCount)")
             debugCounter += 1
+        }
+    }
+
+    /// Process a block of audio samples using Uniform Partitioned Overlap-Save
+    func process(input: [Float], output: inout [Float], frameCount: Int? = nil) {
+        let count = frameCount ?? blockSize
+        guard count == blockSize else { return }
+        
+        input.withUnsafeBufferPointer { inPtr in
+            output.withUnsafeMutableBufferPointer { outPtr in
+                guard let inAddr = inPtr.baseAddress, let outAddr = outPtr.baseAddress else { return }
+                process(input: inAddr, output: outAddr)
+            }
         }
     }
     
     /// Reset the engine state
     func reset() {
         memset(inputBuffer, 0, fftSize * MemoryLayout<Float>.size)
-        memset(outputBuffer, 0, fftSize * MemoryLayout<Float>.size)
+        memset(inputOverlapBuffer, 0, blockSize * MemoryLayout<Float>.size)
+        
+        for ptr in fdlReal { memset(ptr, 0, fftSizeHalf * MemoryLayout<Float>.size) }
+        for ptr in fdlImag { memset(ptr, 0, fftSizeHalf * MemoryLayout<Float>.size) }
+        
+        fdlIndex = 0
     }
 }
-
