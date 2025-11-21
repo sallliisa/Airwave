@@ -83,6 +83,17 @@ class AudioGraphManager: ObservableObject {
             errorMessage = "Please select both input and output devices"
             return
         }
+        
+        // Validate that devices still exist in the system
+        let allDevices = AudioDeviceManager.getAllDevices()
+        guard allDevices.contains(where: { $0.id == inputDevice.id }) else {
+            errorMessage = "Input device '\(inputDevice.name)' is no longer available"
+            return
+        }
+        guard allDevices.contains(where: { $0.id == outputDevice.id }) else {
+            errorMessage = "Output device '\(outputDevice.name)' is no longer available"
+            return
+        }
 
         stop()
 
@@ -643,6 +654,7 @@ enum AudioError: LocalizedError {
     case instantiationFailed(OSStatus)
     case propertySetFailed(OSStatus, String)
     case deviceSetFailed(OSStatus)
+    case deviceNotFound(String)
     case formatGetFailed(OSStatus)
     case formatSetFailed(OSStatus)
     case callbackSetFailed(OSStatus)
@@ -659,6 +671,8 @@ enum AudioError: LocalizedError {
             return "Failed to set property: \(detail) (error \(status))"
         case .deviceSetFailed(let status):
             return "Failed to set device (error \(status))"
+        case .deviceNotFound(let deviceName):
+            return "Device '\(deviceName)' is no longer available"
         case .formatGetFailed(let status):
             return "Failed to get audio format (error \(status))"
         case .formatSetFailed(let status):

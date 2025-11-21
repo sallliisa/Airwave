@@ -7,6 +7,7 @@
 
 import Foundation
 import CoreAudio
+import Combine
 
 /// Represents an audio device on the system
 struct AudioDevice: Identifiable, Equatable, Hashable {
@@ -26,8 +27,161 @@ struct AudioDevice: Identifiable, Equatable, Hashable {
     }
 }
 
-/// Manager for enumerating and querying audio devices
-class AudioDeviceManager {
+/// Manager for enumerating and querying audio devices with automatic change detection
+class AudioDeviceManager: ObservableObject {
+    
+    // MARK: - Singleton
+    
+    static let shared = AudioDeviceManager()
+    
+    // MARK: - Published Properties
+    
+    @Published var inputDevices: [AudioDevice] = []
+    @Published var outputDevices: [AudioDevice] = []
+    @Published var defaultInputDevice: AudioDevice?
+    @Published var defaultOutputDevice: AudioDevice?
+    @Published var deviceChangeNotification: String?
+    
+    // MARK: - Private Properties
+    
+    private var deviceListenerAdded = false
+    private var defaultInputListenerAdded = false
+    private var defaultOutputListenerAdded = false
+    
+    // MARK: - Initialization
+    
+    private init() {
+        // Initial device load
+        refreshDevices()
+        
+        // Setup property listeners
+        setupPropertyListeners()
+    }
+    
+    deinit {
+        removePropertyListeners()
+    }
+    
+    // MARK: - Public Methods
+    
+    /// Refresh all device lists and defaults
+    func refreshDevices() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            let allDevices = Self.getAllDevices()
+            self.inputDevices = allDevices.filter { $0.hasInput }
+            self.outputDevices = allDevices.filter { $0.hasOutput }
+            self.defaultInputDevice = Self.getDefaultInputDevice()
+            self.defaultOutputDevice = Self.getDefaultOutputDevice()
+        }
+    }
+    
+    // MARK: - Property Listeners
+    
+    private func setupPropertyListeners() {
+        // Device list changes listener
+        var devicesAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        
+        let devicesStatus = AudioObjectAddPropertyListener(
+            AudioObjectID(kAudioObjectSystemObject),
+            &devicesAddress,
+            deviceListChangeCallback,
+            Unmanaged.passUnretained(self).toOpaque()
+        )
+        
+        if devicesStatus == noErr {
+            deviceListenerAdded = true
+        }
+        
+        // Default input device listener
+        var defaultInputAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        
+        let inputStatus = AudioObjectAddPropertyListener(
+            AudioObjectID(kAudioObjectSystemObject),
+            &defaultInputAddress,
+            deviceListChangeCallback,
+            Unmanaged.passUnretained(self).toOpaque()
+        )
+        
+        if inputStatus == noErr {
+            defaultInputListenerAdded = true
+        }
+        
+        // Default output device listener
+        var defaultOutputAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        
+        let outputStatus = AudioObjectAddPropertyListener(
+            AudioObjectID(kAudioObjectSystemObject),
+            &defaultOutputAddress,
+            deviceListChangeCallback,
+            Unmanaged.passUnretained(self).toOpaque()
+        )
+        
+        if outputStatus == noErr {
+            defaultOutputListenerAdded = true
+        }
+    }
+    
+    private func removePropertyListeners() {
+        if deviceListenerAdded {
+            var devicesAddress = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwarePropertyDevices,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            
+            AudioObjectRemovePropertyListener(
+                AudioObjectID(kAudioObjectSystemObject),
+                &devicesAddress,
+                deviceListChangeCallback,
+                Unmanaged.passUnretained(self).toOpaque()
+            )
+        }
+        
+        if defaultInputListenerAdded {
+            var defaultInputAddress = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwarePropertyDefaultInputDevice,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            
+            AudioObjectRemovePropertyListener(
+                AudioObjectID(kAudioObjectSystemObject),
+                &defaultInputAddress,
+                deviceListChangeCallback,
+                Unmanaged.passUnretained(self).toOpaque()
+            )
+        }
+        
+        if defaultOutputListenerAdded {
+            var defaultOutputAddress = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            
+            AudioObjectRemovePropertyListener(
+                AudioObjectID(kAudioObjectSystemObject),
+                &defaultOutputAddress,
+                deviceListChangeCallback,
+                Unmanaged.passUnretained(self).toOpaque()
+            )
+        }
+    }
+
 
     /// Get all audio devices on the system
     static func getAllDevices() -> [AudioDevice] {
@@ -254,4 +408,23 @@ class AudioDeviceManager {
 
         return sampleRate
     }
+}
+
+// MARK: - Core Audio Callbacks
+
+/// Callback function for Core Audio property changes
+private func deviceListChangeCallback(
+    _ inObjectID: AudioObjectID,
+    _ inNumberAddresses: UInt32,
+    _ inAddresses: UnsafePointer<AudioObjectPropertyAddress>,
+    _ inClientData: UnsafeMutableRawPointer?
+) -> OSStatus {
+    guard let clientData = inClientData else {
+        return noErr
+    }
+    
+    let manager = Unmanaged<AudioDeviceManager>.fromOpaque(clientData).takeUnretainedValue()
+    manager.refreshDevices()
+    
+    return noErr
 }

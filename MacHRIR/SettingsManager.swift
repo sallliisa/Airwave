@@ -2,7 +2,7 @@
 //  SettingsManager.swift
 //  MacHRIR
 //
-//  JSON-based settings persistence
+//  UserDefaults-based settings persistence (sandbox-compatible)
 //
 
 import Foundation
@@ -14,6 +14,7 @@ struct AppSettings: Codable {
     var selectedOutputDeviceID: UInt32?
     var activePresetID: UUID?
     var convolutionEnabled: Bool
+    var autoStart: Bool
     var bufferSize: Int
     var targetSampleRate: Double
 
@@ -23,43 +24,68 @@ struct AppSettings: Codable {
             selectedOutputDeviceID: nil,
             activePresetID: nil,
             convolutionEnabled: false,
+            autoStart: false,
             bufferSize: 65536,
             targetSampleRate: 48000.0
         )
     }
 }
 
-/// Manages application settings persistence
+/// Manages application settings persistence using UserDefaults
 class SettingsManager {
 
-    private let settingsURL: URL
+    private let defaults = UserDefaults.standard
+    private let settingsKey = "MacHRIR.AppSettings"
 
     init() {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let appDirectory = appSupport.appendingPathComponent("MacHRIR", isDirectory: true)
-        try? FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
-
-        settingsURL = appDirectory.appendingPathComponent("settings.json")
+        print("[Settings] Initialized with UserDefaults")
     }
 
-    /// Load settings from disk
+    /// Load settings from UserDefaults
     func loadSettings() -> AppSettings {
-        guard FileManager.default.fileExists(atPath: settingsURL.path),
-              let data = try? Data(contentsOf: settingsURL),
-              let settings = try? JSONDecoder().decode(AppSettings.self, from: data) else {
+        print("[Settings] Loading settings from UserDefaults")
+        
+        guard let data = defaults.data(forKey: settingsKey) else {
+            print("[Settings] No settings found in UserDefaults, using defaults")
             return .default
         }
+        
+        guard let settings = try? JSONDecoder().decode(AppSettings.self, from: data) else {
+            print("[Settings] Failed to decode settings from UserDefaults")
+            return .default
+        }
+        
+        print("[Settings] Loaded settings:")
+        print("  - Input Device ID: \(settings.selectedInputDeviceID?.description ?? "nil")")
+        print("  - Output Device ID: \(settings.selectedOutputDeviceID?.description ?? "nil")")
+        print("  - Active Preset ID: \(settings.activePresetID?.uuidString ?? "nil")")
+        print("  - Convolution Enabled: \(settings.convolutionEnabled)")
+        print("  - Auto Start: \(settings.autoStart)")
 
         return settings
     }
 
-    /// Save settings to disk
+    /// Save settings to UserDefaults
     func saveSettings(_ settings: AppSettings) {
+        print("[Settings] Saving settings to UserDefaults:")
+        print("  - Input Device ID: \(settings.selectedInputDeviceID?.description ?? "nil")")
+        print("  - Output Device ID: \(settings.selectedOutputDeviceID?.description ?? "nil")")
+        print("  - Active Preset ID: \(settings.activePresetID?.uuidString ?? "nil")")
+        print("  - Convolution Enabled: \(settings.convolutionEnabled)")
+        print("  - Auto Start: \(settings.autoStart)")
+        
         guard let data = try? JSONEncoder().encode(settings) else {
-            print("Failed to encode settings")
+            print("[Settings] Failed to encode settings")
             return
         }
 
-        try? data.write(to: settingsURL)
+        defaults.set(data, forKey: settingsKey)
+        
+        // Force synchronization to ensure data is written immediately
+        if defaults.synchronize() {
+            print("[Settings] Successfully saved and synchronized to UserDefaults")
+        } else {
+            print("[Settings] Warning: synchronize() returned false")
+        }
     }
 }
