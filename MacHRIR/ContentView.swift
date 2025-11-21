@@ -16,7 +16,6 @@ struct ContentView: View {
     @State private var inputDevices: [AudioDevice] = []
     @State private var outputDevices: [AudioDevice] = []
 
-    @State private var showingFileImporter = false
     @State private var showingError = false
     @State private var isInitialized = false
 
@@ -101,18 +100,18 @@ struct ContentView: View {
                     }
                     .frame(width: 200)
 
-                    Button("Add Preset") {
-                        showingFileImporter = true
+                    Button("Open HRIR Folder") {
+                        hrirManager.openPresetsDirectory()
                     }
 
-                    if hrirManager.activePreset != nil {
-                        Button("Remove") {
-                            if let preset = hrirManager.activePreset {
-                                hrirManager.removePreset(preset)
-                            }
-                        }
-                        .foregroundColor(.red)
-                    }
+                    // if hrirManager.activePreset != nil {
+                    //     Button("Remove") {
+                    //         if let preset = hrirManager.activePreset {
+                    //             hrirManager.removePreset(preset)
+                    //         }
+                    //     }
+                    //     .foregroundColor(.red)
+                    // }
                 }
 
                 // Convolution Toggle
@@ -131,49 +130,6 @@ struct ContentView: View {
                     }
                 }
 
-                // Balance Control
-                BalanceControlView(hrirManager: hrirManager)
-
-                // Spatial Compensation Toggle
-                HStack {
-                    Text("Auto Compensation:")
-                        .frame(width: 120, alignment: .trailing)
-                    Toggle("Enable Automatic Spatial Compensation", isOn: $hrirManager.spatialCompensationEnabled)
-                        .toggleStyle(.switch)
-                        .labelsHidden()
-
-                    Text("(fixes L/R spatial asymmetry)")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-            .padding()
-            .background(Color.gray.opacity(0.1))
-            .cornerRadius(10)
-
-            Divider()
-
-            // Level Meters
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Audio Levels")
-                    .font(.headline)
-
-                Toggle("Enable Metering", isOn: $audioManager.meteringEnabled)
-                    .font(.caption)
-
-                HStack {
-                    Text("Input:")
-                        .frame(width: 80, alignment: .trailing)
-                    LevelMeterView(level: audioManager.inputLevel)
-                        .frame(height: 20)
-                }
-
-                HStack {
-                    Text("Output:")
-                        .frame(width: 80, alignment: .trailing)
-                    LevelMeterView(level: audioManager.outputLevel)
-                        .frame(height: 20)
-                }
             }
             .padding()
             .background(Color.gray.opacity(0.1))
@@ -230,32 +186,6 @@ struct ContentView: View {
             }
             loadDevices()
             loadSettings()
-        }
-        .fileImporter(
-            isPresented: $showingFileImporter,
-            allowedContentTypes: [.wav, .audio],
-            allowsMultipleSelection: false
-        ) { result in
-            switch result {
-            case .success(let urls):
-                if let url = urls.first {
-                    // Request security-scoped access to the file
-                    let gotAccess = url.startAccessingSecurityScopedResource()
-                    defer {
-                        if gotAccess {
-                            url.stopAccessingSecurityScopedResource()
-                        }
-                    }
-
-                    do {
-                        try hrirManager.addPreset(from: url)
-                    } catch {
-                        audioManager.errorMessage = "Failed to add preset: \(error.localizedDescription)"
-                    }
-                }
-            case .failure(let error):
-                audioManager.errorMessage = "Failed to select file: \(error.localizedDescription)"
-            }
         }
     }
 

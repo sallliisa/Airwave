@@ -20,10 +20,6 @@ class AudioGraphManager: ObservableObject {
     @Published var inputDevice: AudioDevice?
     @Published var outputDevice: AudioDevice?
     @Published var errorMessage: String?
-    @Published var inputLevel: Float = 0.0
-    @Published var outputLevel: Float = 0.0
-    @Published var meteringEnabled: Bool = false
-
     // MARK: - Private Properties
 
     fileprivate var inputUnit: AudioUnit?
@@ -34,10 +30,6 @@ class AudioGraphManager: ObservableObject {
     fileprivate var inputChannelCount: UInt32 = 2
     fileprivate var outputChannelCount: UInt32 = 2
     fileprivate var currentSampleRate: Double = 48000.0
-    
-    // UI Update Throttling
-    fileprivate var lastUIUpdateTime: Double = 0.0
-    fileprivate let uiUpdateInterval: Double = 0.05
 
     // Pre-allocated buffers for multi-channel processing
     fileprivate var inputInterleaveBuffer: [Float] = []
@@ -467,7 +459,6 @@ private func inputRenderCallback(
     }
 
     let currentTime = CFAbsoluteTimeGetCurrent()
-    let shouldUpdateUI = manager.meteringEnabled && (currentTime - manager.lastUIUpdateTime > manager.uiUpdateInterval)
 
     let status = AudioUnitRender(
         inputUnit,
@@ -479,8 +470,6 @@ private func inputRenderCallback(
     )
 
     if status == noErr {
-        var maxLevel: Float = 0.0
-
         let frameCount = Int(inNumberFrames)
         let channelCount = buffers.count
         let totalSamples = frameCount * channelCount
@@ -488,12 +477,6 @@ private func inputRenderCallback(
         for channel in 0..<channelCount {
             if let data = buffers[channel].mData {
                 let samples = data.assumingMemoryBound(to: Float.self)
-                
-                if shouldUpdateUI {
-                    var channelMax: Float = 0.0
-                    vDSP_maxmgv(samples, 1, &channelMax, vDSP_Length(frameCount))
-                    maxLevel = max(maxLevel, channelMax)
-                }
                 
                 manager.inputInterleaveBuffer.withUnsafeMutableBufferPointer { ptr in
                     if let baseAddr = ptr.baseAddress {
@@ -507,12 +490,6 @@ private func inputRenderCallback(
         manager.inputInterleaveBuffer.withUnsafeBytes { ptr in
             if let baseAddress = ptr.baseAddress {
                 manager.circularBuffer.write(data: baseAddress, size: totalSamples * 4)
-            }
-        }
-
-        if shouldUpdateUI {
-            DispatchQueue.main.async {
-                manager.inputLevel = maxLevel
             }
         }
     }
@@ -602,9 +579,6 @@ private func outputRenderCallback(
     }
 
     // Write processed audio to output buffers
-    let currentTime = CFAbsoluteTimeGetCurrent()
-    let shouldUpdateUI = manager.meteringEnabled && (currentTime - manager.lastUIUpdateTime > manager.uiUpdateInterval)
-    
     for i in 0..<min(outputChannelCount, 2) {
         if let data = buffers[i].mData {
             let samples = data.assumingMemoryBound(to: Float.self)
@@ -614,19 +588,6 @@ private func outputRenderCallback(
             sourceBuffer.withUnsafeBytes { src in
                 memcpy(samples, src.baseAddress!, byteCount)
             }
-            
-            if shouldUpdateUI {
-                var channelMax: Float = 0.0
-                vDSP_maxmgv(samples, 1, &channelMax, vDSP_Length(frameCount))
-                maxLevel = max(maxLevel, channelMax)
-            }
-        }
-    }
-
-    if shouldUpdateUI {
-        manager.lastUIUpdateTime = currentTime
-        DispatchQueue.main.async {
-            manager.outputLevel = maxLevel
         }
     }
 
