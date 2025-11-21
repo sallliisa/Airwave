@@ -208,6 +208,47 @@ struct HRIRChannelMap {
         return map
     }
 
+    /// Create HeSuVi 7-channel mapping (Synthesis)
+    /// Assumes input channels are: FL, FR, C, BL, BR, SL, SR (Left Ear Only)
+    /// We synthesize Right Ear by swapping symmetric channels.
+    ///
+    /// Mapping Logic:
+    /// FL: Left=0 (FL), Right=1 (FR)
+    /// FR: Left=1 (FR), Right=0 (FL)
+    /// C:  Left=2 (C),  Right=2 (C)
+    /// LFE: Left=2 (C), Right=2 (C)
+    /// BL: Left=3 (BL), Right=4 (BR)
+    /// BR: Left=4 (BR), Right=3 (BL)
+    /// SL: Left=5 (SL), Right=6 (SR)
+    /// SR: Left=6 (SR), Right=5 (SL)
+    static func hesuvi7Channel(speakers: [VirtualSpeaker]) -> HRIRChannelMap {
+        var map = HRIRChannelMap()
+        
+        for speaker in speakers {
+            switch speaker {
+            case .FL:
+                map.setMapping(speaker: speaker, leftEarIndex: 0, rightEarIndex: 1)
+            case .FR:
+                map.setMapping(speaker: speaker, leftEarIndex: 1, rightEarIndex: 0)
+            case .FC:
+                map.setMapping(speaker: speaker, leftEarIndex: 2, rightEarIndex: 2)
+            case .LFE:
+                map.setMapping(speaker: speaker, leftEarIndex: 2, rightEarIndex: 2)
+            case .BL:
+                map.setMapping(speaker: speaker, leftEarIndex: 3, rightEarIndex: 4)
+            case .BR:
+                map.setMapping(speaker: speaker, leftEarIndex: 4, rightEarIndex: 3)
+            case .SL:
+                map.setMapping(speaker: speaker, leftEarIndex: 5, rightEarIndex: 6)
+            case .SR:
+                map.setMapping(speaker: speaker, leftEarIndex: 6, rightEarIndex: 5)
+            default:
+                break
+            }
+        }
+        return map
+    }
+
     /// Create HeSuVi 14-channel mapping
     /// Reference:
     /// L0, L1, SL0, SL1, RL0, RL1, C0, R1, R0, SR1, SR0, RR1, RR0, C1

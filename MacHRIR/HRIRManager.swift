@@ -124,9 +124,15 @@ class HRIRManager: ObservableObject {
             let wavData = try WAVLoader.load(from: preset.fileURL)
 
             // Determine HRIR mapping
-            // Always use HeSuVi 14-channel mapping as requested
             let speakers = inputLayout.channels
-            let channelMap = HRIRChannelMap.hesuvi14Channel(speakers: Array(speakers))
+            let channelMap: HRIRChannelMap
+            
+            if wavData.channelCount == 7 {
+                channelMap = HRIRChannelMap.hesuvi7Channel(speakers: Array(speakers))
+            } else {
+                // Default to HeSuVi 14-channel mapping
+                channelMap = HRIRChannelMap.hesuvi14Channel(speakers: Array(speakers))
+            }
 
             // Build renderers for each input channel
             var newRenderers: [VirtualSpeakerRenderer] = []
