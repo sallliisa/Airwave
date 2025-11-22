@@ -51,12 +51,15 @@ class HRIRManager: ObservableObject {
     // MARK: - Private Properties
     
     // Multi-channel rendering: one renderer per input channel
+    // Protected by a concurrent queue for thread-safe access
     private var renderers: [VirtualSpeakerRenderer] = []
+    private let rendererQueue = DispatchQueue(label: "com.machrir.rendererQueue", attributes: .concurrent)
     
-    private let processingBlockSize: Int = 512
+    private let processingBlockSize: Int = 512  // Balance between latency (~10.7ms @ 48kHz) and CPU efficiency
 
     private let presetsDirectory: URL
     private var directorySource: DispatchSourceFileSystemObject?
+    private var directoryDebounceTask: DispatchWorkItem?
 
     // MARK: - Initialization
 
@@ -101,7 +104,9 @@ class HRIRManager: ObservableObject {
         // Clear active preset if it was removed
         if activePreset?.id == preset.id {
             activePreset = nil
-            renderers.removeAll()
+            rendererQueue.async(flags: .barrier) {
+                self.renderers.removeAll()
+            }
         }
 
         savePresets()
@@ -119,126 +124,142 @@ class HRIRManager: ObservableObject {
         inputLayout: InputLayout,
         hrirMap: HRIRChannelMap? = nil
     ) {
-        do {
-            // Load WAV file
-            let wavData = try WAVLoader.load(from: preset.fileURL)
-
-            // Determine HRIR mapping
-            let speakers = inputLayout.channels
-            let channelMap: HRIRChannelMap
+        // Perform loading and processing on a background queue
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
             
-            if wavData.channelCount == 7 {
-                channelMap = HRIRChannelMap.hesuvi7Channel(speakers: Array(speakers))
-            } else {
-                // Default to HeSuVi 14-channel mapping
-                channelMap = HRIRChannelMap.hesuvi14Channel(speakers: Array(speakers))
-            }
+            do {
+                // Load WAV file
+                let wavData = try WAVLoader.load(from: preset.fileURL)
 
-            // Build renderers for each input channel
-            var newRenderers: [VirtualSpeakerRenderer] = []
-            
-            for (_, speaker) in inputLayout.channels.enumerated() {
-                // Look up HRIR indices for this speaker
-                guard let (leftEarIdx, rightEarIdx) = channelMap.getIndices(for: speaker) else {
-                    continue
-                }
+                // Determine HRIR mapping
+                let speakers = inputLayout.channels
+                let channelMap: HRIRChannelMap
                 
-                // Validate indices
-                guard leftEarIdx < wavData.channelCount && rightEarIdx < wavData.channelCount else {
-                    throw HRIRError.invalidChannelMapping(
-                        "HRIR indices (\(leftEarIdx), \(rightEarIdx)) out of range for \(wavData.channelCount) channels"
-                    )
-                }
-                
-                // Get HRIR data
-                let leftEarIR = wavData.audioData[leftEarIdx]
-                let rightEarIR = wavData.audioData[rightEarIdx]
-                
-                // Resample if needed
-                let resampledLeft: [Float]
-                let resampledRight: [Float]
-                
-                if abs(wavData.sampleRate - targetSampleRate) > 0.01 {
-                    resampledLeft = Resampler.resampleHighQuality(
-                        input: leftEarIR,
-                        fromRate: wavData.sampleRate,
-                        toRate: targetSampleRate
-                    )
-                    resampledRight = Resampler.resampleHighQuality(
-                        input: rightEarIR,
-                        fromRate: wavData.sampleRate,
-                        toRate: targetSampleRate
-                    )
+                if wavData.channelCount == 7 {
+                    channelMap = HRIRChannelMap.hesuvi7Channel(speakers: Array(speakers))
                 } else {
-                    resampledLeft = leftEarIR
-                    resampledRight = rightEarIR
+                    // Default to HeSuVi 14-channel mapping
+                    channelMap = HRIRChannelMap.hesuvi14Channel(speakers: Array(speakers))
+                }
+
+                // Build renderers for each input channel
+                var newRenderers: [VirtualSpeakerRenderer] = []
+                
+                for (_, speaker) in inputLayout.channels.enumerated() {
+                    // Look up HRIR indices for this speaker
+                    guard let (leftEarIdx, rightEarIdx) = channelMap.getIndices(for: speaker) else {
+                        continue
+                    }
+                    
+                    // Validate indices
+                    guard leftEarIdx < wavData.channelCount && rightEarIdx < wavData.channelCount else {
+                        throw HRIRError.invalidChannelMapping(
+                            "HRIR indices (\(leftEarIdx), \(rightEarIdx)) out of range for \(wavData.channelCount) channels"
+                        )
+                    }
+                    
+                    // Get HRIR data
+                    let leftEarIR = wavData.audioData[leftEarIdx]
+                    let rightEarIR = wavData.audioData[rightEarIdx]
+                    
+                    // Resample if needed
+                    let resampledLeft: [Float]
+                    let resampledRight: [Float]
+                    
+                    if abs(wavData.sampleRate - targetSampleRate) > 0.01 {
+                        resampledLeft = Resampler.resampleHighQuality(
+                            input: leftEarIR,
+                            fromRate: wavData.sampleRate,
+                            toRate: targetSampleRate
+                        )
+                        resampledRight = Resampler.resampleHighQuality(
+                            input: rightEarIR,
+                            fromRate: wavData.sampleRate,
+                            toRate: targetSampleRate
+                        )
+                    } else {
+                        resampledLeft = leftEarIR
+                        resampledRight = rightEarIR
+                    }
+                    
+                    // Create convolution engines with shared FFTSetup for memory efficiency
+                    let blockSize = self.processingBlockSize
+                    let log2n = vDSP_Length(log2(Double(blockSize * 2)))
+                    let sharedSetup = FFTSetupManager.shared.getSetup(log2n: log2n)
+                    
+                    guard let leftEngine = ConvolutionEngine(hrirSamples: resampledLeft, blockSize: blockSize, sharedFFTSetup: sharedSetup),
+                          let rightEngine = ConvolutionEngine(hrirSamples: resampledRight, blockSize: blockSize, sharedFFTSetup: sharedSetup) else {
+                        throw HRIRError.convolutionSetupFailed("Failed to create engines for \(speaker.displayName)")
+                    }
+                    
+                    let renderer = VirtualSpeakerRenderer(
+                        speaker: speaker,
+                        convolverLeftEar: leftEngine,
+                        convolverRightEar: rightEngine
+                    )
+                    
+                    newRenderers.append(renderer)
                 }
                 
-                // Create convolution engines
-                guard let leftEngine = ConvolutionEngine(hrirSamples: resampledLeft, blockSize: processingBlockSize),
-                      let rightEngine = ConvolutionEngine(hrirSamples: resampledRight, blockSize: processingBlockSize) else {
-                    throw HRIRError.convolutionSetupFailed("Failed to create engines for \(speaker.displayName)")
+                guard !newRenderers.isEmpty else {
+                    throw HRIRError.convolutionSetupFailed("No valid renderers created")
+                }
+
+                // Activate safely
+                self.rendererQueue.async(flags: .barrier) {
+                    self.renderers = newRenderers
                 }
                 
-                let renderer = VirtualSpeakerRenderer(
-                    speaker: speaker,
-                    convolverLeftEar: leftEngine,
-                    convolverRightEar: rightEngine
-                )
-                
-                newRenderers.append(renderer)
-            }
-            
-            guard !newRenderers.isEmpty else {
-                throw HRIRError.convolutionSetupFailed("No valid renderers created")
-            }
+                DispatchQueue.main.async {
+                    self.activePreset = preset
+                    self.currentInputLayout = inputLayout
+                    self.currentHRIRMap = channelMap
+                    self.errorMessage = nil
+                }
 
-            // Activate
-            renderers = newRenderers
-            
-            DispatchQueue.main.async {
-                self.activePreset = preset
-                self.currentInputLayout = inputLayout
-                self.currentHRIRMap = channelMap
-                self.errorMessage = nil
-            }
-
-        } catch {
-            DispatchQueue.main.async {
-                self.errorMessage = "Failed to activate preset: \(error.localizedDescription)"
+            } catch {
+                DispatchQueue.main.async {
+                    self.errorMessage = "Failed to activate preset: \(error.localizedDescription)"
+                }
             }
         }
     }
 
-    /// Process multi-channel audio through convolution
+    /// Process multi-channel audio through convolution (zero-allocation version)
     /// - Parameters:
-    ///   - inputs: Array of input channel buffers
-    ///   - leftOutput: Left ear output buffer
-    ///   - rightOutput: Right ear output buffer
+    ///   - inputPtrs: Array of pointers to input channel buffers
+    ///   - inputCount: Number of input channels to process
+    ///   - leftOutput: Pointer to left ear output buffer
+    ///   - rightOutput: Pointer to right ear output buffer
     ///   - frameCount: Number of frames to process
     func processAudio(
-        inputs: [[Float]],
-        leftOutput: inout [Float],
-        rightOutput: inout [Float],
+        inputPtrs: [UnsafeMutablePointer<Float>],
+        inputCount: Int,
+        leftOutput: UnsafeMutablePointer<Float>,
+        rightOutput: UnsafeMutablePointer<Float>,
         frameCount: Int
     ) {
-        guard convolutionEnabled, !renderers.isEmpty else {
-            // Passthrough mode - mix all inputs to stereo
-            for i in 0..<frameCount {
-                leftOutput[i] = 0
-                rightOutput[i] = 0
+        // Capture current renderers safely
+        var currentRenderers: [VirtualSpeakerRenderer] = []
+        rendererQueue.sync {
+            currentRenderers = self.renderers
+        }
+
+        guard convolutionEnabled, !currentRenderers.isEmpty else {
+            // Passthrough mode - simple copy
+            if inputCount >= 1 {
+                memcpy(leftOutput, inputPtrs[0], frameCount * MemoryLayout<Float>.size)
+            } else {
+                memset(leftOutput, 0, frameCount * MemoryLayout<Float>.size)
             }
             
-            // Simple downmix: take first two channels if available
-            if inputs.count >= 1 {
-                for i in 0..<frameCount {
-                    leftOutput[i] = inputs[0][i]
-                }
-            }
-            if inputs.count >= 2 {
-                for i in 0..<frameCount {
-                    rightOutput[i] = inputs[1][i]
-                }
+            if inputCount >= 2 {
+                memcpy(rightOutput, inputPtrs[1], frameCount * MemoryLayout<Float>.size)
+            } else if inputCount >= 1 {
+                memcpy(rightOutput, inputPtrs[0], frameCount * MemoryLayout<Float>.size)
+            } else {
+                memset(rightOutput, 0, frameCount * MemoryLayout<Float>.size)
             }
             return
         }
@@ -247,41 +268,30 @@ class HRIRManager: ObservableObject {
         var offset = 0
         
         while offset + processingBlockSize <= frameCount {
-            // Clear output accumulators for this block
-            leftOutput.withUnsafeMutableBufferPointer { leftPtr in
-                rightOutput.withUnsafeMutableBufferPointer { rightPtr in
-                    guard let leftBase = leftPtr.baseAddress,
-                          let rightBase = rightPtr.baseAddress else { return }
-                    
-                    let currentLeftOut = leftBase.advanced(by: offset)
-                    let currentRightOut = rightBase.advanced(by: offset)
-                    
-                    // Zero the output for this block
-                    memset(currentLeftOut, 0, processingBlockSize * MemoryLayout<Float>.size)
-                    memset(currentRightOut, 0, processingBlockSize * MemoryLayout<Float>.size)
-                    
-                    // Accumulate contributions from each virtual speaker
-                    for (channelIndex, renderer) in renderers.enumerated() {
-                        guard channelIndex < inputs.count else { continue }
-                        
-                        inputs[channelIndex].withUnsafeBufferPointer { inputPtr in
-                            guard let inputBase = inputPtr.baseAddress else { return }
-                            let currentInput = inputBase.advanced(by: offset)
-                            
-                            // Convolve and accumulate to left ear
-                            renderer.convolverLeftEar.processAndAccumulate(
-                                input: currentInput,
-                                outputAccumulator: currentLeftOut
-                            )
-                            
-                            // Convolve and accumulate to right ear
-                            renderer.convolverRightEar.processAndAccumulate(
-                                input: currentInput,
-                                outputAccumulator: currentRightOut
-                            )
-                        }
-                    }
-                }
+            let currentLeftOut = leftOutput.advanced(by: offset)
+            let currentRightOut = rightOutput.advanced(by: offset)
+            
+            // Zero the output for this block
+            memset(currentLeftOut, 0, processingBlockSize * MemoryLayout<Float>.size)
+            memset(currentRightOut, 0, processingBlockSize * MemoryLayout<Float>.size)
+            
+            // Accumulate contributions from each virtual speaker
+            for (channelIndex, renderer) in currentRenderers.enumerated() {
+                guard channelIndex < inputCount else { continue }
+                
+                let currentInput = inputPtrs[channelIndex].advanced(by: offset)
+                
+                // Convolve and accumulate to left ear
+                renderer.convolverLeftEar.processAndAccumulate(
+                    input: currentInput,
+                    outputAccumulator: currentLeftOut
+                )
+                
+                // Convolve and accumulate to right ear
+                renderer.convolverRightEar.processAndAccumulate(
+                    input: currentInput,
+                    outputAccumulator: currentRightOut
+                )
             }
             
             offset += processingBlockSize
@@ -302,10 +312,17 @@ class HRIRManager: ObservableObject {
         )
         
         source.setEventHandler { [weak self] in
-            // Debounce slightly or just reload
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            guard let self = self else { return }
+            
+            // Cancel any pending reload
+            self.directoryDebounceTask?.cancel()
+            
+            // Schedule new reload with debouncing
+            let task = DispatchWorkItem { [weak self] in
                 self?.loadAndSyncPresets()
             }
+            self.directoryDebounceTask = task
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: task)
         }
         
         source.setCancelHandler {
@@ -376,7 +393,9 @@ class HRIRManager: ObservableObject {
             // Check if active preset is still valid
             if let active = self.activePreset, !updatedPresets.contains(where: { $0.id == active.id }) {
                 self.activePreset = nil
-                self.renderers.removeAll()
+                self.rendererQueue.async(flags: .barrier) {
+                    self.renderers.removeAll()
+                }
             }
         }
     }

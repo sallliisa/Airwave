@@ -22,6 +22,7 @@ class ConvolutionEngine {
     private let partitionCount: Int
     
     private let fftSetup: FFTSetup
+    private let ownsFFTSetup: Bool  // Track if we own the FFTSetup (should destroy in deinit)
     
     // Input Buffering (Overlap-Save)
     private let inputBuffer: UnsafeMutablePointer<Float>
@@ -52,6 +53,9 @@ class ConvolutionEngine {
     private let tempMulImag: UnsafeMutablePointer<Float>
     private var tempMul: DSPSplitComplex
     
+    // Pre-allocated buffer for processAndAccumulate to avoid real-time allocation
+    private let tempOutputBuffer: UnsafeMutablePointer<Float>
+    
     private var debugCounter: Int = 0
 
     // MARK: - Initialization
@@ -59,8 +63,9 @@ class ConvolutionEngine {
     /// Initialize convolution engine with partitioned convolution
     /// - Parameters:
     ///   - hrirSamples: Impulse response samples (can be long)
-    ///   - blockSize: Processing block size (typically 512)
-    init?(hrirSamples: [Float], blockSize: Int = 512) {
+    ///   - blockSize: Processing block size (default 512 for CPU efficiency)
+    ///   - sharedFFTSetup: Optional shared FFTSetup to reduce memory usage (recommended)
+    init?(hrirSamples: [Float], blockSize: Int = 512, sharedFFTSetup: FFTSetup? = nil) {
         self.blockSize = blockSize
         
         // 1. Setup FFT (Size = 2 * BlockSize for Overlap-Save)
@@ -68,11 +73,20 @@ class ConvolutionEngine {
         self.fftSizeHalf = fftSize / 2
         self.log2n = vDSP_Length(log2(Double(fftSize)))
         
-        guard let setup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2)) else {
-            print("[Convolution] Failed to create FFT setup")
-            return nil
+        // Use shared setup if provided, otherwise create private one
+        if let shared = sharedFFTSetup {
+            self.fftSetup = shared
+            self.ownsFFTSetup = false
+            print("[Convolution] Using shared FFT setup")
+        } else {
+            guard let setup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2)) else {
+                print("[Convolution] Failed to create FFT setup")
+                return nil
+            }
+            self.fftSetup = setup
+            self.ownsFFTSetup = true
+            print("[Convolution] Created private FFT setup")
         }
-        self.fftSetup = setup
         
         // 2. Calculate Partitions
         // We pad the HRIR to be a multiple of blockSize
@@ -99,6 +113,9 @@ class ConvolutionEngine {
         self.tempMulReal = UnsafeMutablePointer<Float>.allocate(capacity: fftSizeHalf)
         self.tempMulImag = UnsafeMutablePointer<Float>.allocate(capacity: fftSizeHalf)
         self.tempMul = DSPSplitComplex(realp: tempMulReal, imagp: tempMulImag)
+        
+        // Pre-allocate temp buffer for processAndAccumulate
+        self.tempOutputBuffer = UnsafeMutablePointer<Float>.allocate(capacity: blockSize)
         
         // 5. Initialize FDL and HRIR Arrays
         for _ in 0..<partitionCount {
@@ -172,7 +189,10 @@ class ConvolutionEngine {
     }
     
     deinit {
-        vDSP_destroy_fftsetup(fftSetup)
+        // Only destroy FFTSetup if we own it
+        if ownsFFTSetup {
+            vDSP_destroy_fftsetup(fftSetup)
+        }
         
         inputBuffer.deallocate()
         inputOverlapBuffer.deallocate()
@@ -185,6 +205,8 @@ class ConvolutionEngine {
         
         tempMulReal.deallocate()
         tempMulImag.deallocate()
+        
+        tempOutputBuffer.deallocate()
         
         for ptr in fdlReal { ptr.deallocate() }
         for ptr in fdlImag { ptr.deallocate() }
@@ -222,7 +244,10 @@ class ConvolutionEngine {
         
         // 3. Update FDL (Frequency Delay Line)
         // Write current FFT to FDL at current index
-        fdlIndex = (fdlIndex - 1 + partitionCount) % partitionCount
+        fdlIndex -= 1
+        if fdlIndex < 0 {
+            fdlIndex += partitionCount
+        }
         
         // Copy current FFT to FDL head
         memcpy(fdlReal[fdlIndex], splitComplexInput.realp, fftSizeHalf * MemoryLayout<Float>.size)
@@ -321,16 +346,11 @@ class ConvolutionEngine {
     ///   - input: Input buffer pointer (must contain `blockSize` samples)
     ///   - outputAccumulator: Output buffer pointer to accumulate into (must have capacity for `blockSize` samples)
     func processAndAccumulate(input: UnsafePointer<Float>, outputAccumulator: UnsafeMutablePointer<Float>) {
-        // We need a temporary buffer to hold the convolution result
-        // Then we add it to the accumulator
-        let tempOutput = UnsafeMutablePointer<Float>.allocate(capacity: blockSize)
-        defer { tempOutput.deallocate() }
-        
-        // Perform convolution
-        process(input: input, output: tempOutput)
+        // Use pre-allocated temp buffer (no allocation in real-time path)
+        process(input: input, output: tempOutputBuffer)
         
         // Add to accumulator using vDSP
-        vDSP_vadd(outputAccumulator, 1, tempOutput, 1, outputAccumulator, 1, vDSP_Length(blockSize))
+        vDSP_vadd(outputAccumulator, 1, tempOutputBuffer, 1, outputAccumulator, 1, vDSP_Length(blockSize))
     }
     
     /// Reset the engine state

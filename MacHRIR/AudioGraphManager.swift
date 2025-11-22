@@ -40,10 +40,10 @@ class AudioGraphManager: ObservableObject {
     // Buffering state
     fileprivate var isBuffering: Bool = true
 
-    // Multi-channel buffers (one per channel)
-    fileprivate var inputChannelBuffers: [[Float]] = []
-    fileprivate var outputStereoLeft: [Float] = []
-    fileprivate var outputStereoRight: [Float] = []
+    // Multi-channel buffers using UnsafeMutablePointer for zero-allocation real-time processing
+    fileprivate var inputChannelBufferPtrs: [UnsafeMutablePointer<Float>] = []
+    fileprivate var outputStereoLeftPtr: UnsafeMutablePointer<Float>!
+    fileprivate var outputStereoRightPtr: UnsafeMutablePointer<Float>!
     
     // Pre-allocated AudioBufferList for Input Callback
     fileprivate var inputAudioBufferListPtr: UnsafeMutableRawPointer?
@@ -61,18 +61,33 @@ class AudioGraphManager: ObservableObject {
         self.inputInterleaveBuffer = [Float](repeating: 0, count: maxFramesPerCallback * maxChannels)
         self.outputInterleaveBuffer = [Float](repeating: 0, count: maxFramesPerCallback * maxChannels)
 
-        // Pre-allocate per-channel buffers
+        // Pre-allocate per-channel buffers using UnsafeMutablePointer
         for _ in 0..<maxChannels {
-            inputChannelBuffers.append([Float](repeating: 0, count: maxFramesPerCallback))
+            let ptr = UnsafeMutablePointer<Float>.allocate(capacity: maxFramesPerCallback)
+            ptr.initialize(repeating: 0, count: maxFramesPerCallback)
+            inputChannelBufferPtrs.append(ptr)
         }
         
-        outputStereoLeft = [Float](repeating: 0, count: maxFramesPerCallback)
-        outputStereoRight = [Float](repeating: 0, count: maxFramesPerCallback)
+        // Allocate output stereo buffers
+        outputStereoLeftPtr = UnsafeMutablePointer<Float>.allocate(capacity: maxFramesPerCallback)
+        outputStereoLeftPtr.initialize(repeating: 0, count: maxFramesPerCallback)
+        
+        outputStereoRightPtr = UnsafeMutablePointer<Float>.allocate(capacity: maxFramesPerCallback)
+        outputStereoRightPtr.initialize(repeating: 0, count: maxFramesPerCallback)
     }
 
     deinit {
         stop()
         deallocateInputBuffers()
+        
+        // Deallocate channel buffers
+        for ptr in inputChannelBufferPtrs {
+            ptr.deallocate()
+        }
+        inputChannelBufferPtrs.removeAll()
+        
+        outputStereoLeftPtr?.deallocate()
+        outputStereoRightPtr?.deallocate()
     }
 
     // MARK: - Public Methods
@@ -486,38 +501,22 @@ private func inputRenderCallback(
         let channelCount = buffers.count
         let totalSamples = frameCount * channelCount
 
-        // Interleave
+        // Hoist unsafe pointer access to avoid closure allocation overhead
         manager.inputInterleaveBuffer.withUnsafeMutableBufferPointer { ptr in
             guard let baseAddr = ptr.baseAddress else { return }
             
+            // Interleave efficiently using vDSP
             for channel in 0..<channelCount {
                 if let data = buffers[channel].mData {
                     let samples = data.assumingMemoryBound(to: Float.self)
-                    // Copy with stride to interleave
-                    // vDSP_vsmul with 1.0 is just a copy, but vDSP_mmov is better or just a loop?
-                    // Actually, to interleave:
-                    // dst[i * stride + channel] = src[i]
-                    // vDSP can do this with stride.
-                    
-                    // Using vDSP_mmov (memory move) or vDSP_vadd with 0?
-                    // vDSP_vsmul with 1.0 is fine for strided copy if we want to be "DSP-ish",
-                    // but let's just use what was there but cleaner if possible.
-                    // The original code used vDSP_vsmul to copy to interleaved buffer.
-                    // We can keep it or simplify. Let's keep the logic but remove the explicit "1.0" variable if not needed,
-                    // or just keep it as is for the copy-to-interleaved step since it works.
-                    // Wait, the user complained about "messy" audio. Redundant math might add noise? Unlikely with 1.0.
-                    // But let's optimize.
-                    
+                    // vDSP_vsmul with stride is SIMD-optimized (much faster than loops)
                     var one: Float = 1.0
                     vDSP_vsmul(samples, 1, &one, baseAddr.advanced(by: channel), vDSP_Stride(channelCount), vDSP_Length(frameCount))
                 }
             }
-        }
-
-        manager.inputInterleaveBuffer.withUnsafeBytes { ptr in
-            if let baseAddress = ptr.baseAddress {
-                manager.circularBuffer.write(data: baseAddress, size: totalSamples * 4)
-            }
+            
+            // Write to circular buffer (baseAddr is still valid here)
+            manager.circularBuffer.write(data: baseAddr, size: totalSamples * 4)
         }
     }
 
@@ -547,8 +546,9 @@ private func outputRenderCallback(
     let totalSamples = frameCount * inputChannelCount
     let totalBytes = totalSamples * 4
     
-    // Buffering Logic
-    let playbackThreshold = 2048 * inputChannelCount * 4 // e.g. 2048 frames
+    // Buffering Logic - Reduced threshold for lower latency
+    // Changed from 2048 to 512 frames: reduces ~42-47ms latency to ~10-11ms
+    let playbackThreshold = 512 * inputChannelCount * 4 // 512 frames
     
     if manager.isBuffering {
         if manager.circularBuffer.availableReadSpace() >= playbackThreshold {
@@ -574,28 +574,11 @@ private func outputRenderCallback(
         // print("Underrun detected, switching to buffering")
         manager.isBuffering = true
         
-        // Fill the rest with silence
-        let samplesRead = bytesRead / 4
-        for i in samplesRead..<totalSamples {
-            manager.outputInterleaveBuffer[i] = 0.0
-        }
-    }
-
-    // De-interleave into per-channel buffers
-    for channel in 0..<min(inputChannelCount, manager.maxChannels) {
-        manager.outputInterleaveBuffer.withUnsafeBufferPointer { srcPtr in
-            guard let srcBase = srcPtr.baseAddress else { return }
-            
-            // Just copy, no multiply
-            manager.inputChannelBuffers[channel].withUnsafeMutableBufferPointer { dstPtr in
-                if let dstBase = dstPtr.baseAddress {
-                    // Strided copy from interleaved to planar
-                    // vDSP_mmovD is for doubles.
-                    // Use vDSP_vadd with zero or just a loop?
-                    // vDSP_vsmul with 1.0 is standard for strided copy.
-                    var one: Float = 1.0
-                    vDSP_vsmul(srcBase.advanced(by: channel), vDSP_Stride(inputChannelCount), &one, dstBase, 1, vDSP_Length(frameCount))
-                }
+        // Fill the rest with silence using memset for better performance
+        let bytesToClear = totalBytes - bytesRead
+        manager.outputInterleaveBuffer.withUnsafeMutableBytes { ptr in
+            if let baseAddress = ptr.baseAddress {
+                memset(baseAddress.advanced(by: bytesRead), 0, bytesToClear)
             }
         }
     }
@@ -604,29 +587,41 @@ private func outputRenderCallback(
     let shouldProcess = manager.hrirManager?.convolutionEnabled ?? false
 
     if shouldProcess {
-        // Pass all input channels to HRIR manager
-        let inputChannels = Array(manager.inputChannelBuffers.prefix(inputChannelCount))
+        // De-interleave ALL channels for convolution processing
+        manager.outputInterleaveBuffer.withUnsafeBufferPointer { srcPtr in
+            guard let srcBase = srcPtr.baseAddress else { return }
+            
+            for channel in 0..<min(inputChannelCount, manager.maxChannels) {
+                let dstPtr = manager.inputChannelBufferPtrs[channel]
+                // vDSP_vsmul with stride is SIMD-optimized (much faster than loops)
+                var one: Float = 1.0
+                vDSP_vsmul(srcBase.advanced(by: channel), vDSP_Stride(inputChannelCount), &one, dstPtr, 1, vDSP_Length(frameCount))
+            }
+        }
+        
+        // Pass input channel pointers to HRIR manager (zero-copy, zero-allocation)
         manager.hrirManager?.processAudio(
-            inputs: inputChannels,
-            leftOutput: &manager.outputStereoLeft,
-            rightOutput: &manager.outputStereoRight,
+            inputPtrs: manager.inputChannelBufferPtrs,
+            inputCount: inputChannelCount,
+            leftOutput: manager.outputStereoLeftPtr,
+            rightOutput: manager.outputStereoRightPtr,
             frameCount: frameCount
         )
     } else {
-        // Passthrough: simple stereo downmix
-        let byteCount = frameCount * MemoryLayout<Float>.size
-        if inputChannelCount >= 1 {
-            _ = manager.outputStereoLeft.withUnsafeMutableBytes { dst in
-                manager.inputChannelBuffers[0].withUnsafeBytes { src in
-                    memcpy(dst.baseAddress!, src.baseAddress!, byteCount)
-                }
-            }
-        }
-        if inputChannelCount >= 2 {
-            _ = manager.outputStereoRight.withUnsafeMutableBytes { dst in
-                manager.inputChannelBuffers[1].withUnsafeBytes { src in
-                    memcpy(dst.baseAddress!, src.baseAddress!, byteCount)
-                }
+        // PASSTHROUGH: Skip de-interleaving, directly extract stereo from interleaved buffer
+        manager.outputInterleaveBuffer.withUnsafeBufferPointer { srcPtr in
+            guard let srcBase = srcPtr.baseAddress else { return }
+            
+            // Extract left channel (stride by inputChannelCount)
+            var one: Float = 1.0
+            vDSP_vsmul(srcBase, vDSP_Stride(inputChannelCount), &one, manager.outputStereoLeftPtr, 1, vDSP_Length(frameCount))
+            
+            // Extract right channel if available
+            if inputChannelCount >= 2 {
+                vDSP_vsmul(srcBase.advanced(by: 1), vDSP_Stride(inputChannelCount), &one, manager.outputStereoRightPtr, 1, vDSP_Length(frameCount))
+            } else {
+                // Mono input: copy to both outputs
+                vDSP_vsmul(srcBase, vDSP_Stride(inputChannelCount), &one, manager.outputStereoRightPtr, 1, vDSP_Length(frameCount))
             }
         }
     }
@@ -635,12 +630,10 @@ private func outputRenderCallback(
     for i in 0..<min(outputChannelCount, 2) {
         if let data = buffers[i].mData {
             let samples = data.assumingMemoryBound(to: Float.self)
-            let sourceBuffer = (i == 0) ? manager.outputStereoLeft : manager.outputStereoRight
+            let sourcePtr = (i == 0) ? manager.outputStereoLeftPtr : manager.outputStereoRightPtr
             
             let byteCount = frameCount * MemoryLayout<Float>.size
-            _ = sourceBuffer.withUnsafeBytes { src in
-                memcpy(samples, src.baseAddress!, byteCount)
-            }
+            memcpy(samples, sourcePtr, byteCount)
         }
     }
 

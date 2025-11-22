@@ -52,64 +52,43 @@ class MenuBarManager: NSObject, NSMenuDelegate {
     }
     
     private func setupObservers() {
-        // Observe device changes
-        deviceManager.$inputDevices
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.updateMenu() }
-            .store(in: &cancellables)
-            
-        deviceManager.$outputDevices
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.updateMenu() }
-            .store(in: &cancellables)
-            
-        // Observe audio manager state
-        audioManager.$isRunning
-            .receive(on: RunLoop.main)
-            .sink { [weak self] isRunning in
-                self?.updateStatusIcon(isRunning: isRunning)
-                self?.updateMenu()
-                self?.saveSettings()
-            }
-            .store(in: &cancellables)
-            
-        audioManager.$inputDevice
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                self?.updateMenu()
-                self?.saveSettings()
-            }
-            .store(in: &cancellables)
-            
-        audioManager.$outputDevice
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                self?.updateMenu()
-                self?.saveSettings()
-            }
-            .store(in: &cancellables)
-            
-        // Observe HRIR manager state
-        hrirManager.$activePreset
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                self?.updateMenu()
-                self?.saveSettings()
-            }
-            .store(in: &cancellables)
-            
-        hrirManager.$convolutionEnabled
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                self?.updateMenu()
-                self?.saveSettings()
-            }
-            .store(in: &cancellables)
-            
-        hrirManager.$presets
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.updateMenu() }
-            .store(in: &cancellables)
+        // Batch device changes to reduce updateMenu() calls
+        Publishers.Merge(
+            deviceManager.$inputDevices.map { _ in () },
+            deviceManager.$outputDevices.map { _ in () }
+        )
+        .debounce(for: .milliseconds(100), scheduler: RunLoop.main)
+        .sink { [weak self] in self?.updateMenu() }
+        .store(in: &cancellables)
+        
+        // Batch audio manager state changes
+        Publishers.Merge4(
+            audioManager.$isRunning.map { _ in () },
+            audioManager.$inputDevice.map { _ in () },
+            audioManager.$outputDevice.map { _ in () },
+            audioManager.$errorMessage.map { _ in () }
+        )
+        .debounce(for: .milliseconds(100), scheduler: RunLoop.main)
+        .sink { [weak self] in
+            guard let self = self else { return }
+            self.updateStatusIcon(isRunning: self.audioManager.isRunning)
+            self.updateMenu()
+            self.saveSettings()
+        }
+        .store(in: &cancellables)
+        
+        // Batch HRIR manager state changes
+        Publishers.Merge3(
+            hrirManager.$activePreset.map { _ in () },
+            hrirManager.$convolutionEnabled.map { _ in () },
+            hrirManager.$presets.map { _ in () }
+        )
+        .debounce(for: .milliseconds(100), scheduler: RunLoop.main)
+        .sink { [weak self] in
+            self?.updateMenu()
+            self?.saveSettings()
+        }
+        .store(in: &cancellables)
     }
     
     private func waitForDevicesAndInitialize() {
@@ -228,7 +207,7 @@ class MenuBarManager: NSObject, NSMenuDelegate {
         menu.addItem(NSMenuItem.separator())
         
         // --- Convolution Control ---
-        let convolutionItem = NSMenuItem(title: hrirManager.convolutionEnabled ? "Disable Convolution" : "Enable Convolution", action: #selector(toggleConvolution), keyEquivalent: "")
+        let convolutionItem = NSMenuItem(title: hrirManager.convolutionEnabled ? "Convolution: On" : "Convolution: Off", action: #selector(toggleConvolution), keyEquivalent: "")
         convolutionItem.target = self
         convolutionItem.state = hrirManager.convolutionEnabled ? .on : .off
         convolutionItem.isEnabled = (hrirManager.activePreset != nil)
