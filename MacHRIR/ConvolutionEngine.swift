@@ -238,14 +238,44 @@ class ConvolutionEngine {
         for p in 0..<partitionCount {
             let fdlIdx = (fdlIndex + p) % partitionCount
             
-            var fdlSplit = DSPSplitComplex(realp: fdlReal[fdlIdx], imagp: fdlImag[fdlIdx])
-            var hrirSplit = DSPSplitComplex(realp: hrirReal[p], imagp: hrirImag[p])
+            // Pointers for full arrays
+            let fdlR = fdlReal[fdlIdx]
+            let fdlI = fdlImag[fdlIdx]
+            let hR = hrirReal[p]
+            let hI = hrirImag[p]
+            
+            // 1. Handle DC and Nyquist (Index 0) - Scalar Math
+            // In zrip format, real[0] is DC, imag[0] is Nyquist. They are independent real numbers.
+            // We must multiply them element-wise, not as a complex number.
+            let dcProd = fdlR[0] * hR[0]
+            let nyProd = fdlI[0] * hI[0]
             
             if p == 0 {
-                vDSP_zvmul(&fdlSplit, 1, &hrirSplit, 1, &accumulator, 1, vDSP_Length(fftSizeHalf), 1)
+                accumulator.realp[0] = dcProd
+                accumulator.imagp[0] = nyProd
             } else {
-                vDSP_zvmul(&fdlSplit, 1, &hrirSplit, 1, &tempMul, 1, vDSP_Length(fftSizeHalf), 1)
-                vDSP_zvadd(&tempMul, 1, &accumulator, 1, &accumulator, 1, vDSP_Length(fftSizeHalf))
+                accumulator.realp[0] += dcProd
+                accumulator.imagp[0] += nyProd
+            }
+            
+            // 2. Handle Complex Bins (Index 1 to N/2 - 1) - vDSP Complex Multiply
+            // We advance pointers by 1 to skip the DC/Nyquist bin
+            var fdlSplit = DSPSplitComplex(realp: fdlR.advanced(by: 1), imagp: fdlI.advanced(by: 1))
+            var hrirSplit = DSPSplitComplex(realp: hR.advanced(by: 1), imagp: hI.advanced(by: 1))
+            
+            let len = vDSP_Length(fftSizeHalf - 1)
+            
+            if p == 0 {
+                // Direct multiply to accumulator
+                var accSplit = DSPSplitComplex(realp: accumulator.realp.advanced(by: 1), imagp: accumulator.imagp.advanced(by: 1))
+                vDSP_zvmul(&fdlSplit, 1, &hrirSplit, 1, &accSplit, 1, len, 1)
+            } else {
+                // Multiply to temp, then add
+                var tempSplit = DSPSplitComplex(realp: tempMul.realp.advanced(by: 1), imagp: tempMul.imagp.advanced(by: 1))
+                var accSplit = DSPSplitComplex(realp: accumulator.realp.advanced(by: 1), imagp: accumulator.imagp.advanced(by: 1))
+                
+                vDSP_zvmul(&fdlSplit, 1, &hrirSplit, 1, &tempSplit, 1, len, 1)
+                vDSP_zvadd(&tempSplit, 1, &accSplit, 1, &accSplit, 1, len)
             }
         }
         
