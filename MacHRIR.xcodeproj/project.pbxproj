@@ -6,17 +6,8 @@
 	objectVersion = 77;
 	objects = {
 
-/* Begin PBXBuildFile section */
-		25F8F9AD2ED1C1F200DC26D6 /* CircularBuffer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 25F8F9A92ED1C1F200DC26D6 /* CircularBuffer.cpp */; };
-		25F8F9AE2ED1C1F200DC26D6 /* CircularBuffer_bridge.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 25F8F9AB2ED1C1F200DC26D6 /* CircularBuffer_bridge.cpp */; };
-/* End PBXBuildFile section */
-
 /* Begin PBXFileReference section */
 		25B21E7E2ECCDD9B00FE4B05 /* MacHRIR.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MacHRIR.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		25F8F9A82ED1C1F200DC26D6 /* CircularBuffer.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = CircularBuffer.hpp; sourceTree = "<group>"; };
-		25F8F9A92ED1C1F200DC26D6 /* CircularBuffer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CircularBuffer.cpp; sourceTree = "<group>"; };
-		25F8F9AA2ED1C1F200DC26D6 /* CircularBuffer_bridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CircularBuffer_bridge.h; sourceTree = "<group>"; };
-		25F8F9AB2ED1C1F200DC26D6 /* CircularBuffer_bridge.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CircularBuffer_bridge.cpp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -41,7 +32,6 @@
 		25B21E752ECCDD9B00FE4B05 = {
 			isa = PBXGroup;
 			children = (
-				25F8F9AC2ED1C1F200DC26D6 /* cpp */,
 				25B21E802ECCDD9B00FE4B05 /* MacHRIR */,
 				25B21E7F2ECCDD9B00FE4B05 /* Products */,
 			);
@@ -53,18 +43,6 @@
 				25B21E7E2ECCDD9B00FE4B05 /* MacHRIR.app */,
 			);
 			name = Products;
-			sourceTree = "<group>";
-		};
-		25F8F9AC2ED1C1F200DC26D6 /* cpp */ = {
-			isa = PBXGroup;
-			children = (
-				25F8F9A82ED1C1F200DC26D6 /* CircularBuffer.hpp */,
-				25F8F9A92ED1C1F200DC26D6 /* CircularBuffer.cpp */,
-				25F8F9AA2ED1C1F200DC26D6 /* CircularBuffer_bridge.h */,
-				25F8F9AB2ED1C1F200DC26D6 /* CircularBuffer_bridge.cpp */,
-			);
-			name = cpp;
-			path = MacHRIR/cpp;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -141,8 +119,6 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				25F8F9AD2ED1C1F200DC26D6 /* CircularBuffer.cpp in Sources */,
-				25F8F9AE2ED1C1F200DC26D6 /* CircularBuffer_bridge.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
