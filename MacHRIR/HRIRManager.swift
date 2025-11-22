@@ -52,8 +52,17 @@ class HRIRManager: ObservableObject {
     
     // Multi-channel rendering: one renderer per input channel
     // Protected by a concurrent queue for thread-safe access
-    private var renderers: [VirtualSpeakerRenderer] = []
-    private let rendererQueue = DispatchQueue(label: "com.machrir.rendererQueue", attributes: .concurrent)
+    // Immutable state container for lock-free access
+    class RendererState {
+        let renderers: [VirtualSpeakerRenderer]
+        
+        init(renderers: [VirtualSpeakerRenderer]) {
+            self.renderers = renderers
+        }
+    }
+    
+    // Atomic reference to current state
+    private var rendererState: RendererState?
     
     private let processingBlockSize: Int = 512  // Balance between latency (~10.7ms @ 48kHz) and CPU efficiency
 
@@ -104,9 +113,8 @@ class HRIRManager: ObservableObject {
         // Clear active preset if it was removed
         if activePreset?.id == preset.id {
             activePreset = nil
-            rendererQueue.async(flags: .barrier) {
-                self.renderers.removeAll()
-            }
+            activePreset = nil
+            self.rendererState = nil
         }
 
         savePresets()
@@ -207,9 +215,9 @@ class HRIRManager: ObservableObject {
                 }
 
                 // Activate safely
-                self.rendererQueue.async(flags: .barrier) {
-                    self.renderers = newRenderers
-                }
+                // Activate safely (atomic reference swap)
+                let newState = RendererState(renderers: newRenderers)
+                self.rendererState = newState
                 
                 DispatchQueue.main.async {
                     self.activePreset = preset
@@ -234,19 +242,14 @@ class HRIRManager: ObservableObject {
     ///   - rightOutput: Pointer to right ear output buffer
     ///   - frameCount: Number of frames to process
     func processAudio(
-        inputPtrs: [UnsafeMutablePointer<Float>],
+        inputPtrs: UnsafeMutablePointer<UnsafeMutablePointer<Float>>,
         inputCount: Int,
         leftOutput: UnsafeMutablePointer<Float>,
         rightOutput: UnsafeMutablePointer<Float>,
         frameCount: Int
     ) {
-        // Capture current renderers safely
-        var currentRenderers: [VirtualSpeakerRenderer] = []
-        rendererQueue.sync {
-            currentRenderers = self.renderers
-        }
-
-        guard convolutionEnabled, !currentRenderers.isEmpty else {
+        // Capture current state atomically (retain)
+        guard let state = self.rendererState, !state.renderers.isEmpty else {
             // Passthrough mode - simple copy
             if inputCount >= 1 {
                 memcpy(leftOutput, inputPtrs[0], frameCount * MemoryLayout<Float>.size)
@@ -276,7 +279,7 @@ class HRIRManager: ObservableObject {
             memset(currentRightOut, 0, processingBlockSize * MemoryLayout<Float>.size)
             
             // Accumulate contributions from each virtual speaker
-            for (channelIndex, renderer) in currentRenderers.enumerated() {
+            for (channelIndex, renderer) in state.renderers.enumerated() {
                 guard channelIndex < inputCount else { continue }
                 
                 let currentInput = inputPtrs[channelIndex].advanced(by: offset)
@@ -393,9 +396,8 @@ class HRIRManager: ObservableObject {
             // Check if active preset is still valid
             if let active = self.activePreset, !updatedPresets.contains(where: { $0.id == active.id }) {
                 self.activePreset = nil
-                self.rendererQueue.async(flags: .barrier) {
-                    self.renderers.removeAll()
-                }
+                self.activePreset = nil
+                self.rendererState = nil
             }
         }
     }

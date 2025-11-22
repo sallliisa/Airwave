@@ -32,8 +32,7 @@ class AudioGraphManager: ObservableObject {
     fileprivate var currentSampleRate: Double = 48000.0
 
     // Pre-allocated buffers for multi-channel processing
-    fileprivate var inputInterleaveBuffer: [Float] = []
-    fileprivate var outputInterleaveBuffer: [Float] = []
+
     fileprivate let maxFramesPerCallback: Int = 4096
     fileprivate let maxChannels: Int = 16  // Support up to 16 channels
     
@@ -41,13 +40,15 @@ class AudioGraphManager: ObservableObject {
     fileprivate var isBuffering: Bool = true
 
     // Multi-channel buffers using UnsafeMutablePointer for zero-allocation real-time processing
-    fileprivate var inputChannelBufferPtrs: [UnsafeMutablePointer<Float>] = []
+    // We use UnsafeMutablePointer<UnsafeMutablePointer<Float>> to avoid Swift Array overhead in callbacks
+    fileprivate var inputChannelBufferPtrs: UnsafeMutablePointer<UnsafeMutablePointer<Float>>?
     fileprivate var outputStereoLeftPtr: UnsafeMutablePointer<Float>!
     fileprivate var outputStereoRightPtr: UnsafeMutablePointer<Float>!
     
     // Pre-allocated AudioBufferList for Input Callback
     fileprivate var inputAudioBufferListPtr: UnsafeMutableRawPointer?
-    fileprivate var inputAudioBuffersPtr: [UnsafeMutableRawPointer] = []
+    // Array of pointers to raw audio buffers (UnsafeMutablePointer<UnsafeMutableRawPointer>)
+    fileprivate var inputAudioBuffersPtr: UnsafeMutablePointer<UnsafeMutableRawPointer>?
 
     // Reference to HRIR manager for convolution
     var hrirManager: HRIRManager?
@@ -57,15 +58,37 @@ class AudioGraphManager: ObservableObject {
     init() {
         self.circularBuffer = CircularBuffer(size: bufferSize)
 
-        // Pre-allocate interleave buffers (max channels at max frame count)
-        self.inputInterleaveBuffer = [Float](repeating: 0, count: maxFramesPerCallback * maxChannels)
-        self.outputInterleaveBuffer = [Float](repeating: 0, count: maxFramesPerCallback * maxChannels)
+        // Pre-allocate AudioBufferList for input callback
+        let bufferListSize = MemoryLayout<AudioBufferList>.size +
+                             max(0, maxChannels - 1) * MemoryLayout<AudioBuffer>.size
+        
+        inputAudioBufferListPtr = UnsafeMutableRawPointer.allocate(
+            byteCount: bufferListSize,
+            alignment: MemoryLayout<AudioBufferList>.alignment
+        )
+        
+        // Pre-allocate per-channel audio data buffers (raw bytes for AudioUnit)
+        // Allocate the array of pointers first
+        inputAudioBuffersPtr = UnsafeMutablePointer<UnsafeMutableRawPointer>.allocate(capacity: maxChannels)
+        
+        for i in 0..<maxChannels {
+            let byteCount = maxFramesPerCallback * MemoryLayout<Float>.size
+            let buffer = UnsafeMutableRawPointer.allocate(
+                byteCount: byteCount,
+                alignment: 16
+            )
+            memset(buffer, 0, byteCount)
+            inputAudioBuffersPtr![i] = buffer
+        }
 
         // Pre-allocate per-channel buffers using UnsafeMutablePointer
-        for _ in 0..<maxChannels {
+        // Allocate the array of pointers first
+        inputChannelBufferPtrs = UnsafeMutablePointer<UnsafeMutablePointer<Float>>.allocate(capacity: maxChannels)
+        
+        for i in 0..<maxChannels {
             let ptr = UnsafeMutablePointer<Float>.allocate(capacity: maxFramesPerCallback)
             ptr.initialize(repeating: 0, count: maxFramesPerCallback)
-            inputChannelBufferPtrs.append(ptr)
+            inputChannelBufferPtrs![i] = ptr
         }
         
         // Allocate output stereo buffers
@@ -78,13 +101,26 @@ class AudioGraphManager: ObservableObject {
 
     deinit {
         stop()
-        deallocateInputBuffers()
+        // Deallocate Input AudioBufferList
+        inputAudioBufferListPtr?.deallocate()
+        
+        // Deallocate Input Audio Buffers
+        if let buffersPtr = inputAudioBuffersPtr {
+            for i in 0..<maxChannels {
+                buffersPtr[i].deallocate()
+            }
+            buffersPtr.deallocate()
+            inputAudioBuffersPtr = nil
+        }
         
         // Deallocate channel buffers
-        for ptr in inputChannelBufferPtrs {
-            ptr.deallocate()
+        if let channelsPtr = inputChannelBufferPtrs {
+            for i in 0..<maxChannels {
+                channelsPtr[i].deallocate()
+            }
+            channelsPtr.deallocate()
+            inputChannelBufferPtrs = nil
         }
-        inputChannelBufferPtrs.removeAll()
         
         outputStereoLeftPtr?.deallocate()
         outputStereoRightPtr?.deallocate()
@@ -192,41 +228,7 @@ class AudioGraphManager: ObservableObject {
     
     // MARK: - Buffer Management
     
-    private func allocateInputBuffers(channelCount: Int, maxFrames: Int) {
-        deallocateInputBuffers()
-        
-        let bytesPerChannel = maxFrames * MemoryLayout<Float>.size
-        
-        let bufferListSize = MemoryLayout<AudioBufferList>.size + max(0, channelCount - 1) * MemoryLayout<AudioBuffer>.size
-        inputAudioBufferListPtr = UnsafeMutableRawPointer.allocate(byteCount: bufferListSize, alignment: MemoryLayout<AudioBufferList>.alignment)
-        
-        let abl = inputAudioBufferListPtr!.assumingMemoryBound(to: AudioBufferList.self)
-        abl.pointee.mNumberBuffers = UInt32(channelCount)
-        
-        for _ in 0..<channelCount {
-            let buffer = UnsafeMutableRawPointer.allocate(byteCount: bytesPerChannel, alignment: 16)
-            inputAudioBuffersPtr.append(buffer)
-        }
-        
-        let buffers = UnsafeMutableAudioBufferListPointer(abl)
-        for (i, buffer) in inputAudioBuffersPtr.enumerated() {
-            buffers[i].mNumberChannels = 1
-            buffers[i].mDataByteSize = UInt32(bytesPerChannel)
-            buffers[i].mData = buffer
-        }
-    }
-    
-    private func deallocateInputBuffers() {
-        if let ptr = inputAudioBufferListPtr {
-            ptr.deallocate()
-            inputAudioBufferListPtr = nil
-        }
-        
-        for buffer in inputAudioBuffersPtr {
-            buffer.deallocate()
-        }
-        inputAudioBuffersPtr.removeAll()
-    }
+
 
     // MARK: - Private Setup Methods
 
@@ -307,7 +309,7 @@ class AudioGraphManager: ObservableObject {
         
         print("[AudioGraph] Input device: \(device.name), Channels: \(inputChannelCount), Sample Rate: \(currentSampleRate)")
         
-        allocateInputBuffers(channelCount: Int(inputChannelCount), maxFrames: maxFramesPerCallback)
+
 
         var streamFormat = AudioStreamBasicDescription(
             mSampleRate: deviceFormat.mSampleRate,
@@ -479,12 +481,35 @@ private func inputRenderCallback(
     guard let inputUnit = manager.inputUnit else { return noErr }
     
     guard let audioBufferListPtr = manager.inputAudioBufferListPtr else { return noErr }
-    let audioBufferList = audioBufferListPtr.assumingMemoryBound(to: AudioBufferList.self)
     
-    let buffers = UnsafeMutableAudioBufferListPointer(audioBufferList)
-    let bytesPerChannel = Int(inNumberFrames) * 4
-    for i in 0..<buffers.count {
-        buffers[i].mDataByteSize = UInt32(bytesPerChannel)
+    let channelCount = Int(manager.inputChannelCount)
+    let frameCount = Int(inNumberFrames)
+    let bytesPerChannel = frameCount * MemoryLayout<Float>.size
+    
+    // Validate we don't exceed pre-allocated size
+    guard frameCount <= manager.maxFramesPerCallback,
+          channelCount <= manager.maxChannels else {
+        return kAudioUnitErr_TooManyFramesToProcess
+    }
+    
+    // Configure the pre-allocated AudioBufferList
+    let audioBufferList = audioBufferListPtr.assumingMemoryBound(to: AudioBufferList.self)
+    audioBufferList.pointee.mNumberBuffers = UInt32(channelCount)
+    
+    // Configure each buffer to point to our pre-allocated memory
+    // Use withUnsafeMutablePointer to avoid dangling pointer warning
+    if let inputBuffers = manager.inputAudioBuffersPtr {
+        withUnsafeMutablePointer(to: &audioBufferList.pointee.mBuffers) { buffersPtr in
+            let bufferPtr = UnsafeMutableRawPointer(buffersPtr)
+                .assumingMemoryBound(to: AudioBuffer.self)
+            
+            for i in 0..<channelCount {
+                let buffer = bufferPtr.advanced(by: i)
+                buffer.pointee.mNumberChannels = 1
+                buffer.pointee.mDataByteSize = UInt32(bytesPerChannel)
+                buffer.pointee.mData = inputBuffers[i]
+            }
+        }
     }
 
     let status = AudioUnitRender(
@@ -497,26 +522,16 @@ private func inputRenderCallback(
     )
 
     if status == noErr {
-        let frameCount = Int(inNumberFrames)
-        let channelCount = buffers.count
-        let totalSamples = frameCount * channelCount
-
-        // Hoist unsafe pointer access to avoid closure allocation overhead
-        manager.inputInterleaveBuffer.withUnsafeMutableBufferPointer { ptr in
-            guard let baseAddr = ptr.baseAddress else { return }
-            
-            // Interleave efficiently using vDSP
-            for channel in 0..<channelCount {
-                if let data = buffers[channel].mData {
-                    let samples = data.assumingMemoryBound(to: Float.self)
-                    // vDSP_vsmul with stride is SIMD-optimized (much faster than loops)
-                    var one: Float = 1.0
-                    vDSP_vsmul(samples, 1, &one, baseAddr.advanced(by: channel), vDSP_Stride(channelCount), vDSP_Length(frameCount))
-                }
+        // Write sequentially to circular buffer (no interleaving)
+        // This avoids the need for an intermediate interleave buffer and vDSP calls
+        // Write sequentially to circular buffer (no interleaving)
+        if let inputBuffers = manager.inputAudioBuffersPtr {
+            for i in 0..<channelCount {
+                manager.circularBuffer.write(
+                    data: inputBuffers[i],
+                    size: bytesPerChannel
+                )
             }
-            
-            // Write to circular buffer (baseAddr is still valid here)
-            manager.circularBuffer.write(data: baseAddr, size: totalSamples * 4)
         }
     }
 
@@ -537,103 +552,123 @@ private func outputRenderCallback(
 
     guard let bufferList = ioData else { return noErr }
 
-    let buffers = UnsafeMutableAudioBufferListPointer(bufferList)
     let outputChannelCount = Int(bufferList.pointee.mNumberBuffers)
     let frameCount = Int(inNumberFrames)
 
-    // Read interleaved data from circular buffer
-    let inputChannelCount = Int(manager.inputChannelCount)
-    let totalSamples = frameCount * inputChannelCount
-    let totalBytes = totalSamples * 4
-    
-    // Buffering Logic - Reduced threshold for lower latency
-    // Changed from 2048 to 512 frames: reduces ~42-47ms latency to ~10-11ms
-    let playbackThreshold = 512 * inputChannelCount * 4 // 512 frames
-    
-    if manager.isBuffering {
-        if manager.circularBuffer.availableReadSpace() >= playbackThreshold {
-            manager.isBuffering = false
-            // print("Buffering complete, resuming playback")
-        } else {
-            // Output silence
-            for i in 0..<buffers.count {
-                if let data = buffers[i].mData {
-                    memset(data, 0, Int(buffers[i].mDataByteSize))
+    // Use withUnsafeMutablePointer to avoid dangling pointer warning
+    // Wrap all buffer access in this scope
+    withUnsafeMutablePointer(to: &bufferList.pointee.mBuffers) { buffersPtr in
+        let bufferPtr = UnsafeMutableRawPointer(buffersPtr)
+            .assumingMemoryBound(to: AudioBuffer.self)
+        
+        // Validate frame count
+        guard frameCount <= manager.maxFramesPerCallback else {
+            // Fill with silence and return
+            for i in 0..<outputChannelCount {
+                let buffer = bufferPtr.advanced(by: i)
+                if let data = buffer.pointee.mData {
+                    memset(data, 0, Int(buffer.pointee.mDataByteSize))
                 }
             }
-            return noErr
+            return
         }
-    }
 
-    let bytesRead = manager.outputInterleaveBuffer.withUnsafeMutableBytes { ptr in
-        manager.circularBuffer.read(into: ptr.baseAddress!, size: totalBytes)
-    }
-
-    if bytesRead < totalBytes {
-        // Underrun detected
-        // print("Underrun detected, switching to buffering")
-        manager.isBuffering = true
+        let inputChannelCount = Int(manager.inputChannelCount)
+        let totalBytesNeeded = frameCount * inputChannelCount * 4
         
-        // Fill the rest with silence using memset for better performance
-        let bytesToClear = totalBytes - bytesRead
-        manager.outputInterleaveBuffer.withUnsafeMutableBytes { ptr in
-            if let baseAddress = ptr.baseAddress {
-                memset(baseAddress.advanced(by: bytesRead), 0, bytesToClear)
-            }
-        }
-    }
-
-    // Process through HRIR convolution if enabled
-    let shouldProcess = manager.hrirManager?.convolutionEnabled ?? false
-
-    if shouldProcess {
-        // De-interleave ALL channels for convolution processing
-        manager.outputInterleaveBuffer.withUnsafeBufferPointer { srcPtr in
-            guard let srcBase = srcPtr.baseAddress else { return }
-            
-            for channel in 0..<min(inputChannelCount, manager.maxChannels) {
-                let dstPtr = manager.inputChannelBufferPtrs[channel]
-                // vDSP_vsmul with stride is SIMD-optimized (much faster than loops)
-                var one: Float = 1.0
-                vDSP_vsmul(srcBase.advanced(by: channel), vDSP_Stride(inputChannelCount), &one, dstPtr, 1, vDSP_Length(frameCount))
-            }
-        }
+        // Buffering Logic
+        let playbackThreshold = 512 * inputChannelCount * 4
         
-        // Pass input channel pointers to HRIR manager (zero-copy, zero-allocation)
-        manager.hrirManager?.processAudio(
-            inputPtrs: manager.inputChannelBufferPtrs,
-            inputCount: inputChannelCount,
-            leftOutput: manager.outputStereoLeftPtr,
-            rightOutput: manager.outputStereoRightPtr,
-            frameCount: frameCount
-        )
-    } else {
-        // PASSTHROUGH: Skip de-interleaving, directly extract stereo from interleaved buffer
-        manager.outputInterleaveBuffer.withUnsafeBufferPointer { srcPtr in
-            guard let srcBase = srcPtr.baseAddress else { return }
-            
-            // Extract left channel (stride by inputChannelCount)
-            var one: Float = 1.0
-            vDSP_vsmul(srcBase, vDSP_Stride(inputChannelCount), &one, manager.outputStereoLeftPtr, 1, vDSP_Length(frameCount))
-            
-            // Extract right channel if available
-            if inputChannelCount >= 2 {
-                vDSP_vsmul(srcBase.advanced(by: 1), vDSP_Stride(inputChannelCount), &one, manager.outputStereoRightPtr, 1, vDSP_Length(frameCount))
+        if manager.isBuffering {
+            if manager.circularBuffer.availableReadSpace() >= playbackThreshold {
+                manager.isBuffering = false
             } else {
-                // Mono input: copy to both outputs
-                vDSP_vsmul(srcBase, vDSP_Stride(inputChannelCount), &one, manager.outputStereoRightPtr, 1, vDSP_Length(frameCount))
+                // Output silence
+                for i in 0..<outputChannelCount {
+                    let buffer = bufferPtr.advanced(by: i)
+                    if let data = buffer.pointee.mData {
+                        memset(data, 0, Int(buffer.pointee.mDataByteSize))
+                    }
+                }
+                return
             }
         }
-    }
 
-    // Write processed audio to output buffers
-    for i in 0..<min(outputChannelCount, 2) {
-        if let data = buffers[i].mData {
-            let samples = data.assumingMemoryBound(to: Float.self)
-            let sourcePtr = (i == 0) ? manager.outputStereoLeftPtr : manager.outputStereoRightPtr
+        // Check for underrun
+        if manager.circularBuffer.availableReadSpace() < totalBytesNeeded {
+            manager.isBuffering = true
+            // Output silence
+            for i in 0..<outputChannelCount {
+                let buffer = bufferPtr.advanced(by: i)
+                if let data = buffer.pointee.mData {
+                    memset(data, 0, Int(buffer.pointee.mDataByteSize))
+                }
+            }
+            return
+        }
+
+        // Read sequential data from circular buffer into inputChannelBufferPtrs
+        // This matches the sequential write in inputRenderCallback
+        // Read sequential data from circular buffer into inputChannelBufferPtrs
+        // This matches the sequential write in inputRenderCallback
+        if let channelPtrs = manager.inputChannelBufferPtrs {
+            for i in 0..<inputChannelCount {
+                // Safety check for channel count
+                if i < manager.maxChannels {
+                    let dstPtr = channelPtrs[i]
+                    let byteSize = frameCount * MemoryLayout<Float>.size
+                    manager.circularBuffer.read(into: dstPtr, size: byteSize)
+                }
+            }
+        }
+
+        // Process through HRIR convolution if enabled
+        let shouldProcess = manager.hrirManager?.convolutionEnabled ?? false
+
+        if shouldProcess, let channelPtrs = manager.inputChannelBufferPtrs {
+            // Pass input channel pointers to HRIR manager (zero-copy, zero-allocation)
+            manager.hrirManager?.processAudio(
+                inputPtrs: channelPtrs,
+                inputCount: inputChannelCount,
+                leftOutput: manager.outputStereoLeftPtr,
+                rightOutput: manager.outputStereoRightPtr,
+                frameCount: frameCount
+            )
+        } else {
+            // PASSTHROUGH: Mix down to stereo
+            // Input is already in inputChannelBufferPtrs (non-interleaved)
             
-            let byteCount = frameCount * MemoryLayout<Float>.size
-            memcpy(samples, sourcePtr, byteCount)
+            // Reset output buffers
+            memset(manager.outputStereoLeftPtr, 0, frameCount * 4)
+            memset(manager.outputStereoRightPtr, 0, frameCount * 4)
+            
+            // Simple mix: Left = Ch1, Right = Ch2 (if exists)
+            // Or mono: Left = Ch1, Right = Ch1
+            
+            if inputChannelCount > 0, let channelPtrs = manager.inputChannelBufferPtrs {
+                let src = channelPtrs[0]
+                memcpy(manager.outputStereoLeftPtr, src, frameCount * 4)
+                
+                if inputChannelCount >= 2 {
+                    let src2 = channelPtrs[1]
+                    memcpy(manager.outputStereoRightPtr, src2, frameCount * 4)
+                } else {
+                    // Mono -> Stereo
+                    memcpy(manager.outputStereoRightPtr, src, frameCount * 4)
+                }
+            }
+        }
+
+        // Write processed audio to output buffers
+        for i in 0..<min(outputChannelCount, 2) {
+            let buffer = bufferPtr.advanced(by: i)
+            if let data = buffer.pointee.mData {
+                let samples = data.assumingMemoryBound(to: Float.self)
+                let sourcePtr = (i == 0) ? manager.outputStereoLeftPtr : manager.outputStereoRightPtr
+                
+                let byteCount = frameCount * MemoryLayout<Float>.size
+                memcpy(samples, sourcePtr, byteCount)
+            }
         }
     }
 
