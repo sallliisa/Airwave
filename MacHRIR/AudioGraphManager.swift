@@ -198,6 +198,14 @@ class AudioGraphManager: ObservableObject {
 
     /// Change output routing without stopping audio
     func setOutputChannels(_ range: Range<Int>) {
+        // Validate range against current output channel count
+        guard range.upperBound <= Int(outputChannelCount) else {
+            DispatchQueue.main.async {
+                self.errorMessage = "Output channel range \(range) exceeds device channel count (\(self.outputChannelCount))"
+            }
+            return
+        }
+        
         // Thread-safe update of output channel range
         // No need to reinitialize audio unit!
         selectedOutputChannelRange = range
@@ -230,6 +238,14 @@ class AudioGraphManager: ObservableObject {
         var status = AudioComponentInstanceNew(component, &unit)
         guard status == noErr, let audioUnit = unit else {
             throw AudioError.instantiationFailed(status)
+        }
+
+        // Ensure cleanup on error
+        defer {
+            if self.audioUnit == nil {
+                // Setup failed, clean up temporary unit
+                AudioComponentInstanceDispose(audioUnit)
+            }
         }
 
         // Enable IO for both Input (Element 1) and Output (Element 0)
@@ -425,10 +441,13 @@ private func renderCallback(
     let inputBufferList = inputBufferListPtr.assumingMemoryBound(to: AudioBufferList.self)
     let inputChannelCount = Int(manager.inputChannelCount)
     
-    // Safety check
+    // Safety check (Debug only for performance)
+    #if DEBUG
     if frameCount > manager.maxFramesPerCallback || inputChannelCount > manager.maxChannels {
+         assertionFailure("CoreAudio contract violation: frameCount=\(frameCount), channels=\(inputChannelCount)")
          return kAudioUnitErr_TooManyFramesToProcess
     }
+    #endif
     
     inputBufferList.pointee.mNumberBuffers = UInt32(inputChannelCount)
     
@@ -484,8 +503,9 @@ private func renderCallback(
         )
     } else {
         // Passthrough / Mixdown
-        memset(manager.outputStereoLeftPtr, 0, frameCount * 4)
-        memset(manager.outputStereoRightPtr, 0, frameCount * 4)
+        let byteSize = frameCount * MemoryLayout<Float>.size
+        memset(manager.outputStereoLeftPtr, 0, byteSize)
+        memset(manager.outputStereoRightPtr, 0, byteSize)
         
         if inputChannelCount > 0, let channelPtrs = manager.inputChannelBufferPtrs {
             let src = channelPtrs[0]
@@ -518,6 +538,10 @@ private func renderCallback(
         
         // Write stereo output to SELECTED channels only
         if let channelRange = manager.selectedOutputChannelRange {
+            #if DEBUG
+            assert(channelRange.upperBound <= outputChannelCount, "Channel range validation failed!")
+            #endif
+            
             let leftChannel = channelRange.lowerBound
             let rightChannel = leftChannel + 1
             

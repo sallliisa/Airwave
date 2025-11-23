@@ -39,13 +39,26 @@ class SettingsManager {
 
     private let defaults = UserDefaults.standard
     private let settingsKey = "MacHRIR.AppSettings"
+    
+    private var cachedSettings: AppSettings?
+    private var saveWorkItem: DispatchWorkItem?
 
     init() {
         print("[Settings] Initialized with UserDefaults")
     }
 
-    /// Load settings from UserDefaults
+    /// Load settings from memory cache or UserDefaults
     func loadSettings() -> AppSettings {
+        if let settings = cachedSettings {
+            return settings
+        }
+        let settings = loadSettingsFromDisk()
+        cachedSettings = settings
+        return settings
+    }
+
+    /// Load settings from UserDefaults (internal)
+    private func loadSettingsFromDisk() -> AppSettings {
         print("[Settings] Loading settings from UserDefaults")
         
         guard let data = defaults.data(forKey: settingsKey) else {
@@ -55,12 +68,7 @@ class SettingsManager {
         
         // Try to decode new schema
         if let settings = try? JSONDecoder().decode(AppSettings.self, from: data) {
-            print("[Settings] Loaded settings:")
-            print("  - Aggregate Device ID: \(settings.aggregateDeviceID?.description ?? "nil")")
-            print("  - Output Device ID: \(settings.selectedOutputDeviceID?.description ?? "nil")")
-            print("  - Active Preset ID: \(settings.activePresetID?.uuidString ?? "nil")")
-            print("  - Convolution Enabled: \(settings.convolutionEnabled)")
-            print("  - Auto Start: \(settings.autoStart)")
+            print("[Settings] Loaded settings from disk")
             return settings
         }
         
@@ -69,8 +77,25 @@ class SettingsManager {
         return .default
     }
 
-    /// Save settings to UserDefaults
+    /// Save settings to memory cache and schedule disk write
     func saveSettings(_ settings: AppSettings) {
+        cachedSettings = settings
+        debounceSave()
+    }
+    
+    private func debounceSave() {
+        saveWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            self?.flush()
+        }
+        saveWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: item)
+    }
+
+    /// Write cached settings to UserDefaults
+    private func flush() {
+        guard let settings = cachedSettings else { return }
+        
         print("[Settings] Saving settings to UserDefaults:")
         print("  - Aggregate Device ID: \(settings.aggregateDeviceID?.description ?? "nil")")
         print("  - Output Device ID: \(settings.selectedOutputDeviceID?.description ?? "nil")")
@@ -84,13 +109,7 @@ class SettingsManager {
         }
 
         defaults.set(data, forKey: settingsKey)
-        
-        // Force synchronization to ensure data is written immediately
-        if defaults.synchronize() {
-            print("[Settings] Successfully saved and synchronized to UserDefaults")
-        } else {
-            print("[Settings] Warning: synchronize() returned false")
-        }
+        // defaults.synchronize() is unnecessary in modern macOS
     }
     
     // MARK: - Helper Methods

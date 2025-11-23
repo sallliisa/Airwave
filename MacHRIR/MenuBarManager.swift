@@ -126,6 +126,10 @@ class MenuBarManager: NSObject, NSMenuDelegate {
         menu.removeAllItems()
         
         // --- Aggregate Device Selection ---
+        let deviceItemTitle = NSMenuItem(title: "Device Configuration", action: nil, keyEquivalent: "")
+        deviceItemTitle.isEnabled = false
+        menu.addItem(deviceItemTitle)
+
         let deviceMenuTitle = "Aggregate Device: \(audioManager.aggregateDevice?.name ?? "None")"
         let deviceItem = NSMenuItem(title: deviceMenuTitle, action: nil, keyEquivalent: "")
         
@@ -184,15 +188,6 @@ class MenuBarManager: NSObject, NSMenuDelegate {
             let helpItem = NSMenuItem(title: "↑ Select aggregate device first", action: nil, keyEquivalent: "")
             helpItem.isEnabled = false
             menu.addItem(helpItem)
-        }
-        
-        menu.addItem(NSMenuItem.separator())
-        
-        // Status indicator
-        if let output = selectedOutputDevice {
-            let statusItem = NSMenuItem(title: "→ Playing to: \(output.name)", action: nil, keyEquivalent: "")
-            statusItem.isEnabled = false
-            menu.addItem(statusItem)
         }
         
         menu.addItem(NSMenuItem.separator())
@@ -262,8 +257,49 @@ class MenuBarManager: NSObject, NSMenuDelegate {
     
     // MARK: - Actions
     
+    private func validateAggregateDevice(_ device: AudioDevice) -> (valid: Bool, reason: String?) {
+        do {
+            let inputs = try inspector.getInputDevices(aggregate: device)
+            let outputs = try inspector.getOutputDevices(aggregate: device)
+
+            if inputs.isEmpty {
+                return (false, "Aggregate device '\(device.name)' has no input devices.\n\nPlease add an input device (e.g., BlackHole) in Audio MIDI Setup.")
+            }
+
+            if outputs.isEmpty {
+                return (false, "Aggregate device '\(device.name)' has no output devices.\n\nPlease add output devices (e.g., Headphones, Speakers) in Audio MIDI Setup.")
+            }
+
+            // Check for at least stereo output capability
+            // Note: SubDeviceInfo now uses ranges, so we check outputChannelRange
+            let hasStereoOutput = outputs.contains { 
+                guard let range = $0.outputChannelRange else { return false }
+                return (range.upperBound - range.lowerBound) >= 2
+            }
+            
+            if !hasStereoOutput {
+                return (false, "Aggregate device '\(device.name)' has no stereo output.\n\nAt least one output device must have 2+ channels.")
+            }
+
+            return (true, nil)
+        } catch {
+            return (false, "Could not inspect aggregate device: \(error.localizedDescription)")
+        }
+    }
+
     @objc private func selectAggregateDevice(_ sender: NSMenuItem) {
         guard let device = sender.representedObject as? AudioDevice else { return }
+        
+        // Validate first
+        let validation = validateAggregateDevice(device)
+        if !validation.valid {
+            let alert = NSAlert()
+            alert.messageText = "Invalid Aggregate Device"
+            alert.informativeText = validation.reason ?? "Unknown error"
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return
+        }
         
         // Stop audio if running
         let wasRunning = audioManager.isRunning

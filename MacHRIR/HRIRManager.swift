@@ -36,6 +36,8 @@ struct VirtualSpeakerRenderer {
 /// Manages HRIR presets and multi-channel convolution processing
 import AppKit
 
+import os
+
 /// Manages HRIR presets and multi-channel convolution processing
 class HRIRManager: ObservableObject {
 
@@ -68,8 +70,14 @@ class HRIRManager: ObservableObject {
         }
     }
     
-    // Atomic reference to current state
-    private var rendererState: RendererState?
+    // Atomic reference to current state using OSAllocatedUnfairLock (macOS 13+)
+    // This is significantly faster than NSLock and optimized for Apple Silicon
+    private let stateLock = OSAllocatedUnfairLock<RendererState?>(initialState: nil)
+    
+    private var rendererState: RendererState? {
+        get { stateLock.withLock { $0 } }
+        set { stateLock.withLock { $0 = newValue } }
+    }
     
     private let processingBlockSize: Int = 512  // Balance between latency (~10.7ms @ 48kHz) and CPU efficiency
 
@@ -309,6 +317,16 @@ class HRIRManager: ObservableObject {
     }
 
 
+    /// Reset the internal state of all convolution engines
+    /// Useful when changing presets or seeking to clear old audio buffers
+    func resetConvolutionState() {
+        guard let state = rendererState else { return }
+        for renderer in state.renderers {
+            renderer.convolverLeftEar.reset()
+            renderer.convolverRightEar.reset()
+        }
+    }
+
     // MARK: - Private Methods
 
     private func startDirectoryWatcher() {
@@ -366,6 +384,8 @@ class HRIRManager: ObservableObject {
         var hasChanges = false
         
         // 3. Reconcile
+        let existingFilenames = Set(wavFiles.map { $0.lastPathComponent })
+        
         for fileURL in wavFiles {
             // Check if we already have this file
             if let existing = knownPresets.first(where: { $0.fileURL.lastPathComponent == fileURL.lastPathComponent }) {
@@ -388,8 +408,14 @@ class HRIRManager: ObservableObject {
             }
         }
         
-        // Check if any were removed
-        if updatedPresets.count != knownPresets.count {
+        // Check if any were removed (orphaned)
+        // We use the filename set to explicitly identify presets whose files are gone
+        let orphanedPresets = knownPresets.filter { preset in
+            !existingFilenames.contains(preset.fileURL.lastPathComponent)
+        }
+        
+        if !orphanedPresets.isEmpty {
+            print("[HRIRManager] Removing \(orphanedPresets.count) orphaned presets")
             hasChanges = true
         }
         

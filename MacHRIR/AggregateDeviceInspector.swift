@@ -10,18 +10,32 @@ class AggregateDeviceInspector {
         let device: AudioDevice          // The physical device
         let uid: String                  // Device UID
         let name: String                 // Display name
-        let startChannel: Int            // First channel in aggregate
-        let channelCount: Int            // Number of channels
-        let direction: Direction         // Input or output
+        let inputChannelRange: Range<Int>?   // nil if no input
+        let outputChannelRange: Range<Int>?  // nil if no output
 
-        enum Direction {
-            case input
-            case output
+        var isInputOnly: Bool { inputChannelRange != nil && outputChannelRange == nil }
+        var isOutputOnly: Bool { outputChannelRange != nil && inputChannelRange == nil }
+        var isBidirectional: Bool { inputChannelRange != nil && outputChannelRange != nil }
+        
+        // Helper for backward compatibility / simple access
+        var startChannel: Int {
+            return outputChannelRange?.lowerBound ?? inputChannelRange?.lowerBound ?? 0
         }
-
+        
         var endChannel: Int {
-            return startChannel + channelCount - 1
+            return (outputChannelRange?.upperBound ?? inputChannelRange?.upperBound ?? 1) - 1
         }
+        
+        var direction: Direction {
+            if isInputOnly { return .input }
+            if isOutputOnly { return .output }
+            return .output // Default to output for bidirectional if forced to choose
+        }
+    }
+    
+    enum Direction {
+        case input
+        case output
     }
 
     // MARK: - Public API
@@ -59,23 +73,34 @@ class AggregateDeviceInspector {
     /// Get all sub-devices in aggregate
     func getSubDevices(aggregate: AudioDevice) throws -> [SubDeviceInfo] {
         let uids = try getSubDeviceUIDs(aggregate: aggregate)
-        return try buildChannelMap(subDeviceUIDs: uids)
+        
+        // Build device lookup table ONCE
+        let allDevices = AudioDeviceManager.getAllDevices()
+        let devicesByUID = Dictionary(
+            allDevices.compactMap { device -> (String, AudioDevice)? in
+                guard let uid = getDeviceUID(deviceID: device.id) else { return nil }
+                return (uid, device)
+            },
+            uniquingKeysWith: { (first, _) in first }
+        )
+        
+        return try buildChannelMap(subDeviceUIDs: uids, deviceLookup: devicesByUID)
     }
 
     /// Get input sub-devices only
     func getInputDevices(aggregate: AudioDevice) throws -> [SubDeviceInfo] {
-        return try getSubDevices(aggregate: aggregate).filter { $0.direction == .input }
+        return try getSubDevices(aggregate: aggregate).filter { $0.inputChannelRange != nil }
     }
 
     /// Get output sub-devices only
     func getOutputDevices(aggregate: AudioDevice) throws -> [SubDeviceInfo] {
-        return try getSubDevices(aggregate: aggregate).filter { $0.direction == .output }
+        return try getSubDevices(aggregate: aggregate).filter { $0.outputChannelRange != nil }
     }
 
     /// Find which sub-device contains a specific channel
     func findSubDevice(
         forChannel channel: Int,
-        direction: SubDeviceInfo.Direction,
+        direction: Direction,
         in aggregate: AudioDevice
     ) throws -> SubDeviceInfo? {
         let subDevices = try getSubDevices(aggregate: aggregate)
@@ -133,76 +158,50 @@ class AggregateDeviceInspector {
         return array
     }
 
-    private func buildChannelMap(subDeviceUIDs: [String]) throws -> [SubDeviceInfo] {
+    private func buildChannelMap(subDeviceUIDs: [String], deviceLookup: [String: AudioDevice]) throws -> [SubDeviceInfo] {
         var subDevices: [SubDeviceInfo] = []
         var currentInputChannel = 0
         var currentOutputChannel = 0
 
         for uid in subDeviceUIDs {
-            // We need to find the device by UID. 
-            // Assuming AudioDevice has a static method or we can iterate all devices.
-            // Since AudioDevice is a struct/class in this project, I'll use a helper or assume a way to find it.
-            // The plan says `findDeviceByUID(uid)`. I will implement a helper here or use what's available.
-            // Checking AudioDevice.swift might be useful, but for now I'll implement a lookup using CoreAudio if needed,
-            // or rely on the existing AudioDevice wrapper if it has a way.
-            // The plan implies `findDeviceByUID` exists or should be implemented.
-            // I'll implement a local helper `findDeviceByUID` using CoreAudio directly to be safe, 
-            // or better yet, use the AudioDevice wrapper if I can instantiate it from UID.
-            
-            guard let device = findDeviceByUID(uid) else {
-                // If we can't find the device, we might skip it or throw. 
-                // However, sub-devices in an aggregate might be hidden or special.
-                // Let's try to find it.
-                print("Warning: Could not find device with UID \(uid)")
-                continue
+            guard let device = deviceLookup[uid] else {
+                throw AggregateInspectorError.deviceNotFound(uid: uid)
             }
 
             let inputChannels = getDeviceChannelCount(device: device, isInput: true)
             let outputChannels = getDeviceChannelCount(device: device, isInput: false)
+            
+            var inputRange: Range<Int>? = nil
+            var outputRange: Range<Int>? = nil
 
-            // Add input mapping if device has inputs
+            // Calculate input range
             if inputChannels > 0 {
-                subDevices.append(SubDeviceInfo(
-                    device: device,
-                    uid: uid,
-                    name: device.name,
-                    startChannel: currentInputChannel,
-                    channelCount: inputChannels,
-                    direction: .input
-                ))
+                inputRange = currentInputChannel..<(currentInputChannel + inputChannels)
                 currentInputChannel += inputChannels
             }
 
-            // Add output mapping if device has outputs
+            // Calculate output range
             if outputChannels > 0 {
+                outputRange = currentOutputChannel..<(currentOutputChannel + outputChannels)
+                currentOutputChannel += outputChannels
+            }
+            
+            // Create single entry for device
+            if inputRange != nil || outputRange != nil {
                 subDevices.append(SubDeviceInfo(
                     device: device,
                     uid: uid,
                     name: device.name,
-                    startChannel: currentOutputChannel,
-                    channelCount: outputChannels,
-                    direction: .output
+                    inputChannelRange: inputRange,
+                    outputChannelRange: outputRange
                 ))
-                currentOutputChannel += outputChannels
             }
         }
 
         return subDevices
     }
     
-    private func findDeviceByUID(_ uid: String) -> AudioDevice? {
-        // Iterate all devices to find the one with matching UID.
-        // This avoids kAudioHardwareBadPropertySizeError (!siz) when using kAudioHardwarePropertyDeviceForUID in Swift.
-        let allDevices = AudioDeviceManager.getAllDevices()
-        
-        for device in allDevices {
-            if let deviceUID = getDeviceUID(deviceID: device.id), deviceUID == uid {
-                return device
-            }
-        }
-        
-        return nil
-    }
+
     
     private func getDeviceUID(deviceID: AudioDeviceID) -> String? {
         var propertyAddress = AudioObjectPropertyAddress(
@@ -281,9 +280,35 @@ class AggregateDeviceInspector {
     }
 }
 
-enum AggregateInspectorError: Error {
+enum AggregateInspectorError: LocalizedError {
     case notAnAggregate
     case noSubDevices
     case deviceNotFound(uid: String)
     case propertyQueryFailed(OSStatus)
+
+    var errorDescription: String? {
+        switch self {
+        case .notAnAggregate:
+            return "Selected device is not an aggregate device"
+        case .noSubDevices:
+            return "Aggregate device contains no sub-devices"
+        case .deviceNotFound(let uid):
+            return "Sub-device '\(uid)' not found on system"
+        case .propertyQueryFailed(let status):
+            return "CoreAudio property query failed (error \(status))"
+        }
+    }
+
+    var recoverySuggestion: String? {
+        switch self {
+        case .notAnAggregate:
+            return "Please select an aggregate device created in Audio MIDI Setup."
+        case .noSubDevices:
+            return "Please add devices to this aggregate in Audio MIDI Setup."
+        case .deviceNotFound:
+            return "The aggregate device references a device that is not connected. Please check Audio MIDI Setup."
+        default:
+            return nil
+        }
+    }
 }

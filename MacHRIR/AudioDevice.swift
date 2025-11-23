@@ -10,14 +10,22 @@ import CoreAudio
 import Combine
 
 /// Represents an audio device on the system
+/// Represents an audio device on the system
 struct AudioDevice: Identifiable, Equatable, Hashable {
     let id: AudioDeviceID
-    let name: String
-    let hasInput: Bool
-    let hasOutput: Bool
-    let sampleRate: Double
-    let channelCount: UInt32
-    let isAggregateDevice: Bool
+
+    // Computed properties query CoreAudio dynamically to ensure freshness
+    var name: String { AudioDeviceManager.getDeviceName(deviceID: id) ?? "Unknown" }
+    var hasInput: Bool { AudioDeviceManager.getChannelCount(deviceID: id, scope: kAudioObjectPropertyScopeInput) > 0 }
+    var hasOutput: Bool { AudioDeviceManager.getChannelCount(deviceID: id, scope: kAudioObjectPropertyScopeOutput) > 0 }
+    var sampleRate: Double { AudioDeviceManager.getSampleRate(deviceID: id) }
+    
+    var channelCount: UInt32 {
+        hasInput ? AudioDeviceManager.getChannelCount(deviceID: id, scope: kAudioObjectPropertyScopeInput)
+                 : AudioDeviceManager.getChannelCount(deviceID: id, scope: kAudioObjectPropertyScopeOutput)
+    }
+    
+    var isAggregateDevice: Bool { AudioDeviceManager.isAggregateDevice(deviceID: id) }
 
     static func == (lhs: AudioDevice, rhs: AudioDevice) -> Bool {
         return lhs.id == rhs.id
@@ -284,31 +292,15 @@ class AudioDeviceManager: ObservableObject {
 
     /// Get detailed information about a specific device
     static func getDeviceInfo(deviceID: AudioDeviceID) -> AudioDevice? {
-        guard let name = getDeviceName(deviceID: deviceID) else {
+        // Verify device exists by checking its name
+        guard getDeviceName(deviceID: deviceID) != nil else {
             return nil
         }
 
-        let hasInput = getChannelCount(deviceID: deviceID, scope: kAudioObjectPropertyScopeInput) > 0
-        let hasOutput = getChannelCount(deviceID: deviceID, scope: kAudioObjectPropertyScopeOutput) > 0
-
-        let channelCount = hasInput ?
-            getChannelCount(deviceID: deviceID, scope: kAudioObjectPropertyScopeInput) :
-            getChannelCount(deviceID: deviceID, scope: kAudioObjectPropertyScopeOutput)
-
-        let sampleRate = getSampleRate(deviceID: deviceID)
-
-        return AudioDevice(
-            id: deviceID,
-            name: name,
-            hasInput: hasInput,
-            hasOutput: hasOutput,
-            sampleRate: sampleRate,
-            channelCount: channelCount,
-            isAggregateDevice: isAggregateDevice(deviceID: deviceID)
-        )
+        return AudioDevice(id: deviceID)
     }
 
-    private static func isAggregateDevice(deviceID: AudioDeviceID) -> Bool {
+    static func isAggregateDevice(deviceID: AudioDeviceID) -> Bool {
         // Method 1: Check Transport Type (Preferred)
         var transportAddress = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyTransportType,
@@ -396,7 +388,7 @@ class AudioDeviceManager: ObservableObject {
 
     // MARK: - Private Helper Methods
 
-    private static func getDeviceName(deviceID: AudioDeviceID) -> String? {
+    static func getDeviceName(deviceID: AudioDeviceID) -> String? {
         var propertyAddress = AudioObjectPropertyAddress(
             mSelector: kAudioObjectPropertyName,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -435,7 +427,7 @@ class AudioDeviceManager: ObservableObject {
         return cfString as String
     }
 
-    private static func getChannelCount(deviceID: AudioDeviceID, scope: AudioObjectPropertyScope) -> UInt32 {
+    static func getChannelCount(deviceID: AudioDeviceID, scope: AudioObjectPropertyScope) -> UInt32 {
         var propertyAddress = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyStreamConfiguration,
             mScope: scope,
@@ -481,7 +473,7 @@ class AudioDeviceManager: ObservableObject {
         return channelCount
     }
 
-    private static func getSampleRate(deviceID: AudioDeviceID) -> Double {
+    static func getSampleRate(deviceID: AudioDeviceID) -> Double {
         var propertyAddress = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyNominalSampleRate,
             mScope: kAudioObjectPropertyScopeGlobal,
