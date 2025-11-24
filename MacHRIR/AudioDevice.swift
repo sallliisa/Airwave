@@ -313,14 +313,16 @@ class AudioDeviceManager: ObservableObject {
         var deviceID: AudioDeviceID = 0
         var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
 
-        let status = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &propertyAddress,
-            UInt32(MemoryLayout<CFString>.size),
-            &uidString,
-            &propertySize,
-            &deviceID
-        )
+        let status = withUnsafePointer(to: &uidString) { uidPtr in
+            AudioObjectGetPropertyData(
+                AudioObjectID(kAudioObjectSystemObject),
+                &propertyAddress,
+                UInt32(MemoryLayout<CFString>.size),
+                uidPtr,
+                &propertySize,
+                &deviceID
+            )
+        }
 
         guard status == noErr, deviceID != 0 else {
             return nil

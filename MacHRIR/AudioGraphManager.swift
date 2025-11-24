@@ -509,13 +509,13 @@ private func renderCallback(
         
         if inputChannelCount > 0, let channelPtrs = manager.inputChannelBufferPtrs {
             let src = channelPtrs[0]
-            memcpy(manager.outputStereoLeftPtr, src, frameCount * 4)
+            memcpy(manager.outputStereoLeftPtr, src, frameCount * MemoryLayout<Float>.size)
             
             if inputChannelCount >= 2 {
                 let src2 = channelPtrs[1]
-                memcpy(manager.outputStereoRightPtr, src2, frameCount * 4)
+                memcpy(manager.outputStereoRightPtr, src2, frameCount * MemoryLayout<Float>.size)
             } else {
-                memcpy(manager.outputStereoRightPtr, src, frameCount * 4)
+                memcpy(manager.outputStereoRightPtr, src, frameCount * MemoryLayout<Float>.size)
             }
         }
     }
@@ -532,7 +532,7 @@ private func renderCallback(
         for i in 0..<outputChannelCount {
             let buffer = bufferPtr.advanced(by: i)
             if let data = buffer.pointee.mData {
-                 memset(data, 0, frameCount * 4)
+                 memset(data, 0, frameCount * MemoryLayout<Float>.size)
             }
         }
         
@@ -551,8 +551,8 @@ private func renderCallback(
                 
                 if let leftData = leftBuffer.pointee.mData,
                    let rightData = rightBuffer.pointee.mData {
-                    memcpy(leftData, manager.outputStereoLeftPtr, frameCount * 4)
-                    memcpy(rightData, manager.outputStereoRightPtr, frameCount * 4)
+                    memcpy(leftData, manager.outputStereoLeftPtr, frameCount * MemoryLayout<Float>.size)
+                    memcpy(rightData, manager.outputStereoRightPtr, frameCount * MemoryLayout<Float>.size)
                 }
             }
         }
