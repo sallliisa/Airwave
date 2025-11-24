@@ -4,6 +4,18 @@ import AudioToolbox
 
 class AggregateDeviceInspector {
 
+    // MARK: - Configuration
+    
+    enum MissingDeviceStrategy {
+        case throwError        // Current behavior - throw error when device not found
+        case skipMissing       // New behavior - skip disconnected devices gracefully
+    }
+    
+    var missingDeviceStrategy: MissingDeviceStrategy = .skipMissing
+    
+    // Track skipped devices for logging/debugging
+    private(set) var lastSkippedDevices: [(uid: String, reason: String)] = []
+
     // MARK: - Data Types
 
     struct SubDeviceInfo {
@@ -110,6 +122,46 @@ class AggregateDeviceInspector {
             channel <= subDevice.endChannel
         }
     }
+    
+    /// Check if aggregate device has at least one valid output device
+    func hasValidOutputs(aggregate: AudioDevice) -> Bool {
+        do {
+            let outputs = try getOutputDevices(aggregate: aggregate)
+            return !outputs.isEmpty
+        } catch {
+            return false
+        }
+    }
+    
+    /// Check if aggregate device has at least one valid input device
+    func hasValidInputs(aggregate: AudioDevice) -> Bool {
+        do {
+            let inputs = try getInputDevices(aggregate: aggregate)
+            return !inputs.isEmpty
+        } catch {
+            return false
+        }
+    }
+    
+    /// Get diagnostic info about aggregate device
+    func getDeviceHealth(aggregate: AudioDevice) -> (connected: Int, missing: Int, missingUIDs: [String]) {
+        lastSkippedDevices = []
+        let originalStrategy = missingDeviceStrategy
+        missingDeviceStrategy = .skipMissing
+        
+        defer { missingDeviceStrategy = originalStrategy }
+        
+        do {
+            let devices = try getSubDevices(aggregate: aggregate)
+            return (
+                connected: devices.count,
+                missing: lastSkippedDevices.count,
+                missingUIDs: lastSkippedDevices.map { $0.uid }
+            )
+        } catch {
+            return (connected: 0, missing: 0, missingUIDs: [])
+        }
+    }
 
     // MARK: - Private Implementation
 
@@ -162,10 +214,23 @@ class AggregateDeviceInspector {
         var subDevices: [SubDeviceInfo] = []
         var currentInputChannel = 0
         var currentOutputChannel = 0
+        
+        // Reset skipped devices
+        lastSkippedDevices = []
 
         for uid in subDeviceUIDs {
             guard let device = deviceLookup[uid] else {
-                throw AggregateInspectorError.deviceNotFound(uid: uid)
+                // Device not found - apply strategy
+                switch missingDeviceStrategy {
+                case .throwError:
+                    throw AggregateInspectorError.deviceNotFound(uid: uid)
+                
+                case .skipMissing:
+                    // Log and skip
+                    lastSkippedDevices.append((uid: uid, reason: "Device not connected"))
+                    print("[AggregateDeviceInspector] Skipping disconnected device: \(uid)")
+                    continue // Skip this device, move to next
+                }
             }
 
             let inputChannels = getDeviceChannelCount(device: device, isInput: true)
