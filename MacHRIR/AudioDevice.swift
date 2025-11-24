@@ -26,11 +26,7 @@ struct AudioDevice: Identifiable, Equatable, Hashable {
     }
     
     var isAggregateDevice: Bool { AudioDeviceManager.isAggregateDevice(deviceID: id) }
-    
-    /// Returns the persistent UID for this device.
-    /// UIDs persist across reconnections, unlike device IDs which change.
-    var uid: String { AudioDeviceManager.getDeviceUID(deviceID: id) ?? "unknown-\(id)" }
-
+    var uid: String? { AudioDeviceManager.getDeviceUID(self) }
 
     static func == (lhs: AudioDevice, rhs: AudioDevice) -> Bool {
         return lhs.id == rhs.id
@@ -305,6 +301,61 @@ class AudioDeviceManager: ObservableObject {
         return AudioDevice(id: deviceID)
     }
 
+    /// Translate device UID to AudioDevice (if currently available)
+    static func getDeviceByUID(_ uid: String) -> AudioDevice? {
+        var uidString = uid as CFString
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyTranslateUIDToDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        var deviceID: AudioDeviceID = 0
+        var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
+
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &propertyAddress,
+            UInt32(MemoryLayout<CFString>.size),
+            &uidString,
+            &propertySize,
+            &deviceID
+        )
+
+        guard status == noErr, deviceID != 0 else {
+            return nil
+        }
+
+        return getDeviceInfo(deviceID: deviceID)
+    }
+
+    /// Get persistent UID for an AudioDevice
+    static func getDeviceUID(_ device: AudioDevice) -> String? {
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        var deviceUID: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+
+        let status = AudioObjectGetPropertyData(
+            device.id,
+            &propertyAddress,
+            0,
+            nil,
+            &size,
+            &deviceUID
+        )
+
+        guard status == noErr, let uid = deviceUID?.takeRetainedValue() as String? else {
+            return nil
+        }
+
+        return uid
+    }
+
     static func isAggregateDevice(deviceID: AudioDeviceID) -> Bool {
         // Method 1: Check Transport Type (Preferred)
         var transportAddress = AudioObjectPropertyAddress(
@@ -431,37 +482,6 @@ class AudioDeviceManager: ObservableObject {
 
         return cfString as String
     }
-    
-    static func getDeviceUID(deviceID: AudioDeviceID) -> String? {
-        var propertyAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyDeviceUID,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        
-        var deviceUID: CFString? = nil
-        var size = UInt32(MemoryLayout<CFString?>.size)
-        
-        let status = withUnsafeMutablePointer(to: &deviceUID) { ptr in
-            ptr.withMemoryRebound(to: CFString?.self, capacity: 1) { reboundPtr in
-                AudioObjectGetPropertyData(
-                    deviceID,
-                    &propertyAddress,
-                    0,
-                    nil,
-                    &size,
-                    reboundPtr
-                )
-            }
-        }
-        
-        guard status == noErr, let uid = deviceUID as String? else {
-            return nil
-        }
-        
-        return uid
-    }
-
 
     static func getChannelCount(deviceID: AudioDeviceID, scope: AudioObjectPropertyScope) -> UInt32 {
         var propertyAddress = AudioObjectPropertyAddress(
