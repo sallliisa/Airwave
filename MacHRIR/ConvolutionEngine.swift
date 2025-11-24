@@ -58,12 +58,6 @@ class ConvolutionEngine {
     // Pre-allocated buffer for processAndAccumulate to avoid real-time allocation
     private let tempOutputBuffer: UnsafeMutablePointer<Float>
     
-    // Pre-allocated reusable split complex wrappers for partition loop (zero-allocation)
-    private var fdlSplitReusable: DSPSplitComplex
-    private var hrirSplitReusable: DSPSplitComplex
-    private var accSplitReusable: DSPSplitComplex
-    private var tempSplitReusable: DSPSplitComplex
-    
     // MARK: - Initialization
 
     /// Initialize convolution engine with partitioned convolution
@@ -126,12 +120,6 @@ class ConvolutionEngine {
         
         // Pre-allocate temp buffer for processAndAccumulate
         self.tempOutputBuffer = UnsafeMutablePointer<Float>.allocate(capacity: blockSize)
-        
-        // Initialize reusable split complex wrappers (pointers will be updated per-partition, zero-allocation)
-        self.fdlSplitReusable = DSPSplitComplex(realp: splitComplexInputReal, imagp: splitComplexInputImag)
-        self.hrirSplitReusable = DSPSplitComplex(realp: splitComplexInputReal, imagp: splitComplexInputImag)
-        self.accSplitReusable = DSPSplitComplex(realp: accumulatorReal, imagp: accumulatorImag)
-        self.tempSplitReusable = DSPSplitComplex(realp: tempMulReal, imagp: tempMulImag)
         
         // 5. Initialize FDL and HRIR Flat Buffers (OPTIMIZED: Contiguous memory)
         // Allocate single contiguous blocks for all partitions to improve cache efficiency
@@ -301,7 +289,11 @@ class ConvolutionEngine {
         
         // OPTIMIZATION: Unroll first partition outside loop to eliminate branches
         // Handle first partition (p=0)
-        let fdlIdx0 = fdlIndex & partitionMask  // Branch-free circular indexing
+        // NOTE: FDL uses modulo by partitionCount (not power-of-2) for correct wraparound
+        var fdlIdx0 = fdlIndex
+        if fdlIdx0 < 0 {
+            fdlIdx0 += partitionCount
+        }
         let fdlOffset0 = fdlIdx0 * fftSizeHalf
         let fdlRBase0 = fdlRealDataLocal.advanced(by: fdlOffset0)
         let fdlIBase0 = fdlImagDataLocal.advanced(by: fdlOffset0)
@@ -318,14 +310,17 @@ class ConvolutionEngine {
         var hrirSplit = DSPSplitComplex(realp: hRBase0 + 1, imagp: hIBase0 + 1)
         vDSP_zvmul(&fdlSplit, 1, &hrirSplit, 1, &accSplit, 1, len, 1)
         
-        // OPTIMIZATION: Remaining partitions (NO BRANCHES in loop!)
-        // Create temp split complex for multiplication results
-        var tempSplit = DSPSplitComplex(realp: tempMulReal, imagp: tempMulImag)
-        
+        // OPTIMIZATION: Remaining partitions - stack-allocated structs per iteration
+        // This allows the compiler to optimize struct lifetime and eliminates repeated mutations
         var p = 1
         while p < partitionCount {
-            // Branch-free circular index calculation using bitwise AND
-            let fdlIdx = (fdlIndex + p) & partitionMask
+            // FDL circular index calculation
+            // CRITICAL: Must use partitionCount for wraparound, not partitionMask
+            // because HRIR only has valid data in [0, partitionCount), not [0, partitionCountPow2)
+            var fdlIdx = fdlIndex + p
+            if fdlIdx >= partitionCount {
+                fdlIdx -= partitionCount
+            }
             
             // Calculate offsets into flat contiguous buffers (cache-friendly)
             let fdlOffset = fdlIdx * fftSizeHalf
@@ -341,18 +336,15 @@ class ConvolutionEngine {
             accRealDC.pointee += fdlRBase.pointee * hRBase.pointee
             accImagDC.pointee += fdlIBase.pointee * hIBase.pointee
             
-            // Accumulate complex bins (no branch - always accumulate for p > 0)
-            fdlSplit.realp = fdlRBase + 1
-            fdlSplit.imagp = fdlIBase + 1
-            hrirSplit.realp = hRBase + 1
-            hrirSplit.imagp = hIBase + 1
-            tempSplit.realp = tempMulReal + 1
-            tempSplit.imagp = tempMulImag + 1
-            accSplit.realp = accRealDC + 1
-            accSplit.imagp = accImagDC + 1
+            // Stack-allocated structs for complex bins (compiler can optimize lifetime)
+            var fdl = DSPSplitComplex(realp: fdlRBase + 1, imagp: fdlIBase + 1)
+            var hrir = DSPSplitComplex(realp: hRBase + 1, imagp: hIBase + 1)
+            var temp = DSPSplitComplex(realp: tempMulReal + 1, imagp: tempMulImag + 1)
+            var acc = DSPSplitComplex(realp: accRealDC + 1, imagp: accImagDC + 1)
             
-            vDSP_zvmul(&fdlSplit, 1, &hrirSplit, 1, &tempSplit, 1, len, 1)
-            vDSP_zvadd(&tempSplit, 1, &accSplit, 1, &accSplit, 1, len)
+            // vDSP operations
+            vDSP_zvmul(&fdl, 1, &hrir, 1, &temp, 1, len, 1)
+            vDSP_zvadd(&temp, 1, &acc, 1, &acc, 1, len)
             
             p += 1
         }
