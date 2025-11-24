@@ -842,8 +842,10 @@ class MenuBarManager: NSObject, NSMenuDelegate {
     private func handleOutputDeviceDisconnected() {
         print("[MenuBarManager] Currently-selected output was disconnected")
         
-        // Stop audio if running
-        if audioManager.isRunning {
+        // Capture running state BEFORE stopping
+        let wasRunning = audioManager.isRunning
+        
+        if wasRunning {
             audioManager.stop()
         }
         
@@ -858,6 +860,12 @@ class MenuBarManager: NSObject, NSMenuDelegate {
                         outputChannelRange: firstAvailable.startChannel..<(firstAvailable.startChannel + 2)
                     )
                     print("[MenuBarManager] Switched to fallback output: \(firstAvailable.name)")
+                    
+                    // NEW: Restart audio if it was running
+                    if wasRunning {
+                        audioManager.start()
+                        print("[MenuBarManager] ✅ Audio engine restarted on fallback device")
+                    }
                 }
             } catch {
                 print("[MenuBarManager] Failed to switch to fallback output: \(error)")
