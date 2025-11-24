@@ -32,8 +32,8 @@ class MenuBarManager: NSObject, NSMenuDelegate {
     private var selectedOutputDevice: AggregateDeviceInspector.SubDeviceInfo?
     private var availableOutputs: [AggregateDeviceInspector.SubDeviceInfo] = []
     
-    // Track the last user-selected output by NAME (not ID, because IDs change on reconnect!)
-    private var lastUserSelectedOutputName: String?
+    // Track the last user-selected output by UID (persistent across reconnections)
+    private var lastUserSelectedOutputUID: String?
     
     // Aggregate device monitoring
     private var aggregateListenerAdded = false
@@ -362,7 +362,7 @@ class MenuBarManager: NSObject, NSMenuDelegate {
             // Auto-select first output if available
             if let firstOutput = availableOutputs.first {
                 selectedOutputDevice = firstOutput
-                lastUserSelectedOutputName = firstOutput.name  // Track this selection
+                lastUserSelectedOutputUID = firstOutput.uid  // Track this selection
                 
                 // Setup audio graph with aggregate
                 try audioManager.setupAudioUnit(
@@ -392,7 +392,7 @@ class MenuBarManager: NSObject, NSMenuDelegate {
         guard let output = sender.representedObject as? AggregateDeviceInspector.SubDeviceInfo else { return }
         
         selectedOutputDevice = output
-        lastUserSelectedOutputName = output.name  // Track user's choice
+        lastUserSelectedOutputUID = output.uid  // Track user's choice
         
         // Update output routing (NO NEED TO STOP AUDIO!)
         let channelRange = output.startChannel..<(output.startChannel + 2)
@@ -507,11 +507,11 @@ class MenuBarManager: NSObject, NSMenuDelegate {
                 if let outputID = settings.selectedOutputDeviceID,
                    let output = availableOutputs.first(where: { $0.device.id == outputID }) {
                     selectedOutputDevice = output
-                    lastUserSelectedOutputName = output.name  // Track restored selection
+                    lastUserSelectedOutputUID = output.uid  // Track restored selection
                 } else if let firstOutput = availableOutputs.first {
                     // Fallback to first output
                     selectedOutputDevice = firstOutput
-                    lastUserSelectedOutputName = firstOutput.name  // Track fallback selection
+                    lastUserSelectedOutputUID = firstOutput.uid  // Track fallback selection
                 }
                 
                 // Setup audio graph
@@ -663,18 +663,18 @@ class MenuBarManager: NSObject, NSMenuDelegate {
             
             if availableOutputs.count != previousCount {
                 print("[MenuBarManager] Available outputs changed: \(previousCount) -> \(availableOutputs.count)")
-                print("[MenuBarManager] DEBUG (refresh): lastUserSelectedOutputName = \(String(describing: lastUserSelectedOutputName))")
+                print("[MenuBarManager] DEBUG (refresh): lastUserSelectedOutputUID = \(String(describing: lastUserSelectedOutputUID))")
                 print("[MenuBarManager] DEBUG (refresh): current selectedOutputDevice = \(String(describing: selectedOutputDevice?.device.id))")
                 print("[MenuBarManager] DEBUG (refresh): availableOutputs IDs = \(availableOutputs.map { $0.device.id })")
                 
                 // Priority 1: Check if the user's originally-selected device came back
-                if let userSelectedName = lastUserSelectedOutputName,
-                   let originalDevice = availableOutputs.first(where: { $0.name == userSelectedName }) {
+                if let userSelectedUID = lastUserSelectedOutputUID,
+                   let originalDevice = availableOutputs.first(where: { $0.uid == userSelectedUID }) {
                     
-                    print("[MenuBarManager] DEBUG (refresh): Found original device! Name=\(userSelectedName)")
+                    print("[MenuBarManager] DEBUG (refresh): Found original device! UID=\(userSelectedUID)")
                     
                     // Original device is back! Restore it
-                    if selectedOutputDevice?.name != userSelectedName {
+                    if selectedOutputDevice?.uid != userSelectedUID {
                         print("[MenuBarManager] DEBUG (refresh): Restoring to original device")
                         selectedOutputDevice = originalDevice
                         
@@ -725,7 +725,7 @@ class MenuBarManager: NSObject, NSMenuDelegate {
                 // Priority 3: No selection - auto-select first available
                 else if let firstOutput = availableOutputs.first {
                     selectedOutputDevice = firstOutput
-                    lastUserSelectedOutputName = firstOutput.name
+                    lastUserSelectedOutputUID = firstOutput.uid
                     
                     let channelRange = firstOutput.startChannel..<(firstOutput.startChannel + 2)
                     audioManager.setOutputChannels(channelRange)
@@ -745,7 +745,7 @@ class MenuBarManager: NSObject, NSMenuDelegate {
         guard let device = audioManager.aggregateDevice else { return }
         
         print("[MenuBarManager] Aggregate configuration changed, refreshing...")
-        print("[MenuBarManager] DEBUG: lastUserSelectedOutputName = \(String(describing: lastUserSelectedOutputName))")
+        print("[MenuBarManager] DEBUG: lastUserSelectedOutputUID = \(String(describing: lastUserSelectedOutputUID))")
         print("[MenuBarManager] DEBUG: current selectedOutputDevice = \(String(describing: selectedOutputDevice?.device.id))")
         
         do {
@@ -766,11 +766,11 @@ class MenuBarManager: NSObject, NSMenuDelegate {
             print("[MenuBarManager] DEBUG: availableOutputs IDs = \(availableOutputs.map { $0.device.id })")
             
             // Priority 1: Check if the user's originally-selected device came back
-            if let userSelectedName = lastUserSelectedOutputName,
-               let originalDevice = availableOutputs.first(where: { $0.name == userSelectedName }) {
+            if let userSelectedUID = lastUserSelectedOutputUID,
+               let originalDevice = availableOutputs.first(where: { $0.uid == userSelectedUID }) {
                 
                 // Original device is back! Restore it
-                if selectedOutputDevice?.name != userSelectedName {
+                if selectedOutputDevice?.uid != userSelectedUID {
                     selectedOutputDevice = originalDevice
                     
                     // Use setOutputChannels (works while audio is running, no restart needed)
