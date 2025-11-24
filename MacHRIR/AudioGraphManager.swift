@@ -321,10 +321,10 @@ class AudioGraphManager: ObservableObject {
         )
         outputChannelCount = outputDeviceFormat.mChannelsPerFrame
         
-        print("[AudioGraph] Aggregate Device: \(device.name)")
-        print("  Input Channels: \(inputChannelCount)")
-        print("  Output Channels: \(outputChannelCount)")
-        print("  Sample Rate: \(currentSampleRate)")
+        Logger.log("[AudioGraph] Aggregate Device: \(device.name)")
+        Logger.log("  Input Channels: \(inputChannelCount)")
+        Logger.log("  Output Channels: \(outputChannelCount)")
+        Logger.log("  Sample Rate: \(currentSampleRate)")
 
         // Set Stream Format for Input (Element 1 Output Scope)
         // This is the format we want the AU to provide data TO us

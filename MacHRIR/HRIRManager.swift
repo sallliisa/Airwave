@@ -482,7 +482,7 @@ class HRIRManager: ObservableObject {
         }
         
         if !orphanedPresets.isEmpty {
-            print("[HRIRManager] Removing \(orphanedPresets.count) orphaned presets")
+            Logger.log("[HRIRManager] Removing \(orphanedPresets.count) orphaned presets")
             hasChanges = true
         }
         
@@ -518,7 +518,7 @@ class HRIRManager: ObservableObject {
         let metadataURL = presetsDirectory.appendingPathComponent("presets.json")
 
         guard let data = try? JSONEncoder().encode(presets) else {
-            print("Failed to encode presets")
+            Logger.log("Failed to encode presets")
             return
         }
 

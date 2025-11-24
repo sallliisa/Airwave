@@ -43,6 +43,10 @@ class AggregateDeviceInspector {
             if isOutputOnly { return .output }
             return .output // Default to output for bidirectional if forced to choose
         }
+        
+        var stereoChannelRange: Range<Int> {
+            return startChannel..<(startChannel + 2)
+        }
     }
     
     enum Direction {
@@ -228,7 +232,7 @@ class AggregateDeviceInspector {
                 case .skipMissing:
                     // Log and skip
                     lastSkippedDevices.append((uid: uid, reason: "Device not connected"))
-                    print("[AggregateDeviceInspector] Skipping disconnected device: \(uid)")
+                    Logger.log("[AggregateDeviceInspector] Skipping disconnected device: \(uid)")
                     continue // Skip this device, move to next
                 }
             }

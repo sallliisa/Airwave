@@ -112,7 +112,7 @@ class MenuBarManager: NSObject, NSMenuDelegate {
         // Wait for device manager to populate devices
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
             guard let self = self else { return }
-            print("[MenuBarManager] Initializing settings...")
+            Logger.log("[MenuBarManager] Initializing settings...")
             let settings = self.loadSettings()
             self.isInitialized = true
             
@@ -276,25 +276,22 @@ class MenuBarManager: NSObject, NSMenuDelegate {
     
     // MARK: - Actions
     
-    private func validateAggregateDevice(_ device: AudioDevice) -> (valid: Bool, reason: String?) {
+    private func validateAggregateDevice(_ device: AudioDevice) -> (valid: Bool, reason: String?, validOutputs: [AggregateDeviceInspector.SubDeviceInfo]?) {
         do {
             let inputs = try inspector.getInputDevices(aggregate: device)
             let allOutputs = try inspector.getOutputDevices(aggregate: device)
             
             // Filter out virtual loopback devices for validation
-            let outputs = allOutputs.filter { output in
-                let name = output.name.lowercased()
-                return !name.contains("blackhole") && !name.contains("soundflower")
-            }
+            let outputs = filterAvailableOutputs(allOutputs)
             
-            print("[MenuBarManager] Validation: \(inputs.count) connected inputs, \(outputs.count) connected outputs")
+            Logger.log("[MenuBarManager] Validation: \(inputs.count) connected inputs, \(outputs.count) connected outputs")
 
             if inputs.isEmpty {
-                return (false, "Aggregate device '\(device.name)' has no connected input devices.\n\nPlease reconnect your input device or update the aggregate in Audio MIDI Setup.")
+                return (false, "Aggregate device '\(device.name)' has no connected input devices.\n\nPlease reconnect your input device or update the aggregate in Audio MIDI Setup.", nil)
             }
 
             if outputs.isEmpty {
-                return (false, "Aggregate device '\(device.name)' has no connected output devices.\n\nPlease reconnect your output devices or update the aggregate in Audio MIDI Setup.")
+                return (false, "Aggregate device '\(device.name)' has no connected output devices.\n\nPlease reconnect your output devices or update the aggregate in Audio MIDI Setup.", nil)
             }
 
             // Check for at least stereo output capability
@@ -305,12 +302,12 @@ class MenuBarManager: NSObject, NSMenuDelegate {
             }
             
             if !hasStereoOutput {
-                return (false, "Aggregate device '\(device.name)' has no stereo output.\n\nAt least one output device must have 2+ channels.")
+                return (false, "Aggregate device '\(device.name)' has no stereo output.\n\nAt least one output device must have 2+ channels.", nil)
             }
 
-            return (true, nil)
+            return (true, nil, outputs)
         } catch {
-            return (false, "Could not inspect aggregate device: \(error.localizedDescription)")
+            return (false, "Could not inspect aggregate device: \(error.localizedDescription)", nil)
         }
     }
 
@@ -319,9 +316,9 @@ class MenuBarManager: NSObject, NSMenuDelegate {
         
         // Log device health
         let health = inspector.getDeviceHealth(aggregate: device)
-        print("[MenuBarManager] Aggregate '\(device.name)': \(health.connected) connected, \(health.missing) missing")
+        Logger.log("[MenuBarManager] Aggregate '\(device.name)': \(health.connected) connected, \(health.missing) missing")
         if health.missing > 0 {
-            print("[MenuBarManager] Missing devices: \(health.missingUIDs)")
+            Logger.log("[MenuBarManager] Missing devices: \(health.missingUIDs)")
         }
         
         // Validate first
@@ -343,22 +340,10 @@ class MenuBarManager: NSObject, NSMenuDelegate {
         
         audioManager.selectAggregateDevice(device)
         
-        // Load available outputs
+        // Load available outputs (already validated and filtered)
+        availableOutputs = validation.validOutputs ?? []
+        
         do {
-            let allOutputs = try inspector.getOutputDevices(aggregate: device)
-            
-            // Filter out virtual loopback devices (BlackHole, Soundflower, etc.)
-            // These are input-only virtual devices that users never want to output to
-            availableOutputs = allOutputs.filter { output in
-                let name = output.name.lowercased()
-                return !name.contains("blackhole") && !name.contains("soundflower")
-            }
-            
-            if availableOutputs.isEmpty {
-                print("[MenuBarManager] Warning: All outputs were virtual loopback devices, showing all")
-                availableOutputs = allOutputs // Fallback: show all if everything was filtered
-            }
-            
             // Auto-select first output if available
             if let firstOutput = availableOutputs.first {
                 selectedOutputDevice = firstOutput
@@ -367,7 +352,7 @@ class MenuBarManager: NSObject, NSMenuDelegate {
                 // Setup audio graph with aggregate
                 try audioManager.setupAudioUnit(
                     aggregateDevice: device,
-                    outputChannelRange: firstOutput.startChannel..<(firstOutput.startChannel + 2)
+                    outputChannelRange: firstOutput.stereoChannelRange
                 )
             } else {
                 selectedOutputDevice = nil
@@ -382,7 +367,7 @@ class MenuBarManager: NSObject, NSMenuDelegate {
             }
             
         } catch {
-            print("Failed to configure aggregate device: \(error)")
+            Logger.log("Failed to configure aggregate device: \(error)")
         }
         
         updateMenu()
@@ -395,7 +380,7 @@ class MenuBarManager: NSObject, NSMenuDelegate {
         lastUserSelectedOutputUID = output.uid  // Track user's choice
         
         // Update output routing (NO NEED TO STOP AUDIO!)
-        let channelRange = output.startChannel..<(output.startChannel + 2)
+        let channelRange = output.stereoChannelRange
         audioManager.setOutputChannels(channelRange)
         
         updateMenu()
@@ -475,7 +460,7 @@ class MenuBarManager: NSObject, NSMenuDelegate {
     
     @discardableResult
     private func loadSettings() -> AppSettings {
-        print("[MenuBarManager] Loading settings...")
+        Logger.log("[MenuBarManager] Loading settings...")
         isRestoringState = true
         
         let settings = settingsManager.loadSettings()
@@ -485,7 +470,7 @@ class MenuBarManager: NSObject, NSMenuDelegate {
            let device = AudioDeviceManager.getDeviceByUID(deviceUID),
            inspector.isAggregateDevice(device) {
             
-            print("[MenuBarManager] Restoring aggregate device: \(device.name)")
+            Logger.log("[MenuBarManager] Restoring aggregate device: \(device.name)")
             audioManager.selectAggregateDevice(device)
             
             // Load available outputs
@@ -493,15 +478,7 @@ class MenuBarManager: NSObject, NSMenuDelegate {
                 let allOutputs = try inspector.getOutputDevices(aggregate: device)
                 
                 // Filter out virtual loopback devices (BlackHole, Soundflower, etc.)
-                availableOutputs = allOutputs.filter { output in
-                    let name = output.name.lowercased()
-                    return !name.contains("blackhole") && !name.contains("soundflower")
-                }
-                
-                if availableOutputs.isEmpty {
-                    print("[MenuBarManager] Warning: All outputs were virtual loopback devices, showing all")
-                    availableOutputs = allOutputs
-                }
+                availableOutputs = filterAvailableOutputs(allOutputs)
                 
                 // Restore selected output device
                 if let outputUID = settings.selectedOutputDeviceUID,
@@ -518,7 +495,7 @@ class MenuBarManager: NSObject, NSMenuDelegate {
                 if let output = selectedOutputDevice {
                     try audioManager.setupAudioUnit(
                         aggregateDevice: device,
-                        outputChannelRange: output.startChannel..<(output.startChannel + 2)
+                        outputChannelRange: output.stereoChannelRange
                     )
                 }
                 
@@ -526,27 +503,27 @@ class MenuBarManager: NSObject, NSMenuDelegate {
                 addAggregateDeviceListener(for: device)
                 
             } catch {
-                print("Failed to restore audio configuration: \(error)")
+                Logger.log("Failed to restore audio configuration: \(error)")
             }
         }
         
         // Restore preset
         if let presetID = settings.activePresetID,
            let preset = hrirManager.presets.first(where: { $0.id == presetID }) {
-            print("[MenuBarManager] Restoring preset: \(preset.name)")
+            Logger.log("[MenuBarManager] Restoring preset: \(preset.name)")
             let sampleRate = 48000.0
             let inputLayout = InputLayout.detect(channelCount: 2)
             hrirManager.activatePreset(preset, targetSampleRate: sampleRate, inputLayout: inputLayout)
         }
         
         // Restore convolution
-        print("[MenuBarManager] Restoring convolution: \(settings.convolutionEnabled)")
+        Logger.log("[MenuBarManager] Restoring convolution: \(settings.convolutionEnabled)")
         hrirManager.convolutionEnabled = settings.convolutionEnabled
         
         // Allow observers to fire before enabling saves
         DispatchQueue.main.async { [weak self] in
             self?.isRestoringState = false
-            print("[MenuBarManager] Restoration complete, saves now enabled")
+            Logger.log("[MenuBarManager] Restoration complete, saves now enabled")
         }
         
         return settings
@@ -554,7 +531,7 @@ class MenuBarManager: NSObject, NSMenuDelegate {
     
     private func saveSettings() {
         guard isInitialized && !isRestoringState else {
-            print("[MenuBarManager] Skipping save (Initialized: \(isInitialized), Restoring: \(isRestoringState))")
+            Logger.log("[MenuBarManager] Skipping save (Initialized: \(isInitialized), Restoring: \(isRestoringState))")
             return
         }
         
@@ -566,7 +543,7 @@ class MenuBarManager: NSObject, NSMenuDelegate {
     }
     
     private func performSave() {
-        print("[MenuBarManager] Saving settings...")
+        Logger.log("[MenuBarManager] Saving settings...")
 
         // Get UIDs for persistence
         let aggregateUID = audioManager.aggregateDevice?.uid
@@ -588,7 +565,7 @@ class MenuBarManager: NSObject, NSMenuDelegate {
     
     private func checkAutoStart(with settings: AppSettings) {
         if settings.autoStart && audioManager.aggregateDevice != nil && selectedOutputDevice != nil {
-            print("[MenuBarManager] Auto-starting audio engine...")
+            Logger.log("[MenuBarManager] Auto-starting audio engine...")
             audioManager.start()
         }
     }
@@ -619,9 +596,9 @@ class MenuBarManager: NSObject, NSMenuDelegate {
         if status == noErr {
             aggregateListenerAdded = true
             currentMonitoredAggregate = device
-            print("[MenuBarManager] Added listener for aggregate device: \(device.name)")
+            Logger.log("[MenuBarManager] Added listener for aggregate device: \(device.name)")
         } else {
-            print("[MenuBarManager] Failed to add aggregate listener, status: \(status)")
+            Logger.log("[MenuBarManager] Failed to add aggregate listener, status: \(status)")
         }
     }
     
@@ -645,12 +622,30 @@ class MenuBarManager: NSObject, NSMenuDelegate {
         
         aggregateListenerAdded = false
         currentMonitoredAggregate = nil
-        print("[MenuBarManager] Removed aggregate device listener")
+        Logger.log("[MenuBarManager] Removed aggregate device listener")
     }
     
+    /// Helper to filter out virtual loopback devices
+    private func filterAvailableOutputs(_ allOutputs: [AggregateDeviceInspector.SubDeviceInfo]) -> [AggregateDeviceInspector.SubDeviceInfo] {
+        // Filter out virtual loopback devices (BlackHole, Soundflower, etc.)
+        // These are input-only virtual devices that users never want to output to
+        var filtered = allOutputs.filter { output in
+            let name = output.name.lowercased()
+            return !name.contains("blackhole") && !name.contains("soundflower")
+        }
+        
+        // Handle case where all outputs were filtered
+        if filtered.isEmpty && !allOutputs.isEmpty {
+            Logger.log("[MenuBarManager] Warning: All outputs were virtual loopback devices, showing all")
+            filtered = allOutputs
+        }
+        
+        return filtered
+    }
+
     /// Refresh available outputs if we have an aggregate device selected
     /// Called when system device list changes (devices added/removed)
-    private func refreshAvailableOutputsIfNeeded() {
+    fileprivate func refreshAvailableOutputsIfNeeded() {
         guard let device = audioManager.aggregateDevice else { return }
         
         do {
@@ -658,189 +653,104 @@ class MenuBarManager: NSObject, NSMenuDelegate {
             let allOutputs = try inspector.getOutputDevices(aggregate: device)
             
             // Filter out virtual loopback devices (BlackHole, Soundflower, etc.)
-            availableOutputs = allOutputs.filter { output in
-                let name = output.name.lowercased()
-                return !name.contains("blackhole") && !name.contains("soundflower")
-            }
-            
-            if availableOutputs.isEmpty && !allOutputs.isEmpty {
-                print("[MenuBarManager] Warning: All outputs were virtual loopback devices, showing all")
-                availableOutputs = allOutputs
-            }
+            availableOutputs = filterAvailableOutputs(allOutputs)
             
             if availableOutputs.count != previousCount {
-                print("[MenuBarManager] Available outputs changed: \(previousCount) -> \(availableOutputs.count)")
-                print("[MenuBarManager] DEBUG (refresh): lastUserSelectedOutputUID = \(String(describing: lastUserSelectedOutputUID))")
-                print("[MenuBarManager] DEBUG (refresh): current selectedOutputDevice = \(String(describing: selectedOutputDevice?.device.id))")
-                print("[MenuBarManager] DEBUG (refresh): availableOutputs IDs = \(availableOutputs.map { $0.device.id })")
+                Logger.log("[MenuBarManager] Output count changed: \(previousCount) -> \(availableOutputs.count)")
                 
-                // Priority 1: Check if the user's originally-selected device came back
-                if let userSelectedUID = lastUserSelectedOutputUID,
-                   let originalDevice = availableOutputs.first(where: { $0.uid == userSelectedUID }) {
-                    
-                    print("[MenuBarManager] DEBUG (refresh): Found original device! UID=\(userSelectedUID)")
-                    
-                    // Original device is back! Restore it
-                    if selectedOutputDevice?.uid != userSelectedUID {
-                        print("[MenuBarManager] DEBUG (refresh): Restoring to original device")
-                        selectedOutputDevice = originalDevice
-                        
-                        // Need to reinitialize audio unit because device ID changed on reconnection
-                        // Can't use setOutputChannels alone - it won't update the device reference
-                        do {
-                            if let aggregate = audioManager.aggregateDevice {
-                                // Stop audio first
-                                let wasRunning = audioManager.isRunning
-                                if wasRunning {
-                                    audioManager.stop()
-                                }
-                                
-                                // Reinitialize with new device
-                                try audioManager.setupAudioUnit(
-                                    aggregateDevice: aggregate,
-                                    outputChannelRange: originalDevice.startChannel..<(originalDevice.startChannel + 2)
-                                )
-                                
-                                // Restart if was running
-                                if wasRunning {
-                                    audioManager.start()
-                                }
-                                
-                                print("[MenuBarManager] Restored original output: \(originalDevice.name) (ch \(originalDevice.startChannel)-\(originalDevice.startChannel + 1))")
-                            }
-                        } catch {
-                            print("[MenuBarManager] Failed to restore original output: \(error)")
-                        }
-                        
-                        // Update UI immediately
-                        updateMenu()
-                    } else {
-                        // Same device but channels may have shifted
-                        refreshOutputChannelMapping()
-                    }
-                }
-                // Priority 2: Check if current selection still exists
-                else if let currentOutput = selectedOutputDevice {
-                    if !availableOutputs.contains(where: { $0.device.id == currentOutput.device.id }) {
-                        // Current output disappeared - this triggers fallback BUT don't update lastUserSelectedOutputID
-                        handleOutputDeviceDisconnected()
-                    } else {
-                        // Output still exists but channel numbers may have shifted
-                        refreshOutputChannelMapping()
-                    }
-                }
-                // Priority 3: No selection - auto-select first available
-                else if let firstOutput = availableOutputs.first {
-                    selectedOutputDevice = firstOutput
-                    lastUserSelectedOutputUID = firstOutput.uid
-                    
-                    let channelRange = firstOutput.startChannel..<(firstOutput.startChannel + 2)
-                    audioManager.setOutputChannels(channelRange)
-                    
-                    print("[MenuBarManager] Auto-selected first available output: \(firstOutput.name)")
-                    
-                    // Update UI immediately
-                    updateMenu()
-                }
+                // Try to restore user's preferred device
+                restoreUserPreferredDevice(from: availableOutputs)
+                
+                updateMenu()
             }
         } catch {
-            print("[MenuBarManager] Failed to refresh available outputs: \(error)")
+            Logger.log("[MenuBarManager] Failed to refresh outputs: \(error)")
         }
     }
     
-    fileprivate func handleAggregateConfigurationChange() {
-        guard let device = audioManager.aggregateDevice else { return }
-        
-        print("[MenuBarManager] Aggregate configuration changed, refreshing...")
-        print("[MenuBarManager] DEBUG: lastUserSelectedOutputUID = \(String(describing: lastUserSelectedOutputUID))")
-        print("[MenuBarManager] DEBUG: current selectedOutputDevice = \(String(describing: selectedOutputDevice?.device.id))")
-        
-        do {
-            // Refresh available outputs
-            let allOutputs = try inspector.getOutputDevices(aggregate: device)
+
+    
+    // MARK: - Device Restoration Logic
+    
+    private func restoreUserPreferredDevice(from outputs: [AggregateDeviceInspector.SubDeviceInfo]) {
+        // Priority 1: Check if the user's originally-selected device came back
+        if let userSelectedUID = lastUserSelectedOutputUID,
+           let preferredDevice = outputs.first(where: { $0.uid == userSelectedUID }) {
             
-            // Filter out virtual loopback devices (BlackHole, Soundflower, etc.)
-            availableOutputs = allOutputs.filter { output in
-                let name = output.name.lowercased()
-                return !name.contains("blackhole") && !name.contains("soundflower")
+            // Even if the UID matches, the CoreAudio DeviceID might have changed (e.g. reconnection).
+            // If the ID changed (or we had no selection), we must re-initialize the AudioUnit.
+            // If the ID is stable, we can just update the channel mapping (cheaper).
+            let needsAudioUnitReset = selectedOutputDevice?.device.id != preferredDevice.device.id
+            
+            if needsAudioUnitReset {
+                restoreDeviceAfterReconnection(preferredDevice)
+            } else {
+                refreshChannelMapping(for: preferredDevice)
             }
-            
-            if availableOutputs.isEmpty && !allOutputs.isEmpty {
-                print("[MenuBarManager] Warning: All outputs were virtual loopback devices, showing all")
-                availableOutputs = allOutputs
-            }
-            
-            print("[MenuBarManager] DEBUG: availableOutputs IDs = \(availableOutputs.map { $0.device.id })")
-            
-            // Priority 1: Check if the user's originally-selected device came back
-            if let userSelectedUID = lastUserSelectedOutputUID,
-               let originalDevice = availableOutputs.first(where: { $0.uid == userSelectedUID }) {
-                
-                // Original device is back! Restore it
-                if selectedOutputDevice?.uid != userSelectedUID {
-                    selectedOutputDevice = originalDevice
-                    
-                    // Use setOutputChannels (works while audio is running, no restart needed)
-                    let channelRange = originalDevice.startChannel..<(originalDevice.startChannel + 2)
-                    audioManager.setOutputChannels(channelRange)
-                    
-                    print("[MenuBarManager] Restored original output: \(originalDevice.name) (ch \(originalDevice.startChannel)-\(originalDevice.startChannel + 1))")
-                } else {
-                    // Same device but channels may have shifted
-                    refreshOutputChannelMapping()
+        }
+        // Priority 2: Check if current selection still exists
+        else if let currentOutput = selectedOutputDevice {
+            if !outputs.contains(where: { $0.device.id == currentOutput.device.id }) {
+                // Current output disappeared - this triggers fallback
+                handleOutputDeviceDisconnected()
+            } else {
+                // Output still exists but channel numbers may have shifted
+                // Find the updated device info for the current output
+                if let updatedDevice = outputs.first(where: { $0.device.id == currentOutput.device.id }) {
+                    refreshChannelMapping(for: updatedDevice)
                 }
             }
-            // Priority 2: Check if current selection still exists
-            else if let currentOutput = selectedOutputDevice {
-                if availableOutputs.contains(where: { $0.device.id == currentOutput.device.id }) {
-                    // Still exists, refresh channel mapping
-                    refreshOutputChannelMapping()
-                } else {
-                    // Disconnected, handle it
-                    handleOutputDeviceDisconnected()
-                }
-            }
+        }
+        // Priority 3: No selection - auto-select first available
+        else if let firstOutput = outputs.first {
+            Logger.log("[MenuBarManager] Auto-selecting first available output: \(firstOutput.name)")
+            selectedOutputDevice = firstOutput
+            lastUserSelectedOutputUID = firstOutput.uid
             
-            // Update UI
+            let channelRange = firstOutput.stereoChannelRange
+            audioManager.setOutputChannels(channelRange)
+            
             updateMenu()
-            
-        } catch {
-            print("[MenuBarManager] Failed to handle aggregate configuration change: \(error)")
         }
     }
     
-    private func refreshOutputChannelMapping() {
-        guard let device = audioManager.aggregateDevice,
-              let currentOutput = selectedOutputDevice else { return }
+    private func restoreDeviceAfterReconnection(_ device: AggregateDeviceInspector.SubDeviceInfo) {
+        Logger.log("[MenuBarManager] Restoring reconnected device: \(device.name)")
         
-        // Get fresh channel mapping
+        guard let aggregate = audioManager.aggregateDevice else { return }
+        
+        let wasRunning = audioManager.isRunning
+        if wasRunning { audioManager.stop() }
+        
         do {
-            let allOutputs = try inspector.getOutputDevices(aggregate: device)
+            try audioManager.setupAudioUnit(
+                aggregateDevice: aggregate,
+                outputChannelRange: device.stereoChannelRange
+            )
             
-            // Filter out virtual loopback devices (BlackHole, Soundflower, etc.)
-            let outputs = allOutputs.filter { output in
-                let name = output.name.lowercased()
-                return !name.contains("blackhole") && !name.contains("soundflower")
-            }
+            selectedOutputDevice = device
             
-            // Find the current output in the fresh list
-            if let freshOutput = outputs.first(where: { $0.device.id == currentOutput.device.id }) {
-                // Update to new channel range
-                selectedOutputDevice = freshOutput
-                availableOutputs = outputs
-                
-                let channelRange = freshOutput.startChannel..<(freshOutput.startChannel + 2)
-                audioManager.setOutputChannels(channelRange)
-                
-                print("[MenuBarManager] Refreshed channels for \(freshOutput.name): ch \(freshOutput.startChannel)-\(freshOutput.startChannel + 1)")
-            }
+            if wasRunning { audioManager.start() }
+            
+            Logger.log("[MenuBarManager] ✅ Restored: \(device.name)")
         } catch {
-            print("[MenuBarManager] Failed to refresh channel mapping: \(error)")
+            Logger.log("[MenuBarManager] ❌ Failed to restore: \(error)")
         }
+    }
+    
+    private func refreshChannelMapping(for device: AggregateDeviceInspector.SubDeviceInfo) {
+        // Only log if channels actually changed
+        if selectedOutputDevice?.startChannel != device.startChannel {
+            Logger.log("[MenuBarManager] Refreshing channel mapping for: \(device.name) (ch \(device.startChannel)-\(device.startChannel + 1))")
+        }
+        
+        selectedOutputDevice = device
+        let channelRange = device.stereoChannelRange
+        audioManager.setOutputChannels(channelRange)
     }
     
     private func handleOutputDeviceDisconnected() {
-        print("[MenuBarManager] Currently-selected output was disconnected")
+        Logger.log("[MenuBarManager] Currently-selected output was disconnected")
         
         // Capture running state BEFORE stopping
         let wasRunning = audioManager.isRunning
@@ -857,23 +767,23 @@ class MenuBarManager: NSObject, NSMenuDelegate {
                 if let aggregate = audioManager.aggregateDevice {
                     try audioManager.setupAudioUnit(
                         aggregateDevice: aggregate,
-                        outputChannelRange: firstAvailable.startChannel..<(firstAvailable.startChannel + 2)
+                        outputChannelRange: firstAvailable.stereoChannelRange
                     )
-                    print("[MenuBarManager] Switched to fallback output: \(firstAvailable.name)")
+                    Logger.log("[MenuBarManager] Switched to fallback output: \(firstAvailable.name)")
                     
                     // NEW: Restart audio if it was running
                     if wasRunning {
                         audioManager.start()
-                        print("[MenuBarManager] ✅ Audio engine restarted on fallback device")
+                        Logger.log("[MenuBarManager] ✅ Audio engine restarted on fallback device")
                     }
                 }
             } catch {
-                print("[MenuBarManager] Failed to switch to fallback output: \(error)")
+                Logger.log("[MenuBarManager] Failed to switch to fallback output: \(error)")
             }
         } else {
             // No outputs available
             selectedOutputDevice = nil
-            print("[MenuBarManager] No outputs available after disconnect")
+            Logger.log("[MenuBarManager] No outputs available after disconnect")
         }
         
         updateMenu()
@@ -897,7 +807,7 @@ private func aggregateDeviceChangeCallback(
     
     // Handle on main thread
     DispatchQueue.main.async {
-        manager.handleAggregateConfigurationChange()
+        manager.refreshAvailableOutputsIfNeeded()
     }
     
     return noErr

@@ -52,7 +52,7 @@ class SettingsManager {
     private var saveWorkItem: DispatchWorkItem?
 
     init() {
-        print("[Settings] Initialized with UserDefaults")
+        Logger.log("[Settings] Initialized with UserDefaults")
     }
 
     /// Load settings from memory cache or UserDefaults
@@ -67,21 +67,21 @@ class SettingsManager {
 
     /// Load settings from UserDefaults (internal)
     private func loadSettingsFromDisk() -> AppSettings {
-        print("[Settings] Loading settings from UserDefaults")
+        Logger.log("[Settings] Loading settings from UserDefaults")
         
         guard let data = defaults.data(forKey: settingsKey) else {
-            print("[Settings] No settings found in UserDefaults, using defaults")
+            Logger.log("[Settings] No settings found in UserDefaults, using defaults")
             return .default
         }
         
         // Try to decode new schema
         if let settings = try? JSONDecoder().decode(AppSettings.self, from: data) {
-            print("[Settings] Loaded settings from disk")
+            Logger.log("[Settings] Loaded settings from disk")
             return settings
         }
         
         // Migration: If we fail to decode, it might be the old schema.
-        print("[Settings] Failed to decode settings (possible schema mismatch). Resetting to defaults.")
+        Logger.log("[Settings] Failed to decode settings (possible schema mismatch). Resetting to defaults.")
         return .default
     }
 
@@ -104,15 +104,15 @@ class SettingsManager {
     private func flush() {
         guard let settings = cachedSettings else { return }
 
-        print("[Settings] Saving settings to UserDefaults:")
-        print("  - Aggregate Device UID: \(settings.aggregateDeviceUID ?? "nil")")
-        print("  - Output Device UID: \(settings.selectedOutputDeviceUID ?? "nil")")
-        print("  - Active Preset ID: \(settings.activePresetID?.uuidString ?? "nil")")
-        print("  - Convolution Enabled: \(settings.convolutionEnabled)")
-        print("  - Auto Start: \(settings.autoStart)")
+        Logger.log("[Settings] Saving settings to UserDefaults:")
+        Logger.log("  - Aggregate Device UID: \(settings.aggregateDeviceUID ?? "nil")")
+        Logger.log("  - Output Device UID: \(settings.selectedOutputDeviceUID ?? "nil")")
+        Logger.log("  - Active Preset ID: \(settings.activePresetID?.uuidString ?? "nil")")
+        Logger.log("  - Convolution Enabled: \(settings.convolutionEnabled)")
+        Logger.log("  - Auto Start: \(settings.autoStart)")
 
         guard let data = try? JSONEncoder().encode(settings) else {
-            print("[Settings] Failed to encode settings")
+            Logger.log("[Settings] Failed to encode settings")
             return
         }
 
@@ -123,7 +123,7 @@ class SettingsManager {
     
     func setAggregateDevice(_ device: AudioDevice) {
         guard let uid = device.uid else {
-            print("[Settings] ⚠️ Could not get UID for device \(device.name)")
+            Logger.log("[Settings] ⚠️ Could not get UID for device \(device.name)")
             return
         }
         var settings = loadSettings()
@@ -138,7 +138,7 @@ class SettingsManager {
 
     func setOutputDevice(_ device: AudioDevice) {
         guard let uid = device.uid else {
-            print("[Settings] ⚠️ Could not get UID for device \(device.name)")
+            Logger.log("[Settings] ⚠️ Could not get UID for device \(device.name)")
             return
         }
         var settings = loadSettings()

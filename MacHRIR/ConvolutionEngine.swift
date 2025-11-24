@@ -77,15 +77,15 @@ class ConvolutionEngine {
         if let shared = sharedFFTSetup {
             self.fftSetup = shared
             self.ownsFFTSetup = false
-            print("[Convolution] Using shared FFT setup")
+            Logger.log("[Convolution] Using shared FFT setup")
         } else {
             guard let setup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2)) else {
-                print("[Convolution] Failed to create FFT setup")
+                Logger.log("[Convolution] Failed to create FFT setup")
                 return nil
             }
             self.fftSetup = setup
             self.ownsFFTSetup = true
-            print("[Convolution] Created private FFT setup")
+            Logger.log("[Convolution] Created private FFT setup")
         }
         
         // 2. Calculate Partitions
@@ -96,7 +96,7 @@ class ConvolutionEngine {
         self.partitionCountPow2 = 1 << Int(ceil(log2(Double(partitionCount))))
         self.partitionMask = partitionCountPow2 - 1
         
-        print("[Convolution] Init: BlockSize=\(blockSize), HRIR=\(hrirSamples.count), Partitions=\(partitionCount), Pow2=\(partitionCountPow2)")
+        Logger.log("[Convolution] Init: BlockSize=\(blockSize), HRIR=\(hrirSamples.count), Partitions=\(partitionCount), Pow2=\(partitionCountPow2)")
         
         // 3. Allocate Input Buffers
         self.inputBuffer = UnsafeMutablePointer<Float>.allocate(capacity: fftSize)
@@ -177,7 +177,7 @@ class ConvolutionEngine {
             if p == 0 {
                 var energy: Float = 0
                 vDSP_sve(hrirRealData, 1, &energy, vDSP_Length(fftSizeHalf))
-                print("[Convolution] Partition 0 real sum: \(energy)")
+                Logger.log("[Convolution] Partition 0 real sum: \(energy)")
             }
         }
 
@@ -192,7 +192,7 @@ class ConvolutionEngine {
             vDSP_svesq(hrirRealPartition, 1, &realEnergy, vDSP_Length(fftSizeHalf))
             vDSP_svesq(hrirImagPartition, 1, &imagEnergy, vDSP_Length(fftSizeHalf))
             let totalEnergy = sqrt(realEnergy + imagEnergy)
-            print("[Convolution] Partition[\(p)] FFT energy: \(String(format: "%.6f", totalEnergy))")
+            Logger.log("[Convolution] Partition[\(p)] FFT energy: \(String(format: "%.6f", totalEnergy))")
         }
     }
     
