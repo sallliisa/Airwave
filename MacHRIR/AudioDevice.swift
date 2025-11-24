@@ -26,6 +26,11 @@ struct AudioDevice: Identifiable, Equatable, Hashable {
     }
     
     var isAggregateDevice: Bool { AudioDeviceManager.isAggregateDevice(deviceID: id) }
+    
+    /// Returns the persistent UID for this device.
+    /// UIDs persist across reconnections, unlike device IDs which change.
+    var uid: String { AudioDeviceManager.getDeviceUID(deviceID: id) ?? "unknown-\(id)" }
+
 
     static func == (lhs: AudioDevice, rhs: AudioDevice) -> Bool {
         return lhs.id == rhs.id
@@ -426,6 +431,37 @@ class AudioDeviceManager: ObservableObject {
 
         return cfString as String
     }
+    
+    static func getDeviceUID(deviceID: AudioDeviceID) -> String? {
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        
+        var deviceUID: CFString? = nil
+        var size = UInt32(MemoryLayout<CFString?>.size)
+        
+        let status = withUnsafeMutablePointer(to: &deviceUID) { ptr in
+            ptr.withMemoryRebound(to: CFString?.self, capacity: 1) { reboundPtr in
+                AudioObjectGetPropertyData(
+                    deviceID,
+                    &propertyAddress,
+                    0,
+                    nil,
+                    &size,
+                    reboundPtr
+                )
+            }
+        }
+        
+        guard status == noErr, let uid = deviceUID as String? else {
+            return nil
+        }
+        
+        return uid
+    }
+
 
     static func getChannelCount(deviceID: AudioDeviceID, scope: AudioObjectPropertyScope) -> UInt32 {
         var propertyAddress = AudioObjectPropertyAddress(

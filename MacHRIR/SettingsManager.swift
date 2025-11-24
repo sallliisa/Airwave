@@ -10,8 +10,14 @@ import CoreAudio
 
 /// Application settings
 struct AppSettings: Codable {
+    // Device persistence using UIDs (persistent across reconnections)
+    var aggregateDeviceUID: String?
+    var selectedOutputDeviceUID: String?
+    
+    // Legacy fields for migration (deprecated)
     var aggregateDeviceID: UInt32?
-    var selectedOutputDeviceID: UInt32? // NEW: ID of the physical output device within the aggregate
+    var selectedOutputDeviceID: UInt32?
+    
     var activePresetID: UUID?
     var convolutionEnabled: Bool
     var autoStart: Bool
@@ -20,6 +26,8 @@ struct AppSettings: Codable {
 
     static var `default`: AppSettings {
         return AppSettings(
+            aggregateDeviceUID: nil,
+            selectedOutputDeviceUID: nil,
             aggregateDeviceID: nil,
             selectedOutputDeviceID: nil,
             activePresetID: nil,
@@ -29,7 +37,40 @@ struct AppSettings: Codable {
             targetSampleRate: 48000.0
         )
     }
+    
+    // MARK: - Migration Helpers
+    
+    /// Returns true if this settings instance needs migration from device IDs to UIDs
+    var needsUIDMigration: Bool {
+        return (aggregateDeviceID != nil || selectedOutputDeviceID != nil) &&
+               (aggregateDeviceUID == nil || selectedOutputDeviceUID == nil)
+    }
+    
+    /// Migrate device IDs to UIDs using provided lookup functions
+    mutating func migrateToUIDs(
+        aggregateLookup: (UInt32) -> String?,
+        outputLookup: (UInt32) -> String?
+    ) {
+        if let deviceID = aggregateDeviceID, aggregateDeviceUID == nil {
+            aggregateDeviceUID = aggregateLookup(deviceID)
+            print("[Settings] Migrated aggregate device ID \(deviceID) to UID: \(aggregateDeviceUID ?? "nil")")
+        }
+        
+        if let deviceID = selectedOutputDeviceID, selectedOutputDeviceUID == nil {
+            selectedOutputDeviceUID = outputLookup(deviceID)
+            print("[Settings] Migrated output device ID \(deviceID) to UID: \(selectedOutputDeviceUID ?? "nil")")
+        }
+        
+        // Clear old IDs after migration
+        if aggregateDeviceUID != nil {
+            aggregateDeviceID = nil
+        }
+        if selectedOutputDeviceUID != nil {
+            selectedOutputDeviceID = nil
+        }
+    }
 }
+
 
 /// Manages application settings persistence using UserDefaults
 class SettingsManager {
