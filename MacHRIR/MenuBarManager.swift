@@ -113,6 +113,15 @@ class MenuBarManager: NSObject, NSMenuDelegate {
             self?.saveSettings()
         }
         .store(in: &cancellables)
+        
+        // Watch for diagnostics changes to update status icon
+        SystemDiagnosticsManager.shared.$diagnostics
+            .debounce(for: .milliseconds(200), scheduler: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self = self else { return }
+                self.updateStatusIcon(isRunning: self.audioManager.isRunning)
+            }
+            .store(in: &cancellables)
     }
     
     private func waitForDevicesAndInitialize() {
@@ -132,10 +141,35 @@ class MenuBarManager: NSObject, NSMenuDelegate {
 
     
     private func updateStatusIcon(isRunning: Bool) {
-        if let button = statusItem.button {
-            let imageName = isRunning ? "waveform.circle.fill" : "waveform.circle"
-            button.image = NSImage(systemSymbolName: imageName, accessibilityDescription: "MacHRIR")
-            button.image?.isTemplate = true // Allows it to adapt to dark/light mode
+        guard let button = statusItem.button else { return }
+        
+        let diagnostics = SystemDiagnosticsManager.shared.diagnostics
+        let hasWarning = !diagnostics.isFullyConfigured
+        
+        // Choose base icon based on running state
+        let baseImageName = isRunning ? "waveform.circle.fill" : "waveform.circle"
+        
+        // Set the base image (always template)
+        button.image = NSImage(systemSymbolName: baseImageName, accessibilityDescription: "MacHRIR")
+        button.image?.isTemplate = true
+        
+        // Add warning indicator as attributed title if needed
+        if hasWarning {
+            let warningAttachment = NSTextAttachment()
+            if let warningImage = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: "Warning") {
+                warningImage.isTemplate = false
+                let imageSize = NSSize(width: 18, height: 18)  // Match the base icon size
+                warningImage.size = imageSize
+                warningAttachment.image = warningImage
+            }
+            
+            let attributedString = NSMutableAttributedString(attachment: warningAttachment)
+            attributedString.addAttribute(.foregroundColor, value: NSColor.systemOrange, range: NSRange(location: 0, length: attributedString.length))
+            attributedString.addAttribute(.baselineOffset, value: -2, range: NSRange(location: 0, length: attributedString.length))
+            
+            button.attributedTitle = attributedString
+        } else {
+            button.attributedTitle = NSAttributedString(string: "")
         }
     }
     
@@ -275,6 +309,13 @@ class MenuBarManager: NSObject, NSMenuDelegate {
         let settingsItem = NSMenuItem(title: "Settings...", action: #selector(showSettings), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
+        
+        // --- Diagnostics ---
+        let diagnostics = SystemDiagnosticsManager.shared.diagnostics
+        let diagnosticsTitle = diagnostics.isFullyConfigured ? "Diagnostics" : "⚠️ Diagnostics"
+        let diagnosticsItem = NSMenuItem(title: diagnosticsTitle, action: #selector(showDiagnostics), keyEquivalent: "")
+        diagnosticsItem.target = self
+        menu.addItem(diagnosticsItem)
         
         menu.addItem(NSMenuItem.separator())
         
@@ -459,6 +500,11 @@ class MenuBarManager: NSObject, NSMenuDelegate {
     
     @objc private func showAbout() {
         NSApp.orderFrontStandardAboutPanel(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+    
+    @objc private func showDiagnostics() {
+        DiagnosticsWindowController.shared.showDiagnostics()
     }
     
     @objc private func showSettings() {

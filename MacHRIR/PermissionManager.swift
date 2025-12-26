@@ -26,6 +26,11 @@ class PermissionManager {
         }
     }
     
+    // Get the raw authorization status
+    var currentMicrophoneStatus: AVAuthorizationStatus {
+        AVCaptureDevice.authorizationStatus(for: .audio)
+    }
+    
     // Gets the current permission status without requesting
     func getCurrentPermissionStatus() -> SettingsView.PermissionStatus {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
