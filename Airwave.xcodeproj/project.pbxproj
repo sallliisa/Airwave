@@ -85,7 +85,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 25B21E792ECCDD9B00FE4B05 /* Build configuration list for PBXProject "MacHRIR" */;
+			buildConfigurationList = 25B21E792ECCDD9B00FE4B05 /* Build configuration list for PBXProject "Airwave" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -342,7 +342,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		25B21E792ECCDD9B00FE4B05 /* Build configuration list for PBXProject "MacHRIR" */ = {
+		25B21E792ECCDD9B00FE4B05 /* Build configuration list for PBXProject "Airwave" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				25B21E872ECCDD9C00FE4B05 /* Debug */,

@@ -155,6 +155,20 @@ class SystemDiagnosticsManager: ObservableObject {
                 self?.refresh()
             }
             .store(in: &cancellables)
+        
+        // Listen for microphone permission changes
+        // This handles the case where the user grants permission from the macOS prompt on launch
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleMicrophonePermissionChange),
+            name: PermissionManager.microphonePermissionDidChangeNotification,
+            object: nil
+        )
+    }
+    
+    @objc private func handleMicrophonePermissionChange(_ notification: Notification) {
+        Logger.log("[Diagnostics] Microphone permission changed, refreshing...")
+        refresh()
     }
     
     // MARK: - Public Methods

@@ -4,8 +4,12 @@ import AppKit
 class PermissionManager {
     static let shared = PermissionManager()
     
+    /// Notification posted when microphone permission status changes
+    static let microphonePermissionDidChangeNotification = Notification.Name("MicrophonePermissionDidChange")
+    
     // Checks permission and requests if necessary.
     // Returns true if authorized, false otherwise.
+    // Also posts a notification when permission status changes.
     func checkAndRequestMicrophonePermission(completion: @escaping (Bool) -> Void) {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
@@ -14,6 +18,12 @@ class PermissionManager {
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .audio) { granted in
                 DispatchQueue.main.async {
+                    // Post notification when permission is determined
+                    NotificationCenter.default.post(
+                        name: PermissionManager.microphonePermissionDidChangeNotification,
+                        object: nil,
+                        userInfo: ["granted": granted]
+                    )
                     completion(granted)
                 }
             }
@@ -26,23 +36,26 @@ class PermissionManager {
         }
     }
     
+    /// Request microphone permission and post notification when determined.
+    /// Use this method on app launch to trigger the permission prompt.
+    func requestMicrophonePermissionIfNeeded() {
+        if currentMicrophoneStatus == .notDetermined {
+            AVCaptureDevice.requestAccess(for: .audio) { granted in
+                DispatchQueue.main.async {
+                    // Post notification when permission is determined
+                    NotificationCenter.default.post(
+                        name: PermissionManager.microphonePermissionDidChangeNotification,
+                        object: nil,
+                        userInfo: ["granted": granted]
+                    )
+                }
+            }
+        }
+    }
+    
     // Get the raw authorization status
     var currentMicrophoneStatus: AVAuthorizationStatus {
         AVCaptureDevice.authorizationStatus(for: .audio)
-    }
-    
-    // Gets the current permission status without requesting
-    func getCurrentPermissionStatus() -> SettingsView.PermissionStatus {
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
-        case .authorized:
-            return .granted
-        case .notDetermined:
-            return .notDetermined
-        case .denied, .restricted:
-            return .denied
-        @unknown default:
-            return .unknown
-        }
     }
     
     func openSystemSettings() {

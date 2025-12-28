@@ -18,7 +18,7 @@ class MenuBarManager: NSObject, NSMenuDelegate {
     
     // Managers
     private let audioManager = AudioGraphManager()
-    private let hrirManager = HRIRManager()
+    private let hrirManager = HRIRManager.shared
     private let deviceManager = AudioDeviceManager.shared
     private let settingsManager = SettingsManager()
     private let inspector = AggregateDeviceInspector()
@@ -54,12 +54,10 @@ class MenuBarManager: NSObject, NSMenuDelegate {
         // Wait for devices to populate before loading settings
         waitForDevicesAndInitialize()
         
-        // Check permissions on startup
-        PermissionManager.shared.checkAndRequestMicrophonePermission { granted in
-            if !granted {
-                Logger.log("[MenuBarManager] ⚠️ Microphone permission denied")
-            }
-        }
+        // Trigger microphone permission prompt on startup if needed
+        // This will post a notification when the user responds, which the
+        // SystemDiagnosticsManager observes to refresh the diagnostics
+        PermissionManager.shared.requestMicrophonePermissionIfNeeded()
     }
     
     private func setupStatusItem() {
@@ -252,44 +250,6 @@ class MenuBarManager: NSObject, NSMenuDelegate {
         
         menu.addItem(NSMenuItem.separator())
         
-        // --- HRIR Configuration ---
-        let hrirItem = NSMenuItem(title: "HRIR Configuration", action: nil, keyEquivalent: "")
-        hrirItem.isEnabled = false
-        menu.addItem(hrirItem)
-        
-        // Presets Submenu
-        let presetsMenu = NSMenu()
-        presetsMenu.minimumWidth = 200
-        
-        let presetsItem = NSMenuItem(title: "Preset: \(hrirManager.activePreset?.name ?? "None")", action: nil, keyEquivalent: "")
-        presetsItem.submenu = presetsMenu
-        menu.addItem(presetsItem)
-        
-        let noneItem = NSMenuItem(title: "None", action: #selector(selectPreset(_:)), keyEquivalent: "")
-        noneItem.target = self
-        noneItem.representedObject = nil
-        noneItem.state = (hrirManager.activePreset == nil) ? NSControl.StateValue.on : NSControl.StateValue.off
-        presetsMenu.addItem(noneItem)
-        
-        presetsMenu.addItem(NSMenuItem.separator())
-        
-        // Sort presets alphabetically by name
-        let sortedPresets = hrirManager.presets.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        
-        for preset in sortedPresets {
-            let item = NSMenuItem(title: preset.name, action: #selector(selectPreset(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = preset
-            item.state = (preset.id == hrirManager.activePreset?.id) ? NSControl.StateValue.on : NSControl.StateValue.off
-            presetsMenu.addItem(item)
-        }
-        
-        let hrirFolderItem = NSMenuItem(title: "Open HRIR Folder...", action: #selector(openHRIRFolder), keyEquivalent: "")
-        hrirFolderItem.target = self
-        menu.addItem(hrirFolderItem)
-        
-        menu.addItem(NSMenuItem.separator())
-        
         // --- Convolution Control ---
         let convolutionItem = NSMenuItem(title: hrirManager.convolutionEnabled ? "Convolution: On" : "Convolution: Off", action: #selector(toggleConvolution), keyEquivalent: "")
         convolutionItem.target = self
@@ -305,17 +265,12 @@ class MenuBarManager: NSObject, NSMenuDelegate {
         
         menu.addItem(NSMenuItem.separator())
         
-        // --- Application Management ---
-        let settingsItem = NSMenuItem(title: "Settings...", action: #selector(showSettings), keyEquivalent: ",")
+        // --- Settings (formerly Diagnostics) ---
+        let diagnostics = SystemDiagnosticsManager.shared.diagnostics
+        let settingsTitle = diagnostics.isFullyConfigured ? "Settings" : "Settings\t⚠️"
+        let settingsItem = NSMenuItem(title: settingsTitle, action: #selector(showSettings), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
-        
-        // --- Diagnostics ---
-        let diagnostics = SystemDiagnosticsManager.shared.diagnostics
-        let diagnosticsTitle = diagnostics.isFullyConfigured ? "Diagnostics" : "⚠️ Diagnostics"
-        let diagnosticsItem = NSMenuItem(title: diagnosticsTitle, action: #selector(showDiagnostics), keyEquivalent: "")
-        diagnosticsItem.target = self
-        menu.addItem(diagnosticsItem)
         
         menu.addItem(NSMenuItem.separator())
         
@@ -468,24 +423,6 @@ class MenuBarManager: NSObject, NSMenuDelegate {
         alert.runModal()
     }
     
-    @objc private func selectPreset(_ sender: NSMenuItem) {
-        let preset = sender.representedObject as? HRIRPreset
-        
-        if let preset = preset {
-            // Use current sample rate or default
-            let sampleRate = 48000.0 // We should get this from the device if possible, but for now default is safe
-            let inputLayout = InputLayout.detect(channelCount: 2) // Will be updated when audio starts
-            hrirManager.activatePreset(preset, targetSampleRate: sampleRate, inputLayout: inputLayout)
-        } else {
-            // Handle "None"
-            hrirManager.activePreset = nil
-        }
-    }
-    
-    @objc private func openHRIRFolder() {
-        hrirManager.openPresetsDirectory()
-    }
-    
     @objc private func toggleConvolution() {
         hrirManager.convolutionEnabled.toggle()
     }
@@ -501,10 +438,6 @@ class MenuBarManager: NSObject, NSMenuDelegate {
     @objc private func showAbout() {
         NSApp.orderFrontStandardAboutPanel(nil)
         NSApp.activate(ignoringOtherApps: true)
-    }
-    
-    @objc private func showDiagnostics() {
-        DiagnosticsWindowController.shared.showDiagnostics()
     }
     
     @objc private func showSettings() {
