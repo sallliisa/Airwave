@@ -45,13 +45,16 @@ struct SettingsView: View {
             
             ScrollView {
                 VStack(spacing: 16) {
+                    // Status Card (at the very top)
+                    overallStatusCard
+                    
                     // General Settings
                     generalSection
 
                     // Application Settings
                     applicationSection
                     
-                    // Diagnostics (with status card inside)
+                    // Diagnostics
                     checklistSection
                 }
                 .padding(24)
@@ -72,19 +75,33 @@ struct SettingsView: View {
     
     private var overallStatusCard: some View {
         let diagnostics = diagnosticsManager.diagnostics
-        let isReady = diagnostics.isFullyConfigured
+        let isFullyConfigured = diagnostics.isFullyConfigured
+        let isRunning = audioManager.isRunning
+        let hasAggregateDevice = audioManager.aggregateDevice != nil
+        let hasOutputDevice = audioManager.selectedOutputDevice != nil
+        
+        // Determine state:
+        // WARNING: Diagnostics not fulfilled
+        // INFO: Ready to run but not running (engine off, no aggregate/output device selected)
+        // RUNNING: Actually running
+        let (statusIcon, statusColor, statusTitle, statusMessage) = getStatusInfo(
+            isFullyConfigured: isFullyConfigured,
+            isRunning: isRunning,
+            hasAggregateDevice: hasAggregateDevice,
+            hasOutputDevice: hasOutputDevice
+        )
         
         return HStack(spacing: 12) {
-            Image(systemName: isReady ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+            Image(systemName: statusIcon)
                 .font(.system(size: 32))
-                .foregroundStyle(isReady ? .green : .orange)
+                .foregroundStyle(statusColor)
             
             VStack(alignment: .leading, spacing: 2) {
-                Text(isReady ? "Ready to Use" : "Setup Required")
+                Text(statusTitle)
                     .font(.headline)
-                    .foregroundStyle(isReady ? .green : .orange)
+                    .foregroundStyle(statusColor)
                 
-                Text(isReady ? "All requirements are met. Airwave is ready for audio processing." : "Some setup steps need to be completed before using Airwave.")
+                Text(statusMessage)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -94,11 +111,46 @@ struct SettingsView: View {
         .padding(16)
         .background(
             RoundedRectangle(cornerRadius: 10)
-                .fill(isReady ? Color.green.opacity(0.1) : Color.orange.opacity(0.1))
+                .fill(statusColor.opacity(0.1))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(isReady ? Color.green.opacity(0.3) : Color.orange.opacity(0.3), lineWidth: 1)
+                .strokeBorder(statusColor.opacity(0.3), lineWidth: 1)
+        )
+    }
+    
+    private func getStatusInfo(
+        isFullyConfigured: Bool,
+        isRunning: Bool,
+        hasAggregateDevice: Bool,
+        hasOutputDevice: Bool
+    ) -> (icon: String, color: Color, title: String, message: String) {
+        // WARNING: Diagnostics not fulfilled
+        if !isFullyConfigured {
+            return (
+                icon: "exclamationmark.triangle.fill",
+                color: .orange,
+                title: "Setup Required",
+                message: "Some setup steps need to be completed before using Airwave."
+            )
+        }
+        
+        // RUNNING: Actually running
+        if isRunning && hasAggregateDevice && hasOutputDevice {
+            return (
+                icon: "checkmark.seal.fill",
+                color: .green,
+                title: "Running",
+                message: "Audio engine is active and processing audio."
+            )
+        }
+        
+        // INFO: Ready to run but not running
+        return (
+            icon: "info.circle.fill",
+            color: .blue,
+            title: "Ready to Use",
+            message: "All requirements are met. Airwave is ready for audio processing."
         )
     }
     
@@ -210,7 +262,11 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Audio Engine")
                             .font(.system(size: 13, weight: .medium))
-                        if audioManager.aggregateDevice == nil {
+                        if !diagnosticsManager.diagnostics.isFullyConfigured {
+                            Text("Complete diagnostics setup to continue")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        } else if audioManager.aggregateDevice == nil {
                             Text("Select a device to continue")
                                 .font(.caption)
                                 .foregroundStyle(.orange)
@@ -235,7 +291,7 @@ struct SettingsView: View {
                     ))
                         .labelsHidden()
                         .toggleStyle(.switch)
-                        .disabled(audioManager.aggregateDevice == nil)
+                        .disabled(!diagnosticsManager.diagnostics.isFullyConfigured || audioManager.aggregateDevice == nil)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
@@ -252,9 +308,19 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("HRIR Preset")
                             .font(.system(size: 13, weight: .medium))
-                        Text("Select spatial audio profile")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        HStack(spacing: 4) {
+                            Text("Select spatial audio profile •")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Button(action: {
+                                hrirManager.openPresetsDirectory()
+                            }) {
+                                Text("Manage files")
+                                    .font(.caption)
+                                    .foregroundStyle(.blue)
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                     
                     Spacer()
@@ -284,34 +350,6 @@ struct SettingsView: View {
                         .labelsHidden()
                         .frame(width: 150)
                     }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                
-                Divider().padding(.leading, 44)
-                
-                // Open HRIR Folder
-                HStack(spacing: 12) {
-                    Image(systemName: "folder.fill")
-                        .font(.system(size: 20))
-                        .foregroundStyle(.orange)
-                        .frame(width: 32)
-                    
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Manage HRIRs")
-                            .font(.system(size: 13, weight: .medium))
-                        Text("Manage your HRIR preset files")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    
-                    Spacer()
-                    
-                    Button("Open") {
-                        hrirManager.openPresetsDirectory()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
@@ -396,10 +434,6 @@ struct SettingsView: View {
                 .disabled(diagnosticsManager.isRefreshing)
             }
             .padding(.bottom, 12)
-            
-            // Overall Status Card
-            overallStatusCard
-                .padding(.bottom, 12)
 
             // Help Section
             helpSection
@@ -627,17 +661,10 @@ struct SettingsView: View {
     
     /// Filter out virtual loopback devices (BlackHole, Soundflower, etc.)
     private func filterAvailableOutputs(_ allOutputs: [AggregateDeviceInspector.SubDeviceInfo]) -> [AggregateDeviceInspector.SubDeviceInfo] {
-        var filtered = allOutputs.filter { output in
+        return allOutputs.filter { output in
             let name = output.name.lowercased()
             return !name.contains("blackhole") && !name.contains("soundflower")
         }
-        
-        // Handle case where all outputs were filtered
-        if filtered.isEmpty && !allOutputs.isEmpty {
-            filtered = allOutputs
-        }
-        
-        return filtered
     }
 }
 

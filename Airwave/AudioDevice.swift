@@ -195,6 +195,195 @@ class AudioDeviceManager: ObservableObject {
     }
 
 
+    // MARK: - System Audio Output Control
+    
+    /// Get the current system default output device
+    func getSystemDefaultOutputDevice() -> AudioDevice? {
+        return Self.getDefaultOutputDevice()
+    }
+    
+    /// Set the system default output device
+    /// - Parameter device: The device to set as system default output
+    /// - Returns: True if successful, false otherwise
+    func setSystemDefaultOutputDevice(_ device: AudioDevice) -> Bool {
+        var deviceID = device.id
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        
+        let status = AudioObjectSetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &propertyAddress,
+            0,
+            nil,
+            UInt32(MemoryLayout<AudioDeviceID>.size),
+            &deviceID
+        )
+        
+        if status == noErr {
+            Logger.log("[AudioDevice] System default output changed to: \(device.name)")
+            return true
+        } else {
+            Logger.log("[AudioDevice] Failed to set system default output: OSStatus \(status)")
+            return false
+        }
+    }
+    
+    /// Find any BlackHole device on the system
+    /// - Returns: The first BlackHole device found, or nil
+    func findBlackHoleDevice() -> AudioDevice? {
+        let allDevices = Self.getAllDevices()
+        return allDevices.first { device in
+            VirtualAudioDriver.isBlackHole(deviceName: device.name)
+        }
+    }
+    
+    /// Save the current system output device to UserDefaults
+    func saveCurrentOutputDevice() {
+        if let currentDevice = getSystemDefaultOutputDevice(),
+           let uid = Self.getDeviceUID(currentDevice) {
+            UserDefaults.standard.set(uid, forKey: "SavedSystemOutputDeviceUID")
+            Logger.log("[AudioDevice] Saved system output device: \(currentDevice.name)")
+        }
+    }
+    
+    /// Restore the saved system output device from UserDefaults
+    /// - Returns: True if a saved device was found and restored, false otherwise
+    func restoreSavedOutputDevice() -> Bool {
+        guard let savedUID = UserDefaults.standard.string(forKey: "SavedSystemOutputDeviceUID"),
+              let savedDevice = Self.getDeviceByUID(savedUID) else {
+            Logger.log("[AudioDevice] No saved output device found to restore")
+            return false
+        }
+        
+        // SAFETY: Get current system volume before switching (likely BlackHole)
+        var currentVolume: Float? = nil
+        if let currentOutput = getSystemDefaultOutputDevice() {
+            currentVolume = getDeviceVolume(currentOutput)
+        }
+        
+        // SAFETY: Set volume on saved device BEFORE switching to it
+        if let volume = currentVolume {
+            _ = setDeviceVolume(savedDevice, volume: volume)
+            Logger.log("[AudioDevice] Matched volume to current level (\(Int(volume * 100))%) for safety")
+        }
+        
+        let success = setSystemDefaultOutputDevice(savedDevice)
+        if success {
+            Logger.log("[AudioDevice] Restored saved output device: \(savedDevice.name)")
+            // Clear the saved preference after successful restoration
+            UserDefaults.standard.removeObject(forKey: "SavedSystemOutputDeviceUID")
+        }
+        return success
+    }
+    
+    /// Get the volume of a specific audio device
+    /// - Parameter device: The device to get volume from
+    /// - Returns: Volume level (0.0 to 1.0), or nil if volume is not available
+    func getDeviceVolume(_ device: AudioDevice) -> Float? {
+        // Try to get master volume (channel 0)
+        var volume: Float32 = 0.0
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyVolumeScalar,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        
+        var size = UInt32(MemoryLayout<Float32>.size)
+        let status = AudioObjectGetPropertyData(
+            device.id,
+            &propertyAddress,
+            0,
+            nil,
+            &size,
+            &volume
+        )
+        
+        if status == noErr {
+            return volume
+        }
+        
+        // Fallback: Try to get volume from channel 1 (left channel)
+        propertyAddress.mElement = 1
+        let channelStatus = AudioObjectGetPropertyData(
+            device.id,
+            &propertyAddress,
+            0,
+            nil,
+            &size,
+            &volume
+        )
+        
+        return channelStatus == noErr ? volume : nil
+    }
+    
+    /// Set the volume of a specific audio device
+    /// - Parameters:
+    ///   - device: The device to set volume on
+    ///   - volume: Volume level (0.0 to 1.0)
+    /// - Returns: True if successful, false otherwise
+    func setDeviceVolume(_ device: AudioDevice, volume: Float) -> Bool {
+        let clampedVolume = min(max(volume, 0.0), 1.0)
+        var volumeValue: Float32 = clampedVolume
+        
+        // Try to set master volume
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyVolumeScalar,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        
+        let status = AudioObjectSetPropertyData(
+            device.id,
+            &propertyAddress,
+            0,
+            nil,
+            UInt32(MemoryLayout<Float32>.size),
+            &volumeValue
+        )
+        
+        if status == noErr {
+            Logger.log("[AudioDevice] Set volume for \(device.name) to \(Int(clampedVolume * 100))%")
+            return true
+        }
+        
+        // Fallback: Try to set volume on both left (1) and right (2) channels
+        var leftSuccess = false
+        var rightSuccess = false
+        
+        propertyAddress.mElement = 1 // Left channel
+        let leftStatus = AudioObjectSetPropertyData(
+            device.id,
+            &propertyAddress,
+            0,
+            nil,
+            UInt32(MemoryLayout<Float32>.size),
+            &volumeValue
+        )
+        leftSuccess = (leftStatus == noErr)
+        
+        propertyAddress.mElement = 2 // Right channel
+        let rightStatus = AudioObjectSetPropertyData(
+            device.id,
+            &propertyAddress,
+            0,
+            nil,
+            UInt32(MemoryLayout<Float32>.size),
+            &volumeValue
+        )
+        rightSuccess = (rightStatus == noErr)
+        
+        if leftSuccess || rightSuccess {
+            Logger.log("[AudioDevice] Set volume for \(device.name) to \(Int(clampedVolume * 100))% (channel-specific)")
+            return true
+        }
+        
+        Logger.log("[AudioDevice] Failed to set volume for \(device.name): OSStatus \(status)")
+        return false
+    }
+
     /// Get all audio devices on the system
     static func getAllDevices() -> [AudioDevice] {
         var propertyAddress = AudioObjectPropertyAddress(
