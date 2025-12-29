@@ -131,6 +131,14 @@ class AudioGraphManager: ObservableObject {
 
     /// Start the audio engine with selected aggregate device
     func start() {
+        // Check diagnostics first - prevent start if not fully configured
+        let diagnostics = SystemDiagnosticsManager.shared.diagnostics
+        guard diagnostics.isFullyConfigured else {
+            errorMessage = "Complete all diagnostics setup steps before starting"
+            Logger.log("[AudioGraph] Start prevented: Diagnostics not fulfilled")
+            return
+        }
+        
         guard let device = aggregateDevice else {
             errorMessage = "Please select an aggregate device"
             return
@@ -144,6 +152,10 @@ class AudioGraphManager: ObservableObject {
         }
 
         stop()
+        
+        // Switch system audio to BlackHole BEFORE starting engine
+        // This prevents any audio blast on the physical device
+        switchSystemAudioToBlackHole()
 
         do {
             try setupAudioUnit(device: device, outputChannelRange: selectedOutputChannelRange)
@@ -181,6 +193,9 @@ class AudioGraphManager: ObservableObject {
 
     /// Stop the audio engine
     func stop() {
+        // Restore system audio output before stopping engine
+        restoreSystemAudioToSelected()
+        
         if let unit = audioUnit {
             AudioOutputUnitStop(unit)
             AudioUnitUninitialize(unit)
@@ -226,6 +241,120 @@ class AudioGraphManager: ObservableObject {
         }
     }
 
+    // MARK: - System Audio Switching
+    
+    /// Switch system audio output to BlackHole device
+    private func switchSystemAudioToBlackHole() {
+        let deviceManager = AudioDeviceManager.shared
+        
+        // Save current system output before switching
+        deviceManager.saveCurrentOutputDevice()
+        
+        // Find BlackHole device
+        guard let blackHole = deviceManager.findBlackHoleDevice() else {
+            Logger.log("[AudioGraph] Warning: BlackHole device not found for system audio switching")
+            return
+        }
+        
+        // Switch to BlackHole FIRST (before setting physical device to 100%)
+        let success = deviceManager.setSystemDefaultOutputDevice(blackHole)
+        if success {
+            Logger.log("[AudioGraph] System audio output switched to BlackHole")
+        } else {
+            Logger.log("[AudioGraph] Failed to switch system audio output to BlackHole")
+        }
+        
+        // NOW gradually ramp up selected output device to 100% (safe - system is on BlackHole)
+        if let selectedOutput = selectedOutputDevice {
+            // Get current volume
+            let currentVolume = deviceManager.getDeviceVolume(selectedOutput.device) ?? 0.5
+            
+            // Delay before starting ramp (give system time to fully switch)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                guard let self = self else { return }
+                
+                // Gradual ramp from current to 100% over 0.5 seconds
+                self.rampVolume(
+                    device: selectedOutput.device,
+                    from: currentVolume,
+                    to: 1.0,
+                    duration: 0.5,
+                    deviceName: selectedOutput.name
+                )
+            }
+        }
+    }
+    
+    /// Gradually ramp device volume from one level to another
+    private func rampVolume(device: AudioDevice, from startVolume: Float, to endVolume: Float, duration: TimeInterval, deviceName: String) {
+        let steps = 20 // Number of volume steps
+        let stepDuration = duration / Double(steps)
+        let volumeIncrement = (endVolume - startVolume) / Float(steps)
+        
+        let deviceManager = AudioDeviceManager.shared
+        
+        for step in 0...steps {
+            let delay = stepDuration * Double(step)
+            let targetVolume = startVolume + (volumeIncrement * Float(step))
+            
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                _ = deviceManager.setDeviceVolume(device, volume: targetVolume)
+                
+                // Log completion
+                if step == steps {
+                    Logger.log("[AudioGraph] 🔊 Ramped \(deviceName) to 100% for BlackHole volume control")
+                }
+            }
+        }
+    }
+    
+    /// Restore system audio output to user's selected device
+    private func restoreSystemAudioToSelected() {
+        let deviceManager = AudioDeviceManager.shared
+        
+        // SAFETY: Get current system volume (BlackHole) before switching
+        var currentVolume: Float? = nil
+        if let currentOutput = deviceManager.getSystemDefaultOutputDevice() {
+            currentVolume = deviceManager.getDeviceVolume(currentOutput)
+            if let volume = currentVolume {
+                Logger.log("[AudioGraph] Current system volume: \(Int(volume * 100))%")
+            }
+        }
+        
+        // Try to use the selected output device from settings
+        if let selectedOutput = selectedOutputDevice {
+            // SAFETY: Set volume on target device BEFORE switching to it
+            if let volume = currentVolume {
+                let volumeSet = deviceManager.setDeviceVolume(selectedOutput.device, volume: volume)
+                if volumeSet {
+                    Logger.log("[AudioGraph] 🔊 Volume matched to BlackHole level for safety")
+                } else {
+                    Logger.log("[AudioGraph] ⚠️ Could not set volume on output device")
+                }
+            }
+            
+            let success = deviceManager.setSystemDefaultOutputDevice(selectedOutput.device)
+            if success {
+                Logger.log("[AudioGraph] System audio output restored to: \(selectedOutput.name)")
+                return
+            }
+        }
+        
+        // Fallback: try to restore from saved device
+        let restored = deviceManager.restoreSavedOutputDevice()
+        if restored {
+            Logger.log("[AudioGraph] System audio output restored from saved preference")
+            
+            // Try to apply volume to restored device as well
+            if let volume = currentVolume,
+               let restoredDevice = deviceManager.getSystemDefaultOutputDevice() {
+                _ = deviceManager.setDeviceVolume(restoredDevice, volume: volume)
+            }
+        } else {
+            Logger.log("[AudioGraph] Could not restore system audio output")
+        }
+    }
+    
     // MARK: - Private Setup Methods
 
     private func setupAudioUnit(device: AudioDevice, outputChannelRange: Range<Int>?) throws {

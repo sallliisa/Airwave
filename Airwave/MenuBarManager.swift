@@ -570,18 +570,10 @@ class MenuBarManager: NSObject, NSMenuDelegate {
     private func filterAvailableOutputs(_ allOutputs: [AggregateDeviceInspector.SubDeviceInfo]) -> [AggregateDeviceInspector.SubDeviceInfo] {
         // Filter out virtual loopback devices (BlackHole, Soundflower, etc.)
         // These are input-only virtual devices that users never want to output to
-        var filtered = allOutputs.filter { output in
+        return allOutputs.filter { output in
             let name = output.name.lowercased()
             return !name.contains("blackhole") && !name.contains("soundflower")
         }
-        
-        // Handle case where all outputs were filtered
-        if filtered.isEmpty && !allOutputs.isEmpty {
-            Logger.log("[MenuBarManager] Warning: All outputs were virtual loopback devices, showing all")
-            filtered = allOutputs
-        }
-        
-        return filtered
     }
 
     /// Refresh available outputs if we have an aggregate device selected
