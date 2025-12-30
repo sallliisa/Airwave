@@ -25,26 +25,14 @@ struct SettingsView: View {
     // Alert state for when user tries to enable audio without aggregate device
     @State private var showNoDeviceAlert = false
     
+    // Native macOS colors
+    private let backgroundColor = Color(red: 31/255, green: 30/255, blue: 29/255)
+    private let groupedBackgroundColor = Color(red: 37/255, green: 36/255, blue: 36/255)
+    
     var body: some View {
         VStack(spacing: 0) {
-            // Header
-            HStack {
-                Image(systemName: "gearshape.fill")
-                    .font(.title2)
-                    .foregroundStyle(.blue.gradient)
-                Text("Settings")
-                    .font(.title2)
-                    .fontWeight(.semibold)
-                Spacer()
-            }
-            .padding(.horizontal, 24)
-            .padding(.top, 24)
-            .padding(.bottom, 16)
-            
-            Divider()
-            
             ScrollView {
-                VStack(spacing: 16) {
+                VStack(spacing: 20) {
                     // Status Card (at the very top)
                     overallStatusCard
                     
@@ -57,12 +45,13 @@ struct SettingsView: View {
                     // Diagnostics
                     checklistSection
                 }
-                .padding(24)
+                .padding(20)
             }
+            .background(backgroundColor)
         }
         .frame(width: 500)
         .frame(minHeight: 400, idealHeight: 560, maxHeight: .infinity)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(backgroundColor)
         .onAppear {
             refreshAvailableOutputs()
         }
@@ -91,31 +80,32 @@ struct SettingsView: View {
             hasOutputDevice: hasOutputDevice
         )
         
-        return HStack(spacing: 12) {
+        return HStack(spacing: 10) {
             Image(systemName: statusIcon)
-                .font(.system(size: 32))
+                .font(.system(size: 18))
                 .foregroundStyle(statusColor)
+                .frame(width: 24)
             
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 1) {
                 Text(statusTitle)
-                    .font(.headline)
+                    .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(statusColor)
                 
                 Text(statusMessage)
-                    .font(.caption)
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
             
             Spacer()
         }
-        .padding(16)
+        .padding(12)
         .background(
-            RoundedRectangle(cornerRadius: 10)
+            RoundedRectangle(cornerRadius: 6)
                 .fill(statusColor.opacity(0.1))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(statusColor.opacity(0.3), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(statusColor.opacity(0.3), lineWidth: 0.5)
         )
     }
     
@@ -157,22 +147,23 @@ struct SettingsView: View {
     private var generalSection: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("General")
-                .font(.headline)
-                .padding(.bottom, 12)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.bottom, 8)
             
             VStack(spacing: 0) {
                 // Aggregate Device Selector
-                HStack(spacing: 12) {
+                HStack(spacing: 10) {
                     Image(systemName: "rectangle.stack.fill")
-                        .font(.system(size: 20))
-                        .foregroundStyle(.blue)
-                        .frame(width: 32)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 20)
                     
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: 1) {
                         Text("Aggregate Device")
-                            .font(.system(size: 13, weight: .medium))
+                            .font(.system(size: 12))
                         Text(audioManager.aggregateDevice?.name ?? "Select an aggregate device")
-                            .font(.caption)
+                            .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }
                     
@@ -180,7 +171,7 @@ struct SettingsView: View {
                     
                     if validAggregateDevices.isEmpty {
                         Text("No aggregate devices found")
-                            .font(.system(size: 13))
+                            .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     } else {
                         Picker("", selection: Binding(
@@ -197,27 +188,27 @@ struct SettingsView: View {
                             }
                         }
                         .labelsHidden()
-                        .frame(width: 150)
+                        .frame(width: 140)
                     }
                 }
                 .padding(.horizontal, 12)
-                .padding(.vertical, 10)
+                .padding(.vertical, 8)
                 
                 // Output Device Selector (only shown when aggregate is selected)
                 if audioManager.aggregateDevice != nil {
-                    Divider().padding(.leading, 44)
+                    Divider().padding(.leading, 30)
                     
-                    HStack(spacing: 12) {
+                    HStack(spacing: 10) {
                         Image(systemName: "speaker.wave.2.fill")
-                            .font(.system(size: 20))
-                            .foregroundStyle(.cyan)
-                            .frame(width: 32)
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 20)
                         
-                        VStack(alignment: .leading, spacing: 2) {
+                        VStack(alignment: .leading, spacing: 1) {
                             Text("Output Device")
-                                .font(.system(size: 13, weight: .medium))
+                                .font(.system(size: 12))
                             Text(audioManager.selectedOutputDevice?.name ?? "Select an output device")
-                                .font(.caption)
+                                .font(.system(size: 11))
                                 .foregroundStyle(.secondary)
                         }
                         
@@ -225,7 +216,7 @@ struct SettingsView: View {
                         
                         if audioManager.availableOutputs.isEmpty {
                             Text("No devices in aggregate")
-                                .font(.system(size: 13))
+                                .font(.system(size: 11))
                                 .foregroundStyle(.secondary)
                         } else {
                             Picker("", selection: Binding(
@@ -243,34 +234,34 @@ struct SettingsView: View {
                                 }
                             }
                             .labelsHidden()
-                            .frame(width: 150)
+                            .frame(width: 140)
                         }
                     }
                     .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
+                    .padding(.vertical, 8)
                 }
                 
-                Divider().padding(.leading, 44)
+                Divider().padding(.leading, 30)
 
                 // HRIR Preset Selector
-                HStack(spacing: 12) {
+                HStack(spacing: 10) {
                     Image(systemName: "waveform.circle.fill")
-                        .font(.system(size: 20))
-                        .foregroundStyle(.purple)
-                        .frame(width: 32)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 20)
                     
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: 1) {
                         Text("HRIR Preset")
-                            .font(.system(size: 13, weight: .medium))
+                            .font(.system(size: 12))
                         HStack(spacing: 4) {
                             Text("Select spatial audio profile •")
-                                .font(.caption)
+                                .font(.system(size: 11))
                                 .foregroundStyle(.secondary)
                             Button(action: {
                                 hrirManager.openPresetsDirectory()
                             }) {
                                 Text("Manage files")
-                                    .font(.caption)
+                                    .font(.system(size: 11))
                                     .foregroundStyle(.blue)
                             }
                             .buttonStyle(.plain)
@@ -281,7 +272,7 @@ struct SettingsView: View {
                     
                     if hrirManager.presets.isEmpty {
                         Text("No HRIR files found")
-                            .font(.system(size: 13))
+                            .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     } else {
                         Picker("", selection: Binding(
@@ -302,35 +293,37 @@ struct SettingsView: View {
                             }
                         }
                         .labelsHidden()
-                        .frame(width: 150)
+                        .frame(width: 140)
                     }
                 }
                 .padding(.horizontal, 12)
-                .padding(.vertical, 10)
+                .padding(.vertical, 8)
                 
-                Divider().padding(.leading, 44)
+                Divider().padding(.leading, 30)
 
                 // Audio Engine Toggle
-                HStack(spacing: 12) {
-                    Image(systemName: audioManager.isRunning ? "waveform.circle.fill" : "waveform.circle")
-                        .font(.system(size: 20))
-                        .foregroundStyle(.green)
-                        .frame(width: 32)
+                HStack(spacing: 10) {
+                    Image(audioManager.isRunning ? "MenuBarIconFilled" : "MenuBarIcon")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 13, height: 13)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 20)
                     
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: 1) {
                         Text("Audio Engine")
-                            .font(.system(size: 13, weight: .medium))
+                            .font(.system(size: 12))
                         if !diagnosticsManager.diagnostics.isFullyConfigured {
                             Text("Complete diagnostics setup to continue")
-                                .font(.caption)
+                                .font(.system(size: 11))
                                 .foregroundStyle(.orange)
                         } else if audioManager.aggregateDevice == nil {
                             Text("Select a device to continue")
-                                .font(.caption)
+                                .font(.system(size: 11))
                                 .foregroundStyle(.orange)
                         } else {
                             Text(audioManager.isRunning ? "Processing audio" : "Stopped")
-                                .font(.caption)
+                                .font(.system(size: 11))
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -352,37 +345,32 @@ struct SettingsView: View {
                         .disabled(!diagnosticsManager.diagnostics.isFullyConfigured || audioManager.aggregateDevice == nil)
                 }
                 .padding(.horizontal, 12)
-                .padding(.vertical, 10)
+                .padding(.vertical, 8)
             }
-            .background(
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(Color(nsColor: .controlBackgroundColor))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(Color.primary.opacity(0.1), lineWidth: 1)
-            )
+            .background(groupedBackgroundColor)
+            .cornerRadius(6)
         }
     }
 
     private var applicationSection: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("Application")
-                .font(.headline)
-                .padding(.bottom, 12)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.bottom, 8)
             VStack(spacing: 0) {
                 // Run on Startup
-                HStack(spacing: 12) {
+                HStack(spacing: 10) {
                     Image(systemName: "play.circle.fill")
-                        .font(.system(size: 20))
-                        .foregroundStyle(.blue)
-                        .frame(width: 32)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 20)
                     
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: 1) {
                         Text("Run on Startup")
-                            .font(.system(size: 13, weight: .medium))
+                            .font(.system(size: 12))
                         Text("Start Airwave automatically when you log in")
-                            .font(.caption)
+                            .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }
                     
@@ -393,16 +381,10 @@ struct SettingsView: View {
                         .toggleStyle(.switch)
                 }
                 .padding(.horizontal, 12)
-                .padding(.vertical, 10)
+                .padding(.vertical, 8)
             }
-            .background(
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(Color(nsColor: .controlBackgroundColor))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(Color.primary.opacity(0.1), lineWidth: 1)
-            )
+            .background(groupedBackgroundColor)
+            .cornerRadius(6)
         }
     }
     
@@ -410,7 +392,8 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("Diagnostics")
-                    .font(.headline)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
                 
                 Spacer()
                 
@@ -420,24 +403,25 @@ struct SettingsView: View {
                     HStack(spacing: 4) {
                         if diagnosticsManager.isRefreshing {
                             ProgressView()
-                                .scaleEffect(0.7)
-                                .frame(width: 14, height: 14)
+                                .scaleEffect(0.6)
+                                .frame(width: 12, height: 12)
                         } else {
                             Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 11))
                         }
                         Text("Refresh")
+                            .font(.system(size: 11))
                     }
-                    .font(.callout)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .disabled(diagnosticsManager.isRefreshing)
             }
-            .padding(.bottom, 12)
+            .padding(.bottom, 8)
 
             // Help Section
             helpSection
-                .padding(.bottom, 12)
+                .padding(.bottom, 8)
             
             VStack(spacing: 0) {
                 // Virtual Audio Driver
@@ -461,7 +445,7 @@ struct SettingsView: View {
                     }
                 )
                 
-                Divider().padding(.leading, 44)
+                Divider().padding(.leading, 30)
                 
                 // Aggregate Device
                 ChecklistRow(
@@ -478,7 +462,7 @@ struct SettingsView: View {
                     }
                 )
                 
-                Divider().padding(.leading, 44)
+                Divider().padding(.leading, 30)
                 
                 // Microphone Permission
                 ChecklistRow(
@@ -491,36 +475,25 @@ struct SettingsView: View {
                     }
                 )
             }
-            .background(
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(Color(nsColor: .controlBackgroundColor))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(Color.primary.opacity(0.1), lineWidth: 1)
-            )
+            .background(groupedBackgroundColor)
+            .cornerRadius(6)
         }
     }
     
     private var helpSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             Text("Need Help?")
-                .font(.headline)
+                .font(.system(size: 12, weight: .semibold))
             
             Text("Airwave requires a virtual audio driver (like BlackHole) and an aggregate device that combines it with your output device. This allows system audio to be processed through HRIR convolution before reaching your headphones.")
-                .font(.caption)
+                .font(.system(size: 11))
                 .foregroundStyle(.secondary)
+                .lineSpacing(2)
         }
-        .padding(16)
+        .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(Color.primary.opacity(0.1), lineWidth: 1)
-        )
+        .background(groupedBackgroundColor)
+        .cornerRadius(6)
     }
     
     // MARK: - Computed Properties
@@ -704,17 +677,17 @@ struct ChecklistRow: View {
     var secondaryAction: (() -> Void)?
     
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             Image(systemName: status.icon)
-                .font(.system(size: 20))
+                .font(.system(size: 13))
                 .foregroundStyle(status.color)
-                .frame(width: 32)
+                .frame(width: 20)
             
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 1) {
                 Text(title)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 12))
                 Text(subtitle)
-                    .font(.caption)
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
             
@@ -727,6 +700,7 @@ struct ChecklistRow: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .font(.system(size: 11))
             }
             
             // Primary action button (conditional)
@@ -736,10 +710,11 @@ struct ChecklistRow: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .font(.system(size: 11))
             }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.vertical, 8)
     }
 }
 
@@ -801,6 +776,7 @@ class SettingsWindowController: NSWindowController {
         window.center()
         window.contentView = NSHostingView(rootView: SettingsView())
         window.isReleasedWhenClosed = false
+        window.backgroundColor = NSColor(red: 31/255, green: 30/255, blue: 29/255, alpha: 1.0)
         
         // Lock width to 500, allow vertical resizing only
         window.minSize = NSSize(width: 500, height: 400)
