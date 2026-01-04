@@ -15,12 +15,12 @@ struct MenuBarLabel: View {
     
     private var iconName: String {
         let hasWarning = !diagnosticsManager.diagnostics.isFullyConfigured
-        if hasWarning { return "MenuBarIconWarning" }
-        return audioManager.isRunning ? "MenuBarIconFilled" : "MenuBarIcon"
+        if hasWarning { return "MenuBarIcon.warning" }
+        return audioManager.isRunning ? "MenuBarIcon.filled" : "MenuBarIcon"
     }
     
     var body: some View {
-        if iconName == "MenuBarIconWarning" {
+        if iconName == "MenuBarIcon.warning" {
             Image(iconName)
                 .renderingMode(.original)
         } else {
