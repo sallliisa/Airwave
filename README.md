@@ -57,7 +57,7 @@ Download Airwave and copy it to your Applications folder. The latest release can
 > [!IMPORTANT]
 > This step is necessary, because the app has not been notarized by Apple due to the membership fees of the Apple Developer Program. "Apple could not verify 'Airwave.app' is free of malware" refers to the [lack of notarization](https://support.apple.com/en-us/102445), not to any anomalies detected.
 
-On macOS 14 Sonoma or below:
+On macOS 14 Sonoma:
 1. Right click `Airwave.app`
 2. Click "Open"
 3. Click "Open" in the dialog box
