@@ -21,7 +21,7 @@
 
    <strong>Table of Contents</strong>
    <br/>
-   [About](#About) | [Features](#Features) | [Requirements](#Requirements) | [Installation](#Installation) | [License](#License) | [Credits](#Credits) | [Support](#Support)
+   [About](#About) • [Features](#Features) • [Requirements](#Requirements) • [Installation](#Installation) • [License](#License) • [Credits](#Credits) • [Support](#Support)
 </div>
 
 ## About
@@ -53,6 +53,21 @@ Or download and install it from [ExistentialAudio/BlackHole](https://github.com/
 
 ### 2. Get Airwave
 Download Airwave and copy it to your Applications folder. The latest release can be downloaded from [Airwave Releases](https://github.com/sallliisa/Airwave/releases).
+
+> [!IMPORTANT]
+> This step is necessary, because the app has not been notarized by Apple due to the membership fees of the Apple Developer Program. "Apple could not verify 'Airwave.app' is free of malware" refers to the [lack of notarization](https://support.apple.com/en-us/102445), not to any anomalies detected.
+
+On macOS 14 Sonoma or below:
+1. Right click `Airwave.app`
+2. Click "Open"
+3. Click "Open" in the dialog box
+
+On macOS 15 Sequoia or above:
+1. Try to open the app, it will tell you it's blocked
+2. Go to `System Settings > Privacy & Security` and scroll to the bottom
+3. Click "Open Anyway" to allow Airwave to open
+4. Click "Open Anyway" on the next dialog box and authenticate
+5. Open Airwave again from Applications folder
 
 On first launch, the Airwave menu bar icon indicates that additional setup is required. Click the menu bar icon and open Settings to view the required setup steps.
 
@@ -87,6 +102,7 @@ Licensing may change in future releases depending on distribution needs.
 - Inspired by the original concept and implementation of [HeSuVi](https://sourceforge.net/projects/hesuvi/). This project is independently developed and not affiliated with the HeSuVi project.
 - Supports HRIR datasets obtained from the [HeSuVi HRTF Database](https://airtable.com/embed/appac4r1cu9UpBNAN/shrpUAbtyZxhDDMjg/tblopH2GznvFipWjq/viwnouWPGDuYEd8Go). HRIR files are provided by third parties and are subject to their respective licenses.
 - Designed to work with [BlackHole](https://github.com/ExistentialAudio/BlackHole) for virtual audio routing.
+- The notice and the steps to resolve the signing issue copied from [Battery Toolkit](https://github.com/mhaeuser/Battery-Toolkit).
 
 ## Support
 For issues and feature requests, please [file an issue on GitHub](https://github.com/sallliisa/Airwave/issues).
