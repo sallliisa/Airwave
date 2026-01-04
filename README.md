@@ -37,7 +37,7 @@ This project was created to offer a free, customizable alternative to proprietar
 **3. Resource-efficient real-time processing**: ~1% of a single CPU core, ~0.125% of total CPU capacity on an 8-core M1 MacBook Air using the `dht` preset
 
 ## Requirements
-- macOS 13.0 or later
+- macOS 14.0 or later
 - Virtual audio device (e.g., BlackHole 2ch)
 
 ## Installation
