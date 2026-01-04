@@ -9,10 +9,13 @@
 			<key>orderHint</key>
 			<integer>0</integer>
 		</dict>
-		<key>Airwave.xcscheme_^#shared#^_</key>
+	</dict>
+	<key>SuppressBuildableAutocreation</key>
+	<dict>
+		<key>25B21E7D2ECCDD9B00FE4B05</key>
 		<dict>
-			<key>orderHint</key>
-			<integer>0</integer>
+			<key>primary</key>
+			<true/>
 		</dict>
 	</dict>
 </dict>
