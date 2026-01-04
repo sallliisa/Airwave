@@ -46,6 +46,7 @@ Add the following key to your Info.plist (or in Xcode's Info tab):
 ```
 
 **In Xcode:**
+
 1. Select the MacHRIR target
 2. Go to the "Info" tab
 3. Add a new entry: "Privacy - Microphone Usage Description"
@@ -56,15 +57,18 @@ Add the following key to your Info.plist (or in Xcode's Info tab):
 ### Basic Setup
 
 1. **Set System Audio Output to BlackHole 2ch:**
+
    - Go to System Settings → Sound
    - Under "Output", select "BlackHole 2ch"
    - All system audio will now route through MacHRIR
 
 2. **Configure MacHRIR:**
+
    - **Input Device:** Select "BlackHole 2ch" (captures system audio)
    - **Output Device:** Select your headphones or speakers
 
 3. **Add HRIR Preset:**
+
    - Click "Add Preset" button
    - Select a multi-channel WAV file containing HRIR impulse responses
    - The preset will be copied to `~/Library/Application Support/MacHRIR/presets`
@@ -84,6 +88,7 @@ MacHRIR supports multi-channel WAV files:
 - **Bit Depth:** 16-bit, 24-bit, or 32-bit float
 
 **Channel Mapping:**
+
 - Channel 0 → Left ear HRIR
 - Channel 1 → Right ear HRIR
 - Additional channels (2+) → Ignored
@@ -99,20 +104,24 @@ MacHRIR supports multi-channel WAV files:
 ### Core Components
 
 1. **AudioGraphManager** - Manages CoreAudio input/output units
+
    - Separate Audio Unit instances for input and output
    - Circular buffer for device clock decoupling
    - Real-time audio callbacks
 
 2. **CircularBuffer** - Thread-safe ring buffer (65KB)
+
    - Decouples input/output streams
    - Handles clock drift between devices
 
 3. **ConvolutionEngine** - Overlap-save FFT convolution
+
    - Low-latency DSP processing
    - Pre-computed frequency-domain HRIRs
    - Separate engines for L/R channels
 
 4. **HRIRManager** - Preset management
+
    - WAV file loading and parsing
    - Sample rate conversion
    - Preset storage and retrieval
@@ -138,6 +147,7 @@ Output Callback ← Output Audio Unit ← Headphones/Speakers
 ### Non-Interleaved Audio Format
 
 MacHRIR uses non-interleaved (planar) audio format, which is the macOS default:
+
 - Each channel has its own separate buffer
 - Format flags: `kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked | kAudioFormatFlagIsNonInterleaved`
 - 32-bit float samples
@@ -189,23 +199,27 @@ If you see "AVAudioFile error -54" when selecting an HRIR file:
 See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for detailed solutions.
 
 ### No audio output
+
 - Check that both input and output devices are selected
 - Verify System Settings → Sound output is set to BlackHole 2ch
 - Check audio level meters for signal presence
 - Try clicking Stop then Start
 
 ### Audio glitches or dropouts
+
 - Close unnecessary applications to reduce CPU load
 - Check Console.app for error messages
 - Verify sample rates match between devices
 - Try a smaller HRIR file
 
 ### Device not appearing in list
+
 - Disconnect and reconnect the device
 - Restart MacHRIR
 - Check that device is enabled in System Settings
 
 ### HRIR preset fails to load
+
 - Verify WAV file format (must be valid WAV)
 - Check that file has at least 1 channel
 - Ensure file is not corrupted
@@ -233,6 +247,7 @@ open MacHRIR.xcodeproj
 ### Testing Checklist
 
 See `prompt.md` for comprehensive testing procedures including:
+
 - Device selection testing
 - Audio quality testing
 - Stability testing
