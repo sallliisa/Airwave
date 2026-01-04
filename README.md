@@ -1,4 +1,4 @@
-<div style="text-align: center;">
+<div align="center">
    <h1 style="border-bottom: none; margin-bottom: 8px">Airwave</h1>
    <img src="docs/images/AirwaveIcon.png" alt="Airwave Icon" width="128" height="128" />
    <p>A macOS application that provides system-wide spatial audio through headphones. Compatible with HeSuVi HRIR presets.</p>
@@ -85,4 +85,6 @@ Licensing may change in future releases depending on distribution needs.
 ## Support
 For issues and feature requests, please [file an issue on GitHub](https://github.com/sallliisa/Airwave/issues).
 
-If you find Airwave useful, consider supporting its continued development through a voluntary donation. Donations help cover development time and ongoing maintenance, and are greatly appreciated.
+If you find Airwave useful, consider supporting its continued development through a [voluntary donation](https://ko-fi.com/Q5Q51RNAGT). Donations help cover development time and ongoing maintenance, and are greatly appreciated.
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Q5Q51RNAGT)
