@@ -25,7 +25,6 @@ struct AirwaveApp: App {
 
         Window("Settings", id: "settings") {
             SettingsView()
-                .toolbar(removing: .title)
         }
         .windowResizability(.contentSize)
         .defaultSize(width: 500, height: 560)

@@ -44,19 +44,6 @@ struct SettingsView: View {
         }
         .frame(minWidth: 500, idealWidth: 500, maxWidth: 500)
         .frame(minHeight: 400, idealHeight: 560)
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                 HStack(spacing: 8) {
-                     Image("AirwaveIcon")
-                         .resizable()
-                         .scaledToFit()
-                         .frame(width: 20, height: 20)
-                     Text("Airwave Settings")
-                         .font(.system(size: 13, weight: .semibold))
-                 }
-                 .padding(.horizontal, 16)
-            }
-        }
         .onAppear {
             refreshAvailableOutputs()
             diagnosticsManager.refresh()
