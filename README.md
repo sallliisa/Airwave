@@ -13,6 +13,11 @@
 
    <br/>
 
+   Consider supporting its continued development
+   [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Q5Q51RNAGT)
+
+   <br/>
+
    <strong>Table of Contents</strong>
    <br/>
    [About](#About) | [Features](#Features) | [Requirements](#Requirements) | [Installation](#Installation) | [License](#License) | [Credits](#Credits) | [Support](#Support)
