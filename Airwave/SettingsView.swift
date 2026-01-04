@@ -295,7 +295,7 @@ struct SettingsView: View {
 
                 // Audio Engine Toggle
                 HStack(spacing: 10) {
-                    Image(audioManager.isRunning ? "MenuBarIconFilled" : "MenuBarIcon")
+                    Image(audioManager.isRunning ? "MenuBarIcon.filled" : "MenuBarIcon")
                         .resizable()
                         .scaledToFit()
                         .frame(width: 13, height: 13)
