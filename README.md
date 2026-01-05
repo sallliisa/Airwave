@@ -71,19 +71,31 @@ On macOS 15 Sequoia or above:
 
 On first launch, the Airwave menu bar icon indicates that additional setup is required. Click the menu bar icon and open Settings to view the required setup steps.
 
-### 3. Set Up an Aggregate Device
-From the Airwave Settings menu, scroll down to the Diagnostics section, and click **Configure** under **Aggregate Device**. This will open the Audio MIDI Setup application.
+![Airwave Incomplete Setup Warning](docs/images/airwave_incomplete_setup_warning.png)
 
-In Audio MIDI Setup, click the **+** button in the bottom-left corner and select **Create Aggregate Device**. In the newly created aggregate device, enable **BlackHole 2ch** (or another virtual audio device) in the **Use** column, then enable any physical output devices you want Airwave to make available as output options.
+### 3. Set Up an Aggregate Device
+
+From the Airwave Settings menu, scroll down to the Diagnostics section, and click `Configure` under `Aggregate Device`. This will open the Audio MIDI Setup application.
+
+![Setup Aggregate Device Notice](docs/images/setup_aggregate_device_notice.png)
+
+In Audio MIDI Setup, click the `+` button in the bottom-left corner and select `Create Aggregate Device`.
+
+![Create Aggregate Device](docs/images/create_aggregate_device.png)
+
+In the newly created aggregate device, enable `BlackHole 2ch` (or another virtual audio device) in the `Use` column, then enable any physical output devices you want Airwave to make available as output options. After you're done, make sure to only check the "Drift Correction" box only on the `BlackHole 2ch` (or any virtual audio device that you are using).
+![Aggregate Device Setup](docs/images/select_physical_device_aggregate_device.png)
 
 ### 4. Get HRIR Presets
 Airwave does not ship with any HRIR presets.
 You can download them for free from the [HeSuVi HRTF Database](https://airtable.com/embed/appac4r1cu9UpBNAN/shrpUAbtyZxhDDMjg/tblopH2GznvFipWjq/viwnouWPGDuYEd8Go).
 
-After downloading the `.wav` files, click on **Manage Files** under **HRIR Presets**. Move the files into the folder shown, and the presets will be automatically detected and ready for use.
+After downloading the `.wav` files, click on `Manage files` under `HRIR Presets`. Move the files into the folder shown, and the presets will be automatically detected and ready for use.
+
+![Manage HRIR Presets](docs/images/manage_hrir_files.png)
 
 ### 5. Start Using Airwave
-Airwave is now ready to use. Any issues or warnings will appear in the **Diagnostics** section of Settings.
+Airwave is now ready to use. Any issues or warnings will appear in the `Diagnostics` section of Settings.
 
 To get started, choose:
 - the **aggregate device** you created,
@@ -93,6 +105,8 @@ To get started, choose:
 then start the audio engine.
 
 These controls are available in Settings, and can also be accessed later from the menu bar.
+
+![General Setup](docs/images/general_setup.png)
 
 ## License
 Airwave is currently licensed under the PolyForm Noncommercial License.
