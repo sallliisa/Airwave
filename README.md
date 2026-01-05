@@ -71,7 +71,7 @@ On macOS 15 Sequoia or above:
 
 On first launch, the Airwave menu bar icon indicates that additional setup is required. Click the menu bar icon and open Settings to view the required setup steps.
 
-|<img alt="Airwave Incomplete Setup Warning" src="docs/images/airwave_incomplete_setup_warning.png" width="600">|
+|<img alt="Airwave Incomplete Setup Warning" src="docs/images/airwave_incomplete_setup_warning.png" width="400">|
 |:--:|
 | **Fig. 1**. *Airwave Incomplete Setup Warning* |
 
