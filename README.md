@@ -97,9 +97,9 @@ You can download them for free from the [HeSuVi HRTF Database](https://airtable.
 
 After downloading the `.wav` files, click on `Manage files` under `HRIR Presets`. Move the files into the folder shown, and the presets will be automatically detected and ready for use.
 
-|<img alt="Manage HRIR Presets" src="docs/images/manage_hrir_files.png" width="607">|
-|:--:|
-| **Fig. 5**. *Manage HRIR Presets* |
+|<img alt="Manage HRIR Presets" src="docs/images/manage_hrir_files.png" width="400">|<img alt="HRIR Presets Folder" src="docs/images/hrir_files_folder.png" width="500">|
+|:--:|:--:|
+| **Fig. 5**. *Manage HRIR Presets* | **Fig. 6**. *HRIR Presets Folder* |
 
 ### 5. Start Using Airwave
 Airwave is now ready to use. Any issues or warnings will appear in the `Diagnostics` section of Settings.
@@ -115,7 +115,7 @@ These controls are available in Settings, and can also be accessed later from th
 
 |<img alt="General Setup" src="docs/images/general_setup.png" width="350">|
 |:--:|
-| **Fig. 6**. *General Setup* |
+| **Fig. 7**. *General Setup* |
 
 ## License
 Airwave is currently licensed under the PolyForm Noncommercial License.
