@@ -155,6 +155,9 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Aggregate Device")
                             .font(.system(size: 12))
+                        Text(audioManager.aggregateDevice?.name ?? "Select an aggregate device")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
                     }
                     
                     Spacer()
@@ -164,26 +167,21 @@ struct SettingsView: View {
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     } else {
-                        HStack {
-                            Spacer()
-                            Picker("", selection: Binding(
-                                get: { audioManager.aggregateDevice?.id ?? validAggregateDevices.first?.id },
-                                set: { newID in
-                                    if let newID = newID,
-                                       let device = validAggregateDevices.first(where: { $0.id == newID }) {
-                                        selectAggregateDevice(device)
-                                    }
-                                }
-                            )) {
-                                ForEach(validAggregateDevices, id: \.id) { device in
-                                    Text(device.name).tag(device.id as AudioDeviceID?)
+                        Picker("", selection: Binding(
+                            get: { audioManager.aggregateDevice?.id ?? validAggregateDevices.first?.id },
+                            set: { newID in
+                                if let newID = newID,
+                                   let device = validAggregateDevices.first(where: { $0.id == newID }) {
+                                    selectAggregateDevice(device)
                                 }
                             }
-                            .labelsHidden()
+                        )) {
+                            ForEach(validAggregateDevices, id: \.id) { device in
+                                Text(device.name).tag(device.id as AudioDeviceID?)
+                            }
                         }
-                        .frame(width: 200)
-                        .clipped()
-                        .fixedSize()
+                        .labelsHidden()
+                        .frame(width: 140)
                     }
                 }
                 .padding(.horizontal, 12)
@@ -201,9 +199,9 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Output Device")
                             .font(.system(size: 12))
-                        // Text(audioManager.selectedOutputDevice?.name ?? "Select an output device")
-                        //     .font(.system(size: 11))
-                        //     .foregroundStyle(.secondary)
+                        Text(audioManager.selectedOutputDevice?.name ?? "Select an output device")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
                     }
                     
                     Spacer()
@@ -217,26 +215,21 @@ struct SettingsView: View {
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     } else {
-                        HStack {
-                            Spacer()
-                            Picker("", selection: Binding(
-                                get: { audioManager.selectedOutputDevice?.device.id ?? audioManager.availableOutputs.first?.device.id },
-                                set: { newID in
-                                    if let newID = newID,
-                                       let output = audioManager.availableOutputs.first(where: { $0.device.id == newID }) {
-                                        selectOutputDevice(output)
-                                    }
-                                }
-                            )) {
-                                ForEach(audioManager.availableOutputs, id: \.device.id) { output in
-                                    Text(output.name).tag(output.device.id as AudioDeviceID?)
+                        Picker("", selection: Binding(
+                            get: { audioManager.selectedOutputDevice?.device.id ?? audioManager.availableOutputs.first?.device.id },
+                            set: { newID in
+                                if let newID = newID,
+                                   let output = audioManager.availableOutputs.first(where: { $0.device.id == newID }) {
+                                    selectOutputDevice(output)
                                 }
                             }
-                            .labelsHidden()
+                        )) {
+                            ForEach(audioManager.availableOutputs, id: \.device.id) { output in
+                                Text(output.name).tag(output.device.id as AudioDeviceID?)
+                            }
                         }
-                        .frame(width: 200)
-                        .clipped()
-                        .fixedSize()
+                        .labelsHidden()
+                        .frame(width: 140)
                     }
                 }
                 .padding(.horizontal, 12)
@@ -255,9 +248,9 @@ struct SettingsView: View {
                         Text("HRIR Preset")
                             .font(.system(size: 12))
                         HStack(spacing: 4) {
-                            // Text("Select spatial audio profile •")
-                            //     .font(.system(size: 11))
-                            //     .foregroundStyle(.secondary)
+                            Text("Spatial audio profile •")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
                             Button(action: {
                                 hrirManager.openPresetsDirectory()
                             }) {
@@ -276,30 +269,25 @@ struct SettingsView: View {
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     } else {
-                        HStack {
-                            Spacer()
-                            Picker("", selection: Binding(
-                                get: { hrirManager.activePreset?.id ?? Self.nonePresetID },
-                                set: { newID in
-                                    if let preset = hrirManager.presets.first(where: { $0.id == newID }) {
-                                        let sampleRate = 48000.0
-                                        let inputLayout = InputLayout.detect(channelCount: 2)
-                                        hrirManager.activatePreset(preset, targetSampleRate: sampleRate, inputLayout: inputLayout)
-                                    } else {
-                                        hrirManager.activePreset = nil
-                                    }
-                                }
-                            )) {
-                                Text("None").tag(Self.nonePresetID)
-                                ForEach(hrirManager.presets.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }) { preset in
-                                    Text(preset.name).tag(preset.id)
+                        Picker("", selection: Binding(
+                            get: { hrirManager.activePreset?.id ?? Self.nonePresetID },
+                            set: { newID in
+                                if let preset = hrirManager.presets.first(where: { $0.id == newID }) {
+                                    let sampleRate = 48000.0
+                                    let inputLayout = InputLayout.detect(channelCount: 2)
+                                    hrirManager.activatePreset(preset, targetSampleRate: sampleRate, inputLayout: inputLayout)
+                                } else {
+                                    hrirManager.activePreset = nil
                                 }
                             }
-                            .labelsHidden()
+                        )) {
+                            Text("None").tag(Self.nonePresetID)
+                            ForEach(hrirManager.presets.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }) { preset in
+                                Text(preset.name).tag(preset.id)
+                            }
                         }
-                        .frame(width: 200)
-                        .clipped()
-                        .fixedSize()
+                        .labelsHidden()
+                        .frame(width: 140)
                     }
                 }
                 .padding(.horizontal, 12)
@@ -455,10 +443,6 @@ struct SettingsView: View {
                     title: "Aggregate Device",
                     subtitle: aggregateSubtitle,
                     status: aggregateStatus,
-                    actionTitle: diagnosticsManager.diagnostics.validAggregateExists ? nil : "Open Audio MIDI Setup",
-                    action: {
-                        NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Audio MIDI Setup.app"))
-                    },
                     secondaryActionTitle: "Configure...",
                     secondaryAction: {
                         NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Audio MIDI Setup.app"))
@@ -486,7 +470,7 @@ struct SettingsView: View {
     private var getMoreHRIRSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Get HRIRs")
+                Text("Get HRIR Presets")
                     .font(.system(size: 12, weight: .semibold))
                 
                 Spacer()
@@ -503,7 +487,7 @@ struct SettingsView: View {
             }
             
             VStack(alignment: .leading, spacing: 4) {
-                Text("Airwave works with any HRIR compatible with HeSuVi. These HRIR files can be obtained for free from the HRTF database.")
+                Text("Airwave works with any HRIR compatible with HeSuVi. These HRIR presets can be obtained for free from the HRTF database.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineSpacing(2)
