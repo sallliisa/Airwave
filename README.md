@@ -118,8 +118,7 @@ These controls are available in Settings, and can also be accessed later from th
 | **Fig. 7**. *General Setup* |
 
 ## License
-Airwave is currently licensed under the PolyForm Noncommercial License.
-Licensing may change in future releases depending on distribution needs.
+Airwave is currently licensed under the GNU General Public License v3. I believe macOS tools should be accessible to everyone, free from the high price tags or and the subscription models that dominate the ecosystem.
 
 ## Credits
 - Inspired by the original concept and implementation of [HeSuVi](https://sourceforge.net/projects/hesuvi/). This project is independently developed and not affiliated with the HeSuVi project.
