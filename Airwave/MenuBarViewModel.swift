@@ -272,13 +272,8 @@ class MenuBarViewModel: ObservableObject {
     // MARK: - Aggregate Device List
     
     func getValidAggregateDevices() -> [AudioDevice] {
-        let allDevices = AudioDeviceManager.getAllDevices()
-        return allDevices.filter { device in
-            guard inspector.isAggregateDevice(device) else { return false }
-            
-            // Only show aggregates that have at least one valid output
-            return inspector.hasValidOutputs(aggregate: device)
-        }
+        // Show all aggregate devices - validation happens on selection
+        return deviceManager.aggregateDevices
     }
     
     // MARK: - Persistence
@@ -410,6 +405,8 @@ class MenuBarViewModel: ObservableObject {
             DispatchQueue.main.async {
                 Task { @MainActor in
                     viewModel.refreshAvailableOutputsIfNeeded()
+                    // Also refresh diagnostics when aggregate configuration changes
+                    SystemDiagnosticsManager.shared.refresh()
                 }
             }
             return noErr
@@ -463,6 +460,26 @@ class MenuBarViewModel: ObservableObject {
     /// Refresh available outputs if we have an aggregate device selected
     /// Called when system device list changes (devices added/removed)
     func refreshAvailableOutputsIfNeeded() {
+        // Validate that current aggregate device still exists in system
+        if let currentAggregate = audioManager.aggregateDevice {
+            let stillExists = deviceManager.aggregateDevices.contains { $0.id == currentAggregate.id }
+            if !stillExists {
+                Logger.log("[MenuBarViewModel] Aggregate device was removed: \(currentAggregate.name)")
+                
+                // Stop audio if running
+                if audioManager.isRunning {
+                    audioManager.stop()
+                }
+                
+                // Clear stale references
+                audioManager.aggregateDevice = nil
+                audioManager.availableOutputs = []
+                audioManager.selectedOutputDevice = nil
+                removeAggregateDeviceListener()
+                return
+            }
+        }
+        
         guard let device = audioManager.aggregateDevice else { return }
         
         do {
@@ -474,7 +491,16 @@ class MenuBarViewModel: ObservableObject {
             
             if audioManager.availableOutputs.count != previousCount {
                 Logger.log("[MenuBarViewModel] Output count changed: \(previousCount) -> \(audioManager.availableOutputs.count)")
-                
+            }
+            
+            // If no outputs available and engine is running, stop it
+            if audioManager.availableOutputs.isEmpty {
+                if audioManager.isRunning {
+                    Logger.log("[MenuBarViewModel] No output devices available - stopping audio engine")
+                    audioManager.stop()
+                }
+                audioManager.selectedOutputDevice = nil
+            } else {
                 // Try to restore user's preferred device
                 restoreUserPreferredDevice(from: audioManager.availableOutputs)
             }

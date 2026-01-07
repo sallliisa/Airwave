@@ -27,6 +27,6 @@ struct AirwaveApp: App {
             SettingsView()
         }
         .windowResizability(.contentSize)
-        .defaultSize(width: 500, height: 560)
+        .defaultSize(width: 500, height: 815)
     }
 }

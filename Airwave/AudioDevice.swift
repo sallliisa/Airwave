@@ -52,11 +52,19 @@ class AudioDeviceManager: ObservableObject {
     @Published var defaultOutputDevice: AudioDevice?
     @Published var deviceChangeNotification: String?
     
+    /// Counter that increments when the currently monitored aggregate device's sub-device list changes
+    /// Views can observe this to refresh their output lists
+    @Published var aggregateSubDeviceChangeCount: Int = 0
+    
     // MARK: - Private Properties
     
     private var deviceListenerAdded = false
     private var defaultInputListenerAdded = false
     private var defaultOutputListenerAdded = false
+    
+    /// Currently monitored aggregate device ID (for sub-device change detection)
+    private var monitoredAggregateDeviceID: AudioDeviceID?
+    private var aggregateSubDeviceListenerAdded = false
     
     // MARK: - Initialization
     
@@ -190,6 +198,76 @@ class AudioDeviceManager: ObservableObject {
                 deviceListChangeCallback,
                 Unmanaged.passUnretained(self).toOpaque()
             )
+        }
+        
+        // Also stop monitoring aggregate device if any
+        stopMonitoringAggregateDevice()
+    }
+    
+    // MARK: - Aggregate Sub-Device Monitoring
+    
+    /// Start monitoring an aggregate device for sub-device list changes
+    /// - Parameter device: The aggregate device to monitor
+    func startMonitoringAggregateDevice(_ device: AudioDevice) {
+        // Stop monitoring previous device if any
+        stopMonitoringAggregateDevice()
+        
+        guard device.isAggregateDevice else {
+            Logger.log("[AudioDevice] Cannot monitor non-aggregate device: \(device.name)")
+            return
+        }
+        
+        var subDeviceAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioAggregateDevicePropertyFullSubDeviceList,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        
+        let status = AudioObjectAddPropertyListener(
+            device.id,
+            &subDeviceAddress,
+            aggregateSubDeviceChangeCallback,
+            Unmanaged.passUnretained(self).toOpaque()
+        )
+        
+        if status == noErr {
+            monitoredAggregateDeviceID = device.id
+            aggregateSubDeviceListenerAdded = true
+            Logger.log("[AudioDevice] Started monitoring sub-device changes for: \(device.name)")
+        } else {
+            Logger.log("[AudioDevice] Failed to add sub-device listener for \(device.name): OSStatus \(status)")
+        }
+    }
+    
+    /// Stop monitoring the current aggregate device for sub-device changes
+    func stopMonitoringAggregateDevice() {
+        guard aggregateSubDeviceListenerAdded, let deviceID = monitoredAggregateDeviceID else {
+            return
+        }
+        
+        var subDeviceAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioAggregateDevicePropertyFullSubDeviceList,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        
+        AudioObjectRemovePropertyListener(
+            deviceID,
+            &subDeviceAddress,
+            aggregateSubDeviceChangeCallback,
+            Unmanaged.passUnretained(self).toOpaque()
+        )
+        
+        monitoredAggregateDeviceID = nil
+        aggregateSubDeviceListenerAdded = false
+    }
+    
+    /// Called when sub-device list changes in monitored aggregate device
+    fileprivate func handleAggregateSubDeviceChange() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.aggregateSubDeviceChangeCount += 1
+            Logger.log("[AudioDevice] Aggregate sub-device list changed (count: \(self.aggregateSubDeviceChangeCount))")
         }
     }
 
@@ -755,6 +833,23 @@ private func deviceListChangeCallback(
     
     let manager = Unmanaged<AudioDeviceManager>.fromOpaque(clientData).takeUnretainedValue()
     manager.refreshDevices()
+    
+    return noErr
+}
+
+/// Callback function for aggregate device sub-device list changes
+private func aggregateSubDeviceChangeCallback(
+    _ inObjectID: AudioObjectID,
+    _ inNumberAddresses: UInt32,
+    _ inAddresses: UnsafePointer<AudioObjectPropertyAddress>,
+    _ inClientData: UnsafeMutableRawPointer?
+) -> OSStatus {
+    guard let clientData = inClientData else {
+        return noErr
+    }
+    
+    let manager = Unmanaged<AudioDeviceManager>.fromOpaque(clientData).takeUnretainedValue()
+    manager.handleAggregateSubDeviceChange()
     
     return noErr
 }
