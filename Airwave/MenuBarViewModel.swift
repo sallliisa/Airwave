@@ -61,8 +61,18 @@ class MenuBarViewModel: ObservableObject {
         // Watch for aggregate device list changes AND refresh available outputs if we have an aggregate selected
         deviceManager.$aggregateDevices
             .debounce(for: .milliseconds(100), scheduler: RunLoop.main)
-            .sink { [weak self] _ in
-                self?.refreshAvailableOutputsIfNeeded()
+            .sink { [weak self] aggregates in
+                guard let self = self else { return }
+                
+                // Auto-select first aggregate device if none selected and devices became available
+                if self.audioManager.aggregateDevice == nil && !aggregates.isEmpty {
+                    if let firstDevice = aggregates.first {
+                        Logger.log("[MenuBarViewModel] Auto-selecting first aggregate device: \(firstDevice.name)")
+                        self.selectAggregateDevice(firstDevice)
+                    }
+                }
+                
+                self.refreshAvailableOutputsIfNeeded()
             }
             .store(in: &cancellables)
         
@@ -151,16 +161,6 @@ class MenuBarViewModel: ObservableObject {
             Logger.log("[MenuBarViewModel] Missing devices: \(health.missingUIDs)")
         }
         
-        // Validate first
-        let validation = validateAggregateDevice(device)
-        if !validation.valid {
-            selectionAlert = SelectionAlert(
-                title: "Invalid Aggregate Device",
-                message: validation.reason ?? "Unknown error"
-            )
-            return
-        }
-        
         // Stop audio if running
         let wasRunning = audioManager.isRunning
         if wasRunning {
@@ -169,8 +169,14 @@ class MenuBarViewModel: ObservableObject {
         
         audioManager.selectAggregateDevice(device)
         
-        // Load available outputs (already validated and filtered)
-        audioManager.availableOutputs = validation.validOutputs ?? []
+        // Load available outputs (filter out virtual loopback devices)
+        do {
+            let allOutputs = try inspector.getOutputDevices(aggregate: device)
+            audioManager.availableOutputs = filterAvailableOutputs(allOutputs)
+        } catch {
+            Logger.log("[MenuBarViewModel] Failed to get outputs: \(error)")
+            audioManager.availableOutputs = []
+        }
         
         do {
             // Auto-select first output if available
@@ -190,8 +196,8 @@ class MenuBarViewModel: ObservableObject {
             // Add listener for this aggregate device to monitor configuration changes
             addAggregateDeviceListener(for: device)
             
-            // Restart if was running
-            if wasRunning {
+            // Restart if was running (only if we have a valid output)
+            if wasRunning && audioManager.selectedOutputDevice != nil {
                 audioManager.start()
             }
             
