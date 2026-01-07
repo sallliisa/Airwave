@@ -64,6 +64,14 @@ struct SettingsView: View {
         .onChange(of: deviceManager.aggregateDevices.count) {
             // Aggregate devices added/removed - validate current selection and refresh UI
             validateCurrentSelection()
+            
+            // Auto-select first aggregate device if none selected and devices became available
+            if audioManager.aggregateDevice == nil && !deviceManager.aggregateDevices.isEmpty {
+                if let firstDevice = deviceManager.aggregateDevices.first {
+                    selectAggregateDevice(firstDevice)
+                }
+            }
+            
             refreshAvailableOutputs()
         }
         .onChange(of: deviceManager.outputDevices.count) {
@@ -221,20 +229,14 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     } else {
                         Picker("", selection: Binding(
-                            get: { audioManager.aggregateDevice?.id },
+                            get: { audioManager.aggregateDevice?.id ?? validAggregateDevices.first?.id },
                             set: { newID in
                                 if let newID = newID,
                                    let device = validAggregateDevices.first(where: { $0.id == newID }) {
                                     selectAggregateDevice(device)
-                                } else {
-                                    // "None" selected - clear aggregate device
-                                    audioManager.aggregateDevice = nil
-                                    audioManager.availableOutputs = []
-                                    audioManager.selectedOutputDevice = nil
                                 }
                             }
                         )) {
-                            Text("None").tag(nil as AudioDeviceID?)
                             ForEach(validAggregateDevices, id: \.id) { device in
                                 Text(device.name).tag(device.id as AudioDeviceID?)
                             }

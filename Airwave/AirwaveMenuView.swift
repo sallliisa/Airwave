@@ -312,26 +312,36 @@ struct AirwaveMenuView: View {
             
             // Device selection
             VStack(spacing: 2) {
-                // Aggregate Device Accordion
-                AccordionSection(
-                    title: "Aggregate",
-                    value: audioManager.aggregateDevice?.name ?? "None",
-                    isExpanded: expandedAccordion == .aggregateDevice,
-                    onToggle: {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            expandedAccordion = expandedAccordion == .aggregateDevice ? .none : .aggregateDevice
-                        }
-                    }
-                ) {
-                    let aggregates = viewModel.getValidAggregateDevices()
-                    if aggregates.isEmpty {
-                        Text("No aggregate devices found")
+                // Aggregate Device Section
+                let aggregates = viewModel.getValidAggregateDevices()
+                if aggregates.isEmpty {
+                    // Disabled state when no aggregate devices
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 9, weight: .semibold))
                             .foregroundColor(.secondary)
+                            .opacity(0.3)
+                        
+                        Text("Aggregate Device")
                             .font(.system(size: 12))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                    } else {
+                            .foregroundColor(.secondary)
+                        
+                        Spacer()
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                } else {
+                    // Accordion when aggregate devices exist
+                    AccordionSection(
+                        title: "Aggregate",
+                        value: audioManager.aggregateDevice?.name ?? "None",
+                        isExpanded: expandedAccordion == .aggregateDevice,
+                        onToggle: {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                expandedAccordion = expandedAccordion == .aggregateDevice ? .none : .aggregateDevice
+                            }
+                        }
+                    ) {
                         VStack(spacing: 0) {
                             ForEach(aggregates, id: \.id) { device in
                                 DeviceRow(
@@ -346,26 +356,36 @@ struct AirwaveMenuView: View {
                     }
                 }
                 
-                // Output Device Accordion
+                // Output Device Section
                 if audioManager.aggregateDevice != nil {
-                    AccordionSection(
-                        title: "Output",
-                        value: audioManager.selectedOutputDevice?.name ?? "None",
-                        isExpanded: expandedAccordion == .outputDevice,
-                        onToggle: {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                expandedAccordion = expandedAccordion == .outputDevice ? .none : .outputDevice
-                            }
-                        }
-                    ) {
-                        if audioManager.availableOutputs.isEmpty {
-                            Text("No output devices in aggregate")
+                    if audioManager.availableOutputs.isEmpty {
+                        // Disabled state when no outputs available
+                        HStack(spacing: 6) {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 9, weight: .semibold))
                                 .foregroundColor(.secondary)
+                                .opacity(0.3)
+                            
+                            Text("Output Device")
                                 .font(.system(size: 12))
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 8)
-                        } else {
+                                .foregroundColor(.secondary)
+                            
+                            Spacer()
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                    } else {
+                        // Accordion when outputs exist
+                        AccordionSection(
+                            title: "Output",
+                            value: audioManager.selectedOutputDevice?.name ?? "None",
+                            isExpanded: expandedAccordion == .outputDevice,
+                            onToggle: {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    expandedAccordion = expandedAccordion == .outputDevice ? .none : .outputDevice
+                                }
+                            }
+                        ) {
                             VStack(spacing: 0) {
                                 ForEach(audioManager.availableOutputs, id: \.uid) { output in
                                     DeviceRow(
@@ -380,19 +400,20 @@ struct AirwaveMenuView: View {
                         }
                     }
                 } else {
-                    HStack(spacing: 8) {
+                    HStack(spacing: 6) {
                         Image(systemName: "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(.system(size: 9, weight: .semibold))
                             .foregroundColor(.secondary)
                             .opacity(0.3)
                         
                         Text("Output Device")
+                            .font(.system(size: 12))
                             .foregroundColor(.secondary)
                         
                         Spacer()
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
                 }
             }
             .padding(.vertical, 4)
