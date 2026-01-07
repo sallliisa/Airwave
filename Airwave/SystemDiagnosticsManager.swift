@@ -138,6 +138,7 @@ class SystemDiagnosticsManager: ObservableObject {
     
     private let inspector = AggregateDeviceInspector()
     private var cancellables = Set<AnyCancellable>()
+    private var aggregateSubDeviceListeners: [AudioDeviceID: Bool] = [:]  // Track which aggregates we're listening to
     
     // MARK: - Initialization
     
@@ -148,13 +149,33 @@ class SystemDiagnosticsManager: ObservableObject {
         // Initial refresh
         refresh()
         
-        // Listen for device changes
+        // Listen for aggregate device list changes
         AudioDeviceManager.shared.$aggregateDevices
+            .debounce(for: .milliseconds(500), scheduler: RunLoop.main)
+            .sink { [weak self] aggregates in
+                self?.updateAggregateListeners(for: aggregates)
+                self?.refresh()
+            }
+            .store(in: &cancellables)
+        
+        // Listen for input device changes
+        AudioDeviceManager.shared.$inputDevices
             .debounce(for: .milliseconds(500), scheduler: RunLoop.main)
             .sink { [weak self] _ in
                 self?.refresh()
             }
             .store(in: &cancellables)
+        
+        // Listen for output device changes
+        AudioDeviceManager.shared.$outputDevices
+            .debounce(for: .milliseconds(500), scheduler: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.refresh()
+            }
+            .store(in: &cancellables)
+        
+        // Setup initial aggregate listeners
+        updateAggregateListeners(for: AudioDeviceManager.shared.aggregateDevices)
         
         // Listen for microphone permission changes
         // This handles the case where the user grants permission from the macOS prompt on launch
@@ -164,6 +185,46 @@ class SystemDiagnosticsManager: ObservableObject {
             name: PermissionManager.microphonePermissionDidChangeNotification,
             object: nil
         )
+    }
+    
+    // MARK: - Aggregate Sub-Device Listeners
+    
+    /// Update listeners for all aggregate devices' sub-device lists
+    private func updateAggregateListeners(for aggregates: [AudioDevice]) {
+        let currentIDs = Set(aggregates.map { $0.id })
+        let listeningIDs = Set(aggregateSubDeviceListeners.keys)
+        
+        // Add listeners for new aggregates
+        for aggregate in aggregates {
+            if !aggregateSubDeviceListeners.keys.contains(aggregate.id) {
+                addSubDeviceListener(for: aggregate)
+            }
+        }
+        
+        // Remove listeners for removed aggregates (they're already gone, just clean up tracking)
+        for id in listeningIDs.subtracting(currentIDs) {
+            aggregateSubDeviceListeners.removeValue(forKey: id)
+        }
+    }
+    
+    private func addSubDeviceListener(for aggregate: AudioDevice) {
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioAggregateDevicePropertyFullSubDeviceList,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        
+        let status = AudioObjectAddPropertyListener(
+            aggregate.id,
+            &propertyAddress,
+            aggregateSubDeviceChangeCallback,
+            Unmanaged.passUnretained(self).toOpaque()
+        )
+        
+        if status == noErr {
+            aggregateSubDeviceListeners[aggregate.id] = true
+            Logger.log("[Diagnostics] Added sub-device listener for aggregate: \(aggregate.name)")
+        }
     }
     
     @objc private func handleMicrophonePermissionChange(_ notification: Notification) {
@@ -244,7 +305,13 @@ class SystemDiagnosticsManager: ObservableObject {
             
             do {
                 let inputs = try inspector.getInputDevices(aggregate: aggregate)
-                let outputs = try inspector.getOutputDevices(aggregate: aggregate)
+                let allOutputs = try inspector.getOutputDevices(aggregate: aggregate)
+                
+                // Filter out virtual loopback devices from outputs (same logic as SettingsView)
+                let outputs = allOutputs.filter { output in
+                    let name = output.name.lowercased()
+                    return !name.contains("blackhole") && !name.contains("soundflower")
+                }
                 
                 let hasInput = !inputs.isEmpty
                 let hasOutput = !outputs.isEmpty
@@ -349,4 +416,27 @@ class SystemDiagnosticsManager: ObservableObject {
         
         return lines.joined(separator: "\n")
     }
+}
+
+// MARK: - Core Audio Callbacks
+
+/// Callback function for aggregate device sub-device list changes
+private func aggregateSubDeviceChangeCallback(
+    _ inObjectID: AudioObjectID,
+    _ inNumberAddresses: UInt32,
+    _ inAddresses: UnsafePointer<AudioObjectPropertyAddress>,
+    _ inClientData: UnsafeMutableRawPointer?
+) -> OSStatus {
+    guard let clientData = inClientData else {
+        return noErr
+    }
+    
+    let manager = Unmanaged<SystemDiagnosticsManager>.fromOpaque(clientData).takeUnretainedValue()
+    
+    DispatchQueue.main.async {
+        Logger.log("[Diagnostics] Aggregate sub-device list changed, refreshing...")
+        manager.refresh()
+    }
+    
+    return noErr
 }

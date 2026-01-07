@@ -45,11 +45,40 @@ struct SettingsView: View {
         .frame(minWidth: 500, idealWidth: 500, maxWidth: 500)
         .frame(minHeight: 400, idealHeight: 560)
         .onAppear {
+            // Start monitoring if there's already an aggregate device selected
+            if let device = audioManager.aggregateDevice {
+                deviceManager.startMonitoringAggregateDevice(device)
+            }
             refreshAvailableOutputs()
             diagnosticsManager.refresh()
         }
         .onChange(of: audioManager.aggregateDevice?.id) {
+            // Start monitoring the new aggregate device for sub-device changes
+            if let device = audioManager.aggregateDevice {
+                deviceManager.startMonitoringAggregateDevice(device)
+            } else {
+                deviceManager.stopMonitoringAggregateDevice()
+            }
             refreshAvailableOutputs()
+        }
+        .onChange(of: deviceManager.aggregateDevices.count) {
+            // Aggregate devices added/removed - validate current selection and refresh UI
+            validateCurrentSelection()
+            refreshAvailableOutputs()
+        }
+        .onChange(of: deviceManager.outputDevices.count) {
+            // Output devices changed - refresh outputs for current aggregate (catches sub-device additions)
+            refreshAvailableOutputs()
+            diagnosticsManager.refresh()
+        }
+        .onChange(of: deviceManager.inputDevices.count) {
+            // Input devices changed - refresh diagnostics
+            diagnosticsManager.refresh()
+        }
+        .onChange(of: deviceManager.aggregateSubDeviceChangeCount) {
+            // Sub-devices added/removed from the currently monitored aggregate device
+            refreshAvailableOutputs()
+            diagnosticsManager.refresh()
         }
     }
     
@@ -139,10 +168,34 @@ struct SettingsView: View {
     
     private var generalSection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("General")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .padding(.bottom, 8)
+            HStack {
+                Text("General")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                
+                Spacer()
+                
+                Button(action: {
+                    refreshAll()
+                }) {
+                    HStack(spacing: 4) {
+                        if diagnosticsManager.isRefreshing {
+                            ProgressView()
+                                .scaleEffect(0.6)
+                                .frame(width: 12, height: 12)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 11))
+                        }
+                        Text("Refresh")
+                            .font(.system(size: 11))
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(diagnosticsManager.isRefreshing)
+            }
+            .padding(.bottom, 8)
             
             VStack(spacing: 0) {
                 // Aggregate Device Selector
@@ -168,14 +221,20 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     } else {
                         Picker("", selection: Binding(
-                            get: { audioManager.aggregateDevice?.id ?? validAggregateDevices.first?.id },
+                            get: { audioManager.aggregateDevice?.id },
                             set: { newID in
                                 if let newID = newID,
                                    let device = validAggregateDevices.first(where: { $0.id == newID }) {
                                     selectAggregateDevice(device)
+                                } else {
+                                    // "None" selected - clear aggregate device
+                                    audioManager.aggregateDevice = nil
+                                    audioManager.availableOutputs = []
+                                    audioManager.selectedOutputDevice = nil
                                 }
                             }
                         )) {
+                            Text("None").tag(nil as AudioDeviceID?)
                             ForEach(validAggregateDevices, id: \.id) { device in
                                 Text(device.name).tag(device.id as AudioDeviceID?)
                             }
@@ -264,31 +323,25 @@ struct SettingsView: View {
                     
                     Spacer()
                     
-                    if hrirManager.presets.isEmpty {
-                        Text("No HRIR files found")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Picker("", selection: Binding(
-                            get: { hrirManager.activePreset?.id ?? Self.nonePresetID },
-                            set: { newID in
-                                if let preset = hrirManager.presets.first(where: { $0.id == newID }) {
-                                    let sampleRate = 48000.0
-                                    let inputLayout = InputLayout.detect(channelCount: 2)
-                                    hrirManager.activatePreset(preset, targetSampleRate: sampleRate, inputLayout: inputLayout)
-                                } else {
-                                    hrirManager.activePreset = nil
-                                }
-                            }
-                        )) {
-                            Text("None").tag(Self.nonePresetID)
-                            ForEach(hrirManager.presets.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }) { preset in
-                                Text(preset.name).tag(preset.id)
+                    Picker("", selection: Binding(
+                        get: { hrirManager.activePreset?.id ?? Self.nonePresetID },
+                        set: { newID in
+                            if let preset = hrirManager.presets.first(where: { $0.id == newID }) {
+                                let sampleRate = 48000.0
+                                let inputLayout = InputLayout.detect(channelCount: 2)
+                                hrirManager.activatePreset(preset, targetSampleRate: sampleRate, inputLayout: inputLayout)
+                            } else {
+                                hrirManager.activePreset = nil
                             }
                         }
-                        .labelsHidden()
-                        .frame(width: 140)
+                    )) {
+                        Text("None").tag(Self.nonePresetID)
+                        ForEach(hrirManager.presets.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }) { preset in
+                            Text(preset.name).tag(preset.id)
+                        }
                     }
+                    .labelsHidden()
+                    .frame(width: 140, alignment: .trailing)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
@@ -387,34 +440,10 @@ struct SettingsView: View {
     
     private var checklistSection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Diagnostics")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                
-                Spacer()
-                
-                Button(action: {
-                    diagnosticsManager.refresh()
-                }) {
-                    HStack(spacing: 4) {
-                        if diagnosticsManager.isRefreshing {
-                            ProgressView()
-                                .scaleEffect(0.6)
-                                .frame(width: 12, height: 12)
-                        } else {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 11))
-                        }
-                        Text("Refresh")
-                            .font(.system(size: 11))
-                    }
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(diagnosticsManager.isRefreshing)
-            }
-            .padding(.bottom, 8)
+            Text("Diagnostics")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.bottom, 8)
 
             // Help Section
             helpSection
@@ -519,13 +548,41 @@ struct SettingsView: View {
     
     private var aggregateSubtitle: String {
         let d = diagnosticsManager.diagnostics
-        if d.validAggregateExists {
-            return "\(d.aggregateCount) configured"
-        } else if d.aggregateDevicesExist {
-            return "Found but needs input + output devices"
-        } else {
+        
+        // State 1: No aggregate devices at all
+        if !d.aggregateDevicesExist {
             return "Create in Audio MIDI Setup"
         }
+        
+        // Check all aggregates to determine the overall state
+        let validCount = d.aggregateHealth.filter { $0.hasInput && $0.hasOutput }.count
+        let invalidAggregates = d.aggregateHealth.filter { !$0.hasInput || !$0.hasOutput }
+        
+        // State 5: All aggregates are fully configured
+        if validCount == d.aggregateCount && d.aggregateCount > 0 {
+            return "\(d.aggregateCount) configured"
+        }
+        
+        // States 2-4: Some or all aggregates need configuration
+        // Check the first invalid aggregate to determine what's missing
+        if let firstInvalid = invalidAggregates.first {
+            let hasInput = firstInvalid.hasInput
+            let hasOutput = firstInvalid.hasOutput
+            
+            if !hasInput && !hasOutput {
+                // State 2: No input + output device in aggregate
+                return "Found but needs input + output devices"
+            } else if !hasInput {
+                // State 3: No input device in aggregate
+                return "Found but needs input device"
+            } else if !hasOutput {
+                // State 4: No output device in aggregate
+                return "Found but needs output device"
+            }
+        }
+        
+        // Fallback (shouldn't reach here)
+        return "Create in Audio MIDI Setup"
     }
     
     private var aggregateStatus: ChecklistStatus {
@@ -563,11 +620,9 @@ struct SettingsView: View {
     
     // MARK: - Device Selection
     
-    /// Filter for valid aggregate devices (those with connected sub-devices)
+    /// Get all aggregate devices (show all, validation happens on selection)
     private var validAggregateDevices: [AudioDevice] {
-        deviceManager.aggregateDevices.filter { device in
-            inspector.hasValidOutputs(aggregate: device)
-        }
+        deviceManager.aggregateDevices
     }
     
     /// Select an aggregate device and configure outputs
@@ -621,17 +676,42 @@ struct SettingsView: View {
     
     /// Refresh available outputs from current aggregate device
     private func refreshAvailableOutputs() {
-        guard let device = audioManager.aggregateDevice else {
+        guard let currentAggregate = audioManager.aggregateDevice else {
             audioManager.availableOutputs = []
             audioManager.selectedOutputDevice = nil
             return
         }
         
+        // Get fresh device reference from device manager to ensure we have latest sub-device info
+        // The stored audioManager.aggregateDevice might be stale after device list refresh
+        guard let freshDevice = deviceManager.aggregateDevices.first(where: { $0.id == currentAggregate.id }) else {
+            // Device no longer exists - stop engine and clear selection
+            if audioManager.isRunning {
+                audioManager.stop()
+            }
+            audioManager.aggregateDevice = nil
+            audioManager.availableOutputs = []
+            audioManager.selectedOutputDevice = nil
+            return
+        }
+        
+        // Update the reference to the fresh device
+        audioManager.aggregateDevice = freshDevice
+        
         do {
-            let allOutputs = try inspector.getOutputDevices(aggregate: device)
+            let allOutputs = try inspector.getOutputDevices(aggregate: freshDevice)
             
             // Filter out virtual loopback devices
             audioManager.availableOutputs = filterAvailableOutputs(allOutputs)
+            
+            // If no outputs available, stop the engine
+            if audioManager.availableOutputs.isEmpty {
+                if audioManager.isRunning {
+                    audioManager.stop()
+                }
+                audioManager.selectedOutputDevice = nil
+                return
+            }
             
             // Try to maintain current selection if it still exists
             if let currentOutput = audioManager.selectedOutputDevice,
@@ -646,9 +726,42 @@ struct SettingsView: View {
             
         } catch {
             Logger.log("Failed to refresh outputs: \(error)")
+            if audioManager.isRunning {
+                audioManager.stop()
+            }
             audioManager.availableOutputs = []
             audioManager.selectedOutputDevice = nil
         }
+    }
+    
+    /// Refresh everything - device lists, outputs, and diagnostics
+    private func refreshAll() {
+        // Refresh system device lists
+        deviceManager.refreshDevices()
+        
+        // Give device manager time to update, then refresh outputs and diagnostics
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            self.refreshAvailableOutputs()
+            self.diagnosticsManager.refresh()
+        }
+    }
+    
+    /// Validate that current selections still exist in system device list
+    private func validateCurrentSelection() {
+        // If we had an aggregate selected but it no longer exists, clear it
+        if let currentAggregate = audioManager.aggregateDevice {
+            let stillExists = deviceManager.aggregateDevices.contains { $0.id == currentAggregate.id }
+            if !stillExists {
+                // Stop audio engine if running since aggregate device is gone
+                if audioManager.isRunning {
+                    audioManager.stop()
+                }
+                audioManager.aggregateDevice = nil
+                audioManager.availableOutputs = []
+                audioManager.selectedOutputDevice = nil
+            }
+        }
+        diagnosticsManager.refresh()
     }
     
     /// Filter out virtual loopback devices (BlackHole, Soundflower, etc.)
