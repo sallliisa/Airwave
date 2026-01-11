@@ -267,10 +267,27 @@ class AudioGraphManager: ObservableObject {
         // Save current system output before switching
         deviceManager.saveCurrentOutputDevice()
         
+        // VOLUME SYNC: Get current system output volume before switching
+        var currentVolume: Float? = nil
+        if let currentOutput = deviceManager.getSystemDefaultOutputDevice() {
+            currentVolume = deviceManager.getDeviceVolume(currentOutput)
+            if let volume = currentVolume {
+                Logger.log("[AudioGraph] Current system volume: \(Int(volume * 100))%")
+            }
+        }
+        
         // Use the selected input device, or fall back to any BlackHole device
         guard let inputDevice = selectedInputDevice?.device ?? deviceManager.findBlackHoleDevice() else {
             Logger.log("[AudioGraph] Warning: No input device selected and no BlackHole device found for system audio switching")
             return
+        }
+        
+        // VOLUME SYNC: Set volume on target input device BEFORE switching to it
+        if let volume = currentVolume {
+            let volumeSet = deviceManager.setDeviceVolume(inputDevice, volume: volume)
+            if volumeSet {
+                Logger.log("[AudioGraph] 🔊 Volume matched to current level (\(Int(volume * 100))%) on input device")
+            }
         }
         
         // Switch to the input device FIRST (before setting physical device to 100%)

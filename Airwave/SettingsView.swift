@@ -822,6 +822,15 @@ struct SettingsView: View {
     /// Select an input device
     /// - Parameter switchSystemAudio: Whether to switch system audio output to this device (default: true)
     private func selectInputDevice(_ input: AggregateDeviceInspector.SubDeviceInfo, switchSystemAudio: Bool = true) {
+        // VOLUME SYNC: Get volume from previous input device before switching
+        var previousVolume: Float? = nil
+        if let previousInput = audioManager.selectedInputDevice {
+            previousVolume = AudioDeviceManager.shared.getDeviceVolume(previousInput.device)
+            if let volume = previousVolume {
+                Logger.log("[Settings] Previous input device volume: \(Int(volume * 100))%")
+            }
+        }
+        
         audioManager.selectedInputDevice = input
         
         // Set the input channel range to the first 2 channels of the selected input device
@@ -832,6 +841,14 @@ struct SettingsView: View {
         
         // Only switch system audio output if explicitly requested AND audio engine is running
         if switchSystemAudio && audioManager.isRunning {
+            // VOLUME SYNC: Set volume on new input device BEFORE switching to it
+            if let volume = previousVolume {
+                let volumeSet = AudioDeviceManager.shared.setDeviceVolume(input.device, volume: volume)
+                if volumeSet {
+                    Logger.log("[Settings] 🔊 Volume matched from previous input device (\(Int(volume * 100))%)")
+                }
+            }
+            
             let success = AudioDeviceManager.shared.setSystemDefaultOutputDevice(input.device)
             if success {
                 Logger.log("[Settings] System audio output switched to: \(input.name)")
@@ -914,14 +931,13 @@ struct SettingsView: View {
                 
                 // Persist the input device to ensure it's saved
                 SettingsManager.shared.setInputDevice(stillExists.device)
-            } else if audioManager.selectedInputDevice != nil && audioManager.availableInputs.isEmpty {
-                // Current selection is gone and no inputs available
+            } else if audioManager.availableInputs.isEmpty {
+                // No inputs available - clear selection
                 audioManager.selectedInputDevice = nil
-            } else if audioManager.selectedInputDevice == nil && !audioManager.availableInputs.isEmpty,
-                      let firstInput = audioManager.availableInputs.first {
-                // No current selection and inputs are available - auto-select first input
-                // Use switchSystemAudio: false since this is just initialization, not a user action
-                selectInputDevice(firstInput, switchSystemAudio: false)
+            } else if let firstInput = audioManager.availableInputs.first {
+                // Current selection is gone OR no selection - auto-select first available input
+                // Switch system audio only if the audio engine is running (needs the new input for audio flow)
+                selectInputDevice(firstInput, switchSystemAudio: audioManager.isRunning)
             }
             
             
