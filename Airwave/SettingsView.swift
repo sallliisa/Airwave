@@ -39,6 +39,11 @@ struct SettingsView: View {
                 
                 // Diagnostics
                 checklistSection
+                
+                #if DEBUG
+                // Debug Info
+                debugSection
+                #endif
             }
             .padding(20)
         }
@@ -239,6 +244,65 @@ struct SettingsView: View {
                         )) {
                             ForEach(validAggregateDevices, id: \.id) { device in
                                 Text(device.name).tag(device.id as AudioDeviceID?)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 140)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                
+                // Input Device Selector
+                Divider().padding(.leading, 30)
+                
+                HStack(spacing: 10) {
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 20)
+                    
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Input Device")
+                            .font(.system(size: 12))
+                        Text(audioManager.selectedInputDevice?.name ?? "Select an input device")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    
+                    Spacer()
+                    
+                    if audioManager.aggregateDevice == nil {
+                        Text("Select aggregate device first")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    } else if audioManager.availableInputs.isEmpty {
+                        Text("No input devices in aggregate")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Picker("", selection: Binding(
+                            get: { audioManager.selectedInputDevice?.device.id ?? audioManager.availableInputs.first?.device.id },
+                            set: { newID in
+                                // Only process if this is a real user change, not just the Picker evaluating the binding
+                                guard let currentID = audioManager.selectedInputDevice?.device.id else {
+                                    // No current selection - this is initial setup, don't switch system audio
+                                    if let newID = newID,
+                                       let input = audioManager.availableInputs.first(where: { $0.device.id == newID }) {
+                                        selectInputDevice(input, switchSystemAudio: false)
+                                    }
+                                    return
+                                }
+                                
+                                // User explicitly changed the selection - allow system audio switch
+                                if let newID = newID, newID != currentID,
+                                   let input = audioManager.availableInputs.first(where: { $0.device.id == newID }) {
+                                    selectInputDevice(input, switchSystemAudio: true)
+                                }
+                            }
+                        )) {
+                            ForEach(audioManager.availableInputs, id: \.device.id) { input in
+                                Text(input.name).tag(input.device.id as AudioDeviceID?)
                             }
                         }
                         .labelsHidden()
@@ -546,6 +610,85 @@ struct SettingsView: View {
         .cornerRadius(6)
     }
     
+    #if DEBUG
+    private var debugSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Debug Info")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.bottom, 8)
+            
+            VStack(spacing: 0) {
+                // Input Device
+                HStack(spacing: 10) {
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 16)
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Input Device")
+                            .font(.system(size: 11, weight: .medium))
+                        Text(audioManager.selectedInputDevice?.name ?? "None")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    
+                    Spacer()
+                    
+                    // Show ACTUAL channels being read by engine
+                    if let inputRange = audioManager.selectedInputChannelRange {
+                        Text("Ch \(inputRange.lowerBound)-\(inputRange.upperBound - 1)")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.green)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.green.opacity(0.1))
+                            .cornerRadius(4)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                
+                Divider().padding(.leading, 28)
+                
+                // Output Device
+                HStack(spacing: 10) {
+                    Image(systemName: "speaker.wave.2.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 16)
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Output Device")
+                            .font(.system(size: 11, weight: .medium))
+                        Text(audioManager.selectedOutputDevice?.name ?? "None")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    
+                    Spacer()
+                    
+                    // Show ACTUAL channels being written by engine
+                    if let outputRange = audioManager.selectedOutputChannelRange {
+                        Text("Ch \(outputRange.lowerBound)-\(outputRange.upperBound - 1)")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.blue)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.blue.opacity(0.1))
+                            .cornerRadius(4)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+            }
+            .background(.ultraThinMaterial)
+            .cornerRadius(6)
+        }
+    }
+    #endif
+    
     // MARK: - Computed Properties
     
     private var aggregateSubtitle: String {
@@ -676,11 +819,36 @@ struct SettingsView: View {
         audioManager.setOutputChannels(channelRange)
     }
     
+    /// Select an input device
+    /// - Parameter switchSystemAudio: Whether to switch system audio output to this device (default: true)
+    private func selectInputDevice(_ input: AggregateDeviceInspector.SubDeviceInfo, switchSystemAudio: Bool = true) {
+        audioManager.selectedInputDevice = input
+        
+        // Set the input channel range to the first 2 channels of the selected input device
+        if let inputRange = input.inputChannelRange {
+            let stereoRange = inputRange.lowerBound..<min(inputRange.lowerBound + 2, inputRange.upperBound)
+            audioManager.setInputChannels(stereoRange)
+        }
+        
+        // Only switch system audio output if explicitly requested AND audio engine is running
+        if switchSystemAudio && audioManager.isRunning {
+            let success = AudioDeviceManager.shared.setSystemDefaultOutputDevice(input.device)
+            if success {
+                Logger.log("[Settings] System audio output switched to: \(input.name)")
+            }
+        }
+        
+        // Persist selection
+        SettingsManager.shared.setInputDevice(input.device)
+    }
+    
     /// Refresh available outputs from current aggregate device
     private func refreshAvailableOutputs() {
         guard let currentAggregate = audioManager.aggregateDevice else {
             audioManager.availableOutputs = []
             audioManager.selectedOutputDevice = nil
+            audioManager.availableInputs = []
+            audioManager.selectedInputDevice = nil
             return
         }
         
@@ -694,6 +862,8 @@ struct SettingsView: View {
             audioManager.aggregateDevice = nil
             audioManager.availableOutputs = []
             audioManager.selectedOutputDevice = nil
+            audioManager.availableInputs = []
+            audioManager.selectedInputDevice = nil
             return
         }
         
@@ -701,6 +871,7 @@ struct SettingsView: View {
         audioManager.aggregateDevice = freshDevice
         
         do {
+            // Refresh outputs
             let allOutputs = try inspector.getOutputDevices(aggregate: freshDevice)
             
             // Filter out virtual loopback devices
@@ -712,19 +883,47 @@ struct SettingsView: View {
                     audioManager.stop()
                 }
                 audioManager.selectedOutputDevice = nil
-                return
+            } else {
+                // Try to maintain current selection if it still exists
+                if let currentOutput = audioManager.selectedOutputDevice,
+                   let stillExists = audioManager.availableOutputs.first(where: { $0.device.id == currentOutput.device.id }) {
+                    audioManager.selectedOutputDevice = stillExists
+                } else if let firstOutput = audioManager.availableOutputs.first {
+                    // Auto-select first output if current selection is gone
+                    audioManager.selectedOutputDevice = firstOutput
+                } else {
+                    audioManager.selectedOutputDevice = nil
+                }
             }
             
-            // Try to maintain current selection if it still exists
-            if let currentOutput = audioManager.selectedOutputDevice,
-               let stillExists = audioManager.availableOutputs.first(where: { $0.device.id == currentOutput.device.id }) {
-                audioManager.selectedOutputDevice = stillExists
-            } else if let firstOutput = audioManager.availableOutputs.first {
-                // Auto-select first output if current selection is gone
-                audioManager.selectedOutputDevice = firstOutput
-            } else {
-                audioManager.selectedOutputDevice = nil
+            // Refresh inputs
+            let allInputs = try inspector.getInputDevices(aggregate: freshDevice)
+            audioManager.availableInputs = allInputs
+            
+            // Try to maintain current input selection if it still exists
+            if let currentInput = audioManager.selectedInputDevice,
+               let stillExists = audioManager.availableInputs.first(where: { $0.device.id == currentInput.device.id }) {
+                // Input still exists - just update the reference (don't call selectInputDevice to avoid re-triggering setup)
+                audioManager.selectedInputDevice = stillExists
+                
+                // Update the input channel range in case it changed
+                if let inputRange = stillExists.inputChannelRange {
+                    let stereoRange = inputRange.lowerBound..<min(inputRange.lowerBound + 2, inputRange.upperBound)
+                    audioManager.setInputChannels(stereoRange)
+                }
+                
+                // Persist the input device to ensure it's saved
+                SettingsManager.shared.setInputDevice(stillExists.device)
+            } else if audioManager.selectedInputDevice != nil && audioManager.availableInputs.isEmpty {
+                // Current selection is gone and no inputs available
+                audioManager.selectedInputDevice = nil
+            } else if audioManager.selectedInputDevice == nil && !audioManager.availableInputs.isEmpty,
+                      let firstInput = audioManager.availableInputs.first {
+                // No current selection and inputs are available - auto-select first input
+                // Use switchSystemAudio: false since this is just initialization, not a user action
+                selectInputDevice(firstInput, switchSystemAudio: false)
             }
+            
             
         } catch {
             Logger.log("Failed to refresh outputs: \(error)")
@@ -733,6 +932,8 @@ struct SettingsView: View {
             }
             audioManager.availableOutputs = []
             audioManager.selectedOutputDevice = nil
+            audioManager.availableInputs = []
+            audioManager.selectedInputDevice = nil
         }
     }
     
@@ -761,6 +962,8 @@ struct SettingsView: View {
                 audioManager.aggregateDevice = nil
                 audioManager.availableOutputs = []
                 audioManager.selectedOutputDevice = nil
+                audioManager.availableInputs = []
+                audioManager.selectedInputDevice = nil
             }
         }
         diagnosticsManager.refresh()

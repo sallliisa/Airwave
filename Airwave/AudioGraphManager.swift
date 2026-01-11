@@ -27,6 +27,10 @@ class AudioGraphManager: ObservableObject {
     @Published var availableOutputs: [AggregateDeviceInspector.SubDeviceInfo] = []
     @Published var selectedOutputDevice: AggregateDeviceInspector.SubDeviceInfo?
     
+    // Input device selection state
+    @Published var availableInputs: [AggregateDeviceInspector.SubDeviceInfo] = []
+    @Published var selectedInputDevice: AggregateDeviceInspector.SubDeviceInfo?
+    
     // MARK: - Private Properties
 
     fileprivate var audioUnit: AudioUnit?
@@ -35,14 +39,17 @@ class AudioGraphManager: ObservableObject {
     fileprivate var inputChannelCount: UInt32 = 0
     fileprivate var outputChannelCount: UInt32 = 2
     
-    // NEW: Track which output channels to use
-    fileprivate var selectedOutputChannelRange: Range<Int>?
+    // Track which output channels to use
+    var selectedOutputChannelRange: Range<Int>?
+    
+    // Track which input channels to use (first 2 channels from selected input device)
+    var selectedInputChannelRange: Range<Int>?
     
     fileprivate var currentSampleRate: Double = 48000.0
 
     // Pre-allocated buffers for multi-channel processing
     fileprivate let maxFramesPerCallback: Int = 4096
-    fileprivate let maxChannels: Int = 16  // Support up to 16 channels
+    fileprivate let maxChannels: Int = 64  // Support up to 64 channels (multiple multi-channel devices in aggregate)
     
     // Multi-channel buffers using UnsafeMutablePointer for zero-allocation real-time processing
     fileprivate var inputChannelBufferPtrs: UnsafeMutablePointer<UnsafeMutablePointer<Float>>?
@@ -153,9 +160,9 @@ class AudioGraphManager: ObservableObject {
 
         stop()
         
-        // Switch system audio to BlackHole BEFORE starting engine
+        // Switch system audio to the selected input device BEFORE starting engine
         // This prevents any audio blast on the physical device
-        switchSystemAudioToBlackHole()
+        switchSystemAudioToInputDevice()
 
         do {
             try setupAudioUnit(device: device, outputChannelRange: selectedOutputChannelRange)
@@ -232,6 +239,16 @@ class AudioGraphManager: ObservableObject {
         // No need to reinitialize audio unit!
         selectedOutputChannelRange = range
     }
+    
+    /// Change input routing without stopping audio
+    func setInputChannels(_ range: Range<Int>) {
+        // Note: We don't validate against inputChannelCount here because:
+        // 1. The range comes from AggregateDeviceInspector which validates device existence
+        // 2. inputChannelCount can become stale when sub-devices are added/removed from aggregate
+        // 3. The render callback has its own safety checks
+        selectedInputChannelRange = range
+        Logger.log("[AudioGraph] Input channels set to: \(range.lowerBound)-\(range.upperBound - 1)")
+    }
 
     /// Select aggregate device
     func selectAggregateDevice(_ device: AudioDevice) {
@@ -243,28 +260,28 @@ class AudioGraphManager: ObservableObject {
 
     // MARK: - System Audio Switching
     
-    /// Switch system audio output to BlackHole device
-    private func switchSystemAudioToBlackHole() {
+    /// Switch system audio output to the selected input device (e.g., BlackHole)
+    private func switchSystemAudioToInputDevice() {
         let deviceManager = AudioDeviceManager.shared
         
         // Save current system output before switching
         deviceManager.saveCurrentOutputDevice()
         
-        // Find BlackHole device
-        guard let blackHole = deviceManager.findBlackHoleDevice() else {
-            Logger.log("[AudioGraph] Warning: BlackHole device not found for system audio switching")
+        // Use the selected input device, or fall back to any BlackHole device
+        guard let inputDevice = selectedInputDevice?.device ?? deviceManager.findBlackHoleDevice() else {
+            Logger.log("[AudioGraph] Warning: No input device selected and no BlackHole device found for system audio switching")
             return
         }
         
-        // Switch to BlackHole FIRST (before setting physical device to 100%)
-        let success = deviceManager.setSystemDefaultOutputDevice(blackHole)
+        // Switch to the input device FIRST (before setting physical device to 100%)
+        let success = deviceManager.setSystemDefaultOutputDevice(inputDevice)
         if success {
-            Logger.log("[AudioGraph] System audio output switched to BlackHole")
+            Logger.log("[AudioGraph] System audio output switched to: \(inputDevice.name)")
         } else {
-            Logger.log("[AudioGraph] Failed to switch system audio output to BlackHole")
+            Logger.log("[AudioGraph] Failed to switch system audio output to: \(inputDevice.name)")
         }
         
-        // NOW gradually ramp up selected output device to 100% (safe - system is on BlackHole)
+        // NOW gradually ramp up selected output device to 100% (safe - system is on input device)
         if let selectedOutput = selectedOutputDevice {
             // Get current volume
             let currentVolume = deviceManager.getDeviceVolume(selectedOutput.device) ?? 0.5
@@ -577,10 +594,26 @@ private func renderCallback(
     let inputBufferList = inputBufferListPtr.assumingMemoryBound(to: AudioBufferList.self)
     let inputChannelCount = Int(manager.inputChannelCount)
     
-    // Safety check (Debug only for performance)
+    // Safety check - clamp channel count to prevent buffer overflow
+    // This can happen during startup or device changes
+    if inputChannelCount > manager.maxChannels || inputChannelCount == 0 {
+        // Zero output and return silently
+        let outputChannelCount = Int(ioData.pointee.mNumberBuffers)
+        withUnsafeMutablePointer(to: &ioData.pointee.mBuffers) { buffersPtr in
+            let bufferPtr = UnsafeMutableRawPointer(buffersPtr).assumingMemoryBound(to: AudioBuffer.self)
+            for i in 0..<outputChannelCount {
+                let buffer = bufferPtr.advanced(by: i)
+                if let data = buffer.pointee.mData {
+                    memset(data, 0, frameCount * MemoryLayout<Float>.size)
+                }
+            }
+        }
+        return noErr
+    }
+    
     #if DEBUG
-    if frameCount > manager.maxFramesPerCallback || inputChannelCount > manager.maxChannels {
-         assertionFailure("CoreAudio contract violation: frameCount=\(frameCount), channels=\(inputChannelCount)")
+    if frameCount > manager.maxFramesPerCallback {
+         assertionFailure("CoreAudio contract violation: frameCount=\(frameCount)")
          return kAudioUnitErr_TooManyFramesToProcess
     }
     #endif
@@ -627,31 +660,49 @@ private func renderCallback(
         }
     }
     
+    // Determine which input channels to use (first 2 from selected input device)
+    let inputRange = manager.selectedInputChannelRange ?? 0..<min(2, inputChannelCount)
+    let leftInputChannel = inputRange.lowerBound
+    let rightInputChannel = min(leftInputChannel + 1, inputRange.upperBound - 1)
+    
     let shouldProcess = manager.hrirManager?.isConvolutionActive ?? false
     
     if shouldProcess, let channelPtrs = manager.inputChannelBufferPtrs {
+        // Create a temporary 2-channel pointer array for stereo input
+        let stereoInputPtrs = UnsafeMutablePointer<UnsafeMutablePointer<Float>>.allocate(capacity: 2)
+        defer { stereoInputPtrs.deallocate() }
+        
+        stereoInputPtrs[0] = channelPtrs[leftInputChannel]
+        stereoInputPtrs[1] = channelPtrs[rightInputChannel]
+        
         manager.hrirManager?.processAudio(
-            inputPtrs: channelPtrs,
-            inputCount: inputChannelCount,
+            inputPtrs: stereoInputPtrs,
+            inputCount: 2,  // Always stereo input
             leftOutput: manager.outputStereoLeftPtr,
             rightOutput: manager.outputStereoRightPtr,
             frameCount: frameCount
         )
     } else {
-        // Passthrough / Mixdown
+        // Passthrough / Mixdown - use selected input channels
         let byteSize = frameCount * MemoryLayout<Float>.size
         memset(manager.outputStereoLeftPtr, 0, byteSize)
         memset(manager.outputStereoRightPtr, 0, byteSize)
         
         if inputChannelCount > 0, let channelPtrs = manager.inputChannelBufferPtrs {
-            let src = channelPtrs[0]
-            memcpy(manager.outputStereoLeftPtr, src, frameCount * MemoryLayout<Float>.size)
+            // Use left channel from selected input device
+            if leftInputChannel < inputChannelCount {
+                let src = channelPtrs[leftInputChannel]
+                memcpy(manager.outputStereoLeftPtr, src, byteSize)
+            }
             
-            if inputChannelCount >= 2 {
-                let src2 = channelPtrs[1]
-                memcpy(manager.outputStereoRightPtr, src2, frameCount * MemoryLayout<Float>.size)
-            } else {
-                memcpy(manager.outputStereoRightPtr, src, frameCount * MemoryLayout<Float>.size)
+            // Use right channel from selected input device
+            if rightInputChannel < inputChannelCount {
+                let src2 = channelPtrs[rightInputChannel]
+                memcpy(manager.outputStereoRightPtr, src2, byteSize)
+            } else if leftInputChannel < inputChannelCount {
+                // Mono input - copy left to right
+                let src = channelPtrs[leftInputChannel]
+                memcpy(manager.outputStereoRightPtr, src, byteSize)
             }
         }
     }

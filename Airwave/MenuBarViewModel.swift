@@ -317,6 +317,39 @@ class MenuBarViewModel: ObservableObject {
                     lastUserSelectedOutputUID = firstOutput.uid  // Track fallback selection
                 }
                 
+                // Load available inputs
+                let allInputs = try inspector.getInputDevices(aggregate: device)
+                audioManager.availableInputs = allInputs
+                
+                // Restore selected input device
+                if let inputUID = settings.selectedInputDeviceUID,
+                   let input = audioManager.availableInputs.first(where: { $0.uid == inputUID }) {
+                    Logger.log("[MenuBarViewModel] Restoring input device: \(input.name)")
+                    audioManager.selectedInputDevice = input
+                    
+                    // Set the input channel range
+                    if let inputRange = input.inputChannelRange {
+                        let stereoRange = inputRange.lowerBound..<min(inputRange.lowerBound + 2, inputRange.upperBound)
+                        audioManager.setInputChannels(stereoRange)
+                    }
+                    
+                    // Persist the restored input device
+                    SettingsManager.shared.setInputDevice(input.device)
+                } else if let firstInput = audioManager.availableInputs.first {
+                    // Fallback to first input
+                    Logger.log("[MenuBarViewModel] Auto-selecting first input device: \(firstInput.name)")
+                    audioManager.selectedInputDevice = firstInput
+                    
+                    // Set the input channel range
+                    if let inputRange = firstInput.inputChannelRange {
+                        let stereoRange = inputRange.lowerBound..<min(inputRange.lowerBound + 2, inputRange.upperBound)
+                        audioManager.setInputChannels(stereoRange)
+                    }
+                    
+                    // Persist the auto-selected input device
+                    SettingsManager.shared.setInputDevice(firstInput.device)
+                }
+                
                 // Setup audio graph
                 if let output = audioManager.selectedOutputDevice {
                     try audioManager.setupAudioUnit(
@@ -372,12 +405,14 @@ class MenuBarViewModel: ObservableObject {
         // Get UIDs for persistence
         let aggregateUID = audioManager.aggregateDevice?.uid
         let outputUID = audioManager.selectedOutputDevice?.uid
+        let inputUID = audioManager.selectedInputDevice?.uid
 
         let settings = AppSettings(
             aggregateDeviceID: nil,  // Deprecated, leave nil
             selectedOutputDeviceID: nil,  // Deprecated, leave nil
             aggregateDeviceUID: aggregateUID,
             selectedOutputDeviceUID: outputUID,
+            selectedInputDeviceUID: inputUID,
             activePresetID: hrirManager.activePreset?.id,
             autoStart: audioManager.isRunning,
             bufferSize: 65536,

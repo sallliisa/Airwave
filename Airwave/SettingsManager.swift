@@ -17,6 +17,7 @@ struct AppSettings: Codable {
     // NEW: Persistent identifiers
     var aggregateDeviceUID: String?
     var selectedOutputDeviceUID: String?
+    var selectedInputDeviceUID: String?
 
     var activePresetID: UUID?
     var autoStart: Bool
@@ -29,6 +30,7 @@ struct AppSettings: Codable {
             selectedOutputDeviceID: nil,
             aggregateDeviceUID: nil,
             selectedOutputDeviceUID: nil,
+            selectedInputDeviceUID: nil,
             activePresetID: nil,
             autoStart: false,
             bufferSize: 65536,
@@ -191,6 +193,21 @@ class SettingsManager {
 
     func getOutputDevice() -> AudioDevice? {
         guard let uid = loadSettings().selectedOutputDeviceUID else { return nil }
+        return AudioDeviceManager.getDeviceByUID(uid)
+    }
+
+    func setInputDevice(_ device: AudioDevice) {
+        guard let uid = device.uid else {
+            Logger.log("[Settings] ⚠️ Could not get UID for device \(device.name)")
+            return
+        }
+        var settings = loadSettings()
+        settings.selectedInputDeviceUID = uid
+        saveSettings(settings)
+    }
+
+    func getInputDevice() -> AudioDevice? {
+        guard let uid = loadSettings().selectedInputDeviceUID else { return nil }
         return AudioDeviceManager.getDeviceByUID(uid)
     }
 }
