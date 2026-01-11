@@ -14,7 +14,18 @@ class AggregateDeviceInspector {
     var missingDeviceStrategy: MissingDeviceStrategy = .skipMissing
     
     // Track skipped devices for logging/debugging
-    private(set) var lastSkippedDevices: [(uid: String, reason: String)] = []
+    // Thread-safe access via serial queue
+    private let skippedDevicesQueue = DispatchQueue(label: "com.airwave.aggregateDeviceInspector.skippedDevices")
+    private var _lastSkippedDevices: [(uid: String, reason: String)] = []
+    
+    var lastSkippedDevices: [(uid: String, reason: String)] {
+        get {
+            skippedDevicesQueue.sync { _lastSkippedDevices }
+        }
+        set {
+            skippedDevicesQueue.sync { _lastSkippedDevices = newValue }
+        }
+    }
 
     // MARK: - Data Types
 
@@ -149,7 +160,7 @@ class AggregateDeviceInspector {
     
     /// Get diagnostic info about aggregate device
     func getDeviceHealth(aggregate: AudioDevice) -> (connected: Int, missing: Int, missingUIDs: [String]) {
-        lastSkippedDevices = []
+        skippedDevicesQueue.sync { _lastSkippedDevices = [] }
         let originalStrategy = missingDeviceStrategy
         missingDeviceStrategy = .skipMissing
         
@@ -157,11 +168,13 @@ class AggregateDeviceInspector {
         
         do {
             let devices = try getSubDevices(aggregate: aggregate)
-            return (
-                connected: devices.count,
-                missing: lastSkippedDevices.count,
-                missingUIDs: lastSkippedDevices.map { $0.uid }
-            )
+            return skippedDevicesQueue.sync {
+                return (
+                    connected: devices.count,
+                    missing: _lastSkippedDevices.count,
+                    missingUIDs: _lastSkippedDevices.map { $0.uid }
+                )
+            }
         } catch {
             return (connected: 0, missing: 0, missingUIDs: [])
         }
@@ -219,8 +232,8 @@ class AggregateDeviceInspector {
         var currentInputChannel = 0
         var currentOutputChannel = 0
         
-        // Reset skipped devices
-        lastSkippedDevices = []
+        // Reset skipped devices (thread-safe)
+        skippedDevicesQueue.sync { _lastSkippedDevices = [] }
 
         for uid in subDeviceUIDs {
             guard let device = deviceLookup[uid] else {
@@ -230,8 +243,10 @@ class AggregateDeviceInspector {
                     throw AggregateInspectorError.deviceNotFound(uid: uid)
                 
                 case .skipMissing:
-                    // Log and skip
-                    lastSkippedDevices.append((uid: uid, reason: "Device not connected"))
+                    // Log and skip (thread-safe append)
+                    skippedDevicesQueue.sync {
+                        _lastSkippedDevices.append((uid: uid, reason: "Device not connected"))
+                    }
                     Logger.log("[AggregateDeviceInspector] Skipping disconnected device: \(uid)")
                     continue // Skip this device, move to next
                 }
