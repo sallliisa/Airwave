@@ -289,15 +289,19 @@ struct ActionRow: View {
 
 struct AirwaveMenuView: View {
     @ObservedObject private var audioManager = AudioGraphManager.shared
+    @ObservedObject private var hrirManager = HRIRManager.shared
     @EnvironmentObject private var viewModel: MenuBarViewModel
     @ObservedObject private var diagnosticsManager = SystemDiagnosticsManager.shared
     @Environment(\.openWindow) private var openWindow
     
+    // Static UUID for "None" option in HRIR picker
+    private static let nonePresetID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+    
     // Accordion state
     enum ExpandedAccordion {
         case none
-        case aggregateDevice
         case outputDevice
+        case hrirPreset
     }
     
     @State private var expandedAccordion: ExpandedAccordion = .none
@@ -312,50 +316,6 @@ struct AirwaveMenuView: View {
             
             // Device selection
             VStack(spacing: 2) {
-                // Aggregate Device Section
-                let aggregates = viewModel.getValidAggregateDevices()
-                if aggregates.isEmpty {
-                    // Disabled state when no aggregate devices
-                    HStack(spacing: 6) {
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundColor(.secondary)
-                            .opacity(0.3)
-                        
-                        Text("Aggregate Device")
-                            .font(.system(size: 12))
-                            .foregroundColor(.secondary)
-                        
-                        Spacer()
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                } else {
-                    // Accordion when aggregate devices exist
-                    AccordionSection(
-                        title: "Aggregate",
-                        value: audioManager.aggregateDevice?.name ?? "None",
-                        isExpanded: expandedAccordion == .aggregateDevice,
-                        onToggle: {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                expandedAccordion = expandedAccordion == .aggregateDevice ? .none : .aggregateDevice
-                            }
-                        }
-                    ) {
-                        VStack(spacing: 0) {
-                            ForEach(aggregates, id: \.id) { device in
-                                DeviceRow(
-                                    name: device.name,
-                                    isSelected: device.id == audioManager.aggregateDevice?.id
-                                ) {
-                                    viewModel.selectAggregateDevice(device)
-                                }
-                            }
-                        }
-                        .padding(.top, 4)
-                    }
-                }
-                
                 // Output Device Section
                 if audioManager.aggregateDevice != nil {
                     if audioManager.availableOutputs.isEmpty {
@@ -414,6 +374,41 @@ struct AirwaveMenuView: View {
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
+                }
+                
+                // HRIR Preset Section
+                AccordionSection(
+                    title: "HRIR Preset",
+                    value: hrirManager.activePreset?.name ?? "None",
+                    isExpanded: expandedAccordion == .hrirPreset,
+                    onToggle: {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            expandedAccordion = expandedAccordion == .hrirPreset ? .none : .hrirPreset
+                        }
+                    }
+                ) {
+                    VStack(spacing: 0) {
+                        // None option
+                        DeviceRow(
+                            name: "None",
+                            isSelected: hrirManager.activePreset == nil
+                        ) {
+                            hrirManager.activePreset = nil
+                        }
+                        
+                        // Preset options (sorted alphabetically)
+                        ForEach(hrirManager.presets.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }) { preset in
+                            DeviceRow(
+                                name: preset.name,
+                                isSelected: preset.id == hrirManager.activePreset?.id
+                            ) {
+                                let sampleRate = 48000.0
+                                let inputLayout = InputLayout.detect(channelCount: 2)
+                                hrirManager.activatePreset(preset, targetSampleRate: sampleRate, inputLayout: inputLayout)
+                            }
+                        }
+                    }
+                    .padding(.top, 4)
                 }
             }
             .padding(.vertical, 4)
