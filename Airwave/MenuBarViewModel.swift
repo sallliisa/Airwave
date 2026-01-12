@@ -210,6 +210,12 @@ class MenuBarViewModel: ObservableObject {
         audioManager.selectedOutputDevice = output
         lastUserSelectedOutputUID = output.uid  // Track user's choice
         
+        // Set output device volume to 100% so virtual audio device controls volume
+        let volumeSet = deviceManager.setDeviceVolume(output.device, volume: 1.0)
+        if volumeSet {
+            Logger.log("[MenuBarViewModel] 🔊 Set output device '\(output.name)' volume to 100%")
+        }
+        
         // Update output routing (NO NEED TO STOP AUDIO!)
         let channelRange = output.stereoChannelRange
         audioManager.setOutputChannels(channelRange)
@@ -617,12 +623,21 @@ class MenuBarViewModel: ObservableObject {
     }
     
     private func refreshChannelMapping(for device: AggregateDeviceInspector.SubDeviceInfo) {
-        // Only log if channels actually changed
-        if audioManager.selectedOutputDevice?.startChannel != device.startChannel {
+        // Check if the aggregate device configuration has changed
+        let needsReconfig = audioManager.needsReconfiguration()
+        
+        // Log if channels changed or if reconfiguration is needed
+        if audioManager.selectedOutputDevice?.startChannel != device.startChannel || needsReconfig {
             Logger.log("[MenuBarViewModel] Refreshing channel mapping for: \(device.name) (ch \(device.startChannel)-\(device.startChannel + 1))")
+            if needsReconfig {
+                Logger.log("[MenuBarViewModel] 🔄 Aggregate configuration changed - AudioUnit will be reconfigured")
+            }
         }
         
+        // Update the device reference first
         audioManager.selectedOutputDevice = device
+        
+        // setOutputChannels will detect if reconfiguration is needed and handle it
         let channelRange = device.stereoChannelRange
         audioManager.setOutputChannels(channelRange)
     }

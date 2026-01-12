@@ -812,11 +812,8 @@ struct SettingsView: View {
     
     /// Select an output device
     private func selectOutputDevice(_ output: AggregateDeviceInspector.SubDeviceInfo) {
-        audioManager.selectedOutputDevice = output
-        
-        // Update output routing without stopping audio
-        let channelRange = output.stereoChannelRange
-        audioManager.setOutputChannels(channelRange)
+        // Use shared controller for consistent behavior (volume setting, etc.)
+        MenuBarViewModel.shared.selectOutputDevice(output)
     }
     
     /// Select an input device
