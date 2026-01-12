@@ -226,18 +226,27 @@ class AudioGraphManager: ObservableObject {
     }
 
     /// Change output routing without stopping audio
+    /// If the aggregate device configuration has changed, triggers a full reconfiguration
     func setOutputChannels(_ range: Range<Int>) {
+        // Check if reconfiguration is needed (aggregate device channel count changed)
+        if needsReconfiguration() {
+            Logger.log("[AudioGraph] 🔄 Aggregate device configuration changed - triggering reconfiguration")
+            reconfigureAudioUnit(withOutputChannelRange: range)
+            return
+        }
+        
         // Validate range against current output channel count
         guard range.upperBound <= Int(outputChannelCount) else {
-            DispatchQueue.main.async {
-                self.errorMessage = "Output channel range \(range) exceeds device channel count (\(self.outputChannelCount))"
-            }
+            // The requested range exceeds our known channel count
+            // This might mean the aggregate was modified - try reconfiguring
+            Logger.log("[AudioGraph] ⚠️ Output range \(range) exceeds known channels (\(outputChannelCount)) - attempting reconfiguration")
+            reconfigureAudioUnit(withOutputChannelRange: range)
             return
         }
         
         // Thread-safe update of output channel range
-        // No need to reinitialize audio unit!
         selectedOutputChannelRange = range
+        Logger.log("[AudioGraph] Output channels set to: \(range.lowerBound)-\(range.upperBound - 1)")
     }
     
     /// Change input routing without stopping audio
@@ -248,6 +257,154 @@ class AudioGraphManager: ObservableObject {
         // 3. The render callback has its own safety checks
         selectedInputChannelRange = range
         Logger.log("[AudioGraph] Input channels set to: \(range.lowerBound)-\(range.upperBound - 1)")
+    }
+    
+    /// Check if the AudioUnit needs reconfiguration due to aggregate device changes
+    /// Returns true if the device's current channel count differs from our configured count
+    func needsReconfiguration() -> Bool {
+        guard let device = aggregateDevice else { return false }
+        
+        let currentOutputChannels = getCurrentDeviceOutputChannelCount(device: device)
+        let currentInputChannels = getCurrentDeviceInputChannelCount(device: device)
+        
+        // If either channel count has changed, we need to reconfigure
+        let needsReconfig = currentOutputChannels != outputChannelCount || currentInputChannels != inputChannelCount
+        
+        if needsReconfig {
+            Logger.log("[AudioGraph] Configuration mismatch detected:")
+            Logger.log("  - Output: configured=\(outputChannelCount), actual=\(currentOutputChannels)")
+            Logger.log("  - Input: configured=\(inputChannelCount), actual=\(currentInputChannels)")
+        }
+        
+        return needsReconfig
+    }
+    
+    /// Reconfigure the AudioUnit with current aggregate device state
+    /// Preserves running state - will restart if was running
+    func reconfigureAudioUnit(withOutputChannelRange range: Range<Int>? = nil) {
+        guard let device = aggregateDevice else {
+            Logger.log("[AudioGraph] Cannot reconfigure - no aggregate device selected")
+            return
+        }
+        
+        let wasRunning = isRunning
+        
+        // Stop if running
+        if wasRunning {
+            // Stop without restoring system audio (we're just reconfiguring)
+            if let unit = audioUnit {
+                AudioOutputUnitStop(unit)
+                AudioUnitUninitialize(unit)
+                AudioComponentInstanceDispose(unit)
+                audioUnit = nil
+            }
+            DispatchQueue.main.async {
+                self.isRunning = false
+            }
+        }
+        
+        // Reconfigure with new channel range or existing range
+        let targetRange = range ?? selectedOutputChannelRange
+        
+        do {
+            try setupAudioUnit(device: device, outputChannelRange: targetRange)
+            
+            // Update the stored range
+            selectedOutputChannelRange = targetRange
+            
+            Logger.log("[AudioGraph] ✅ AudioUnit reconfigured successfully")
+            Logger.log("  - New output channel count: \(outputChannelCount)")
+            Logger.log("  - New input channel count: \(inputChannelCount)")
+            Logger.log("  - Output range: \(targetRange?.description ?? "nil")")
+            
+            // Restart if was running
+            if wasRunning {
+                let status = AudioOutputUnitStart(audioUnit!)
+                if status == noErr {
+                    DispatchQueue.main.async {
+                        self.isRunning = true
+                        self.errorMessage = nil
+                    }
+                    Logger.log("[AudioGraph] ✅ AudioUnit restarted after reconfiguration")
+                } else {
+                    Logger.log("[AudioGraph] ❌ Failed to restart AudioUnit after reconfiguration: \(status)")
+                }
+            }
+            
+        } catch {
+            Logger.log("[AudioGraph] ❌ Reconfiguration failed: \(error)")
+            DispatchQueue.main.async {
+                self.errorMessage = "Reconfiguration failed: \(error.localizedDescription)"
+            }
+        }
+    }
+    
+    /// Query the current output channel count from the aggregate device
+    private func getCurrentDeviceOutputChannelCount(device: AudioDevice) -> UInt32 {
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        
+        var propertySize: UInt32 = 0
+        var status = AudioObjectGetPropertyDataSize(device.id, &propertyAddress, 0, nil, &propertySize)
+        guard status == noErr else { return 0 }
+        
+        let bufferListPointer = UnsafeMutableRawPointer.allocate(
+            byteCount: Int(propertySize),
+            alignment: MemoryLayout<AudioBufferList>.alignment
+        )
+        defer { bufferListPointer.deallocate() }
+        
+        status = AudioObjectGetPropertyData(device.id, &propertyAddress, 0, nil, &propertySize, bufferListPointer)
+        guard status == noErr else { return 0 }
+        
+        let bufferList = bufferListPointer.assumingMemoryBound(to: AudioBufferList.self)
+        var totalChannels: UInt32 = 0
+        
+        for i in 0..<Int(bufferList.pointee.mNumberBuffers) {
+            let buffer = withUnsafePointer(to: bufferList.pointee.mBuffers) { ptr in
+                ptr.advanced(by: i).pointee
+            }
+            totalChannels += buffer.mNumberChannels
+        }
+        
+        return totalChannels
+    }
+    
+    /// Query the current input channel count from the aggregate device
+    private func getCurrentDeviceInputChannelCount(device: AudioDevice) -> UInt32 {
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: kAudioDevicePropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        
+        var propertySize: UInt32 = 0
+        var status = AudioObjectGetPropertyDataSize(device.id, &propertyAddress, 0, nil, &propertySize)
+        guard status == noErr else { return 0 }
+        
+        let bufferListPointer = UnsafeMutableRawPointer.allocate(
+            byteCount: Int(propertySize),
+            alignment: MemoryLayout<AudioBufferList>.alignment
+        )
+        defer { bufferListPointer.deallocate() }
+        
+        status = AudioObjectGetPropertyData(device.id, &propertyAddress, 0, nil, &propertySize, bufferListPointer)
+        guard status == noErr else { return 0 }
+        
+        let bufferList = bufferListPointer.assumingMemoryBound(to: AudioBufferList.self)
+        var totalChannels: UInt32 = 0
+        
+        for i in 0..<Int(bufferList.pointee.mNumberBuffers) {
+            let buffer = withUnsafePointer(to: bufferList.pointee.mBuffers) { ptr in
+                ptr.advanced(by: i).pointee
+            }
+            totalChannels += buffer.mNumberChannels
+        }
+        
+        return totalChannels
     }
 
     /// Select aggregate device
