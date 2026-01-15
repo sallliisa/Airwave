@@ -85,7 +85,7 @@ From the Airwave Settings menu, scroll down to the Diagnostics section, and clic
 
 In Audio MIDI Setup, click the `+` button in the bottom-left corner and select `Create Aggregate Device`.
 
-In the newly created aggregate device, enable `BlackHole 2ch` (or another virtual audio device) in the `Use` column, then enable any physical output devices you want Airwave to make available as output options. After you're done, make sure to only check the `Drift Correction` box only on the `BlackHole 2ch` (or any virtual audio device that you are using).
+In the newly created aggregate device, enable `BlackHole 2ch` (or another virtual audio device) in the `Use` column, then enable any physical output devices you want Airwave to make available as output options. After you're done, make sure to only check the `Drift Correction` box only on the `BlackHole 2ch` (or any virtual audio device that you are using). If you have multiple virtual audio devices, you may enable more than one. You will be able to choose which device Airwave captures from later in the settings menu.
 
 |<img alt="Create Aggregate Device" src="docs/images/create_aggregate_device.png" width="500">|<img alt="Aggregate Device Setup" src="docs/images/select_physical_device_aggregate_device.png" width="500">|
 |:----------:|:----------:|
@@ -106,6 +106,7 @@ Airwave is now ready to use. Any issues or warnings will appear in the `Diagnost
 
 To get started, choose:
 - the **aggregate device** you created,
+- the **input device** you want Airwave to capture from,
 - the **output device** you want audio to play through,
 - the **HRIR preset** you prefer,
 
