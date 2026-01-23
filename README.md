@@ -5,7 +5,7 @@
    
    <br/>
 
-   <strong>Version: </strong>1.0.0
+   <strong>Version: </strong>1.1.1
    <br />
    <a href="https://github.com/sallliisa/Airwave/releases"><strong>Download</strong></a>
     · 
