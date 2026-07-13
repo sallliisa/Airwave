@@ -169,12 +169,11 @@ class AudioGraphManager: ObservableObject {
 
             // Notify HRIR manager of the input layout
             // We assume the first N channels of the aggregate device are the input channels
-            if let hrirManager = hrirManager, let activePreset = hrirManager.activePreset {
+            if let hrirManager = hrirManager, hrirManager.activePreset != nil {
                 // Heuristic: Use the device's total input channels as the source layout
                 // Users should configure aggregate device to have multi-channel input first
                 let inputLayout = InputLayout.detect(channelCount: Int(inputChannelCount))
-                hrirManager.activatePreset(
-                    activePreset,
+                hrirManager.ensurePresetConfiguration(
                     targetSampleRate: currentSampleRate,
                     inputLayout: inputLayout
                 )
@@ -710,6 +709,36 @@ class AudioGraphManager: ObservableObject {
             throw AudioError.formatSetFailed(status)
         }
 
+        var maximumFrames = UInt32(maxFramesPerCallback)
+        status = AudioUnitSetProperty(
+            audioUnit,
+            kAudioUnitProperty_MaximumFramesPerSlice,
+            kAudioUnitScope_Global,
+            0,
+            &maximumFrames,
+            UInt32(MemoryLayout<UInt32>.size)
+        )
+        guard status == noErr else {
+            throw AudioError.maximumFramesSetFailed(status)
+        }
+
+        var configuredMaximumFrames: UInt32 = 0
+        var configuredMaximumSize = UInt32(MemoryLayout<UInt32>.size)
+        status = AudioUnitGetProperty(
+            audioUnit,
+            kAudioUnitProperty_MaximumFramesPerSlice,
+            kAudioUnitScope_Global,
+            0,
+            &configuredMaximumFrames,
+            &configuredMaximumSize
+        )
+        guard status == noErr else {
+            throw AudioError.maximumFramesSetFailed(status)
+        }
+        guard configuredMaximumFrames <= UInt32(maxFramesPerCallback) else {
+            throw AudioError.maximumFramesMismatch(Int(configuredMaximumFrames))
+        }
+
         // Set Render Callback
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
         var callback = AURenderCallbackStruct(
@@ -753,13 +782,22 @@ private func renderCallback(
 
     let manager = Unmanaged<AudioGraphManager>.fromOpaque(inRefCon).takeUnretainedValue()
 
+    guard let ioData else {
+        return noErr
+    }
     guard let audioUnit = manager.audioUnit,
-          let ioData = ioData,
           let inputBufferListPtr = manager.inputAudioBufferListPtr else {
+        zeroOutputBuffers(ioData, requestedFrames: Int(inNumberFrames))
         return noErr
     }
 
     let frameCount = Int(inNumberFrames)
+
+    // Validate before touching any callback-sized buffer or AudioBufferList byte size.
+    guard frameCount >= 0, frameCount <= manager.maxFramesPerCallback else {
+        zeroOutputBuffers(ioData, requestedFrames: frameCount)
+        return kAudioUnitErr_TooManyFramesToProcess
+    }
     
     // 1. Pull Input Data from Element 1
     // ---------------------------------
@@ -771,26 +809,9 @@ private func renderCallback(
     // Safety check - clamp channel count to prevent buffer overflow
     // This can happen during startup or device changes
     if inputChannelCount > manager.maxChannels || inputChannelCount == 0 {
-        // Zero output and return silently
-        let outputChannelCount = Int(ioData.pointee.mNumberBuffers)
-        withUnsafeMutablePointer(to: &ioData.pointee.mBuffers) { buffersPtr in
-            let bufferPtr = UnsafeMutableRawPointer(buffersPtr).assumingMemoryBound(to: AudioBuffer.self)
-            for i in 0..<outputChannelCount {
-                let buffer = bufferPtr.advanced(by: i)
-                if let data = buffer.pointee.mData {
-                    memset(data, 0, frameCount * MemoryLayout<Float>.size)
-                }
-            }
-        }
+        zeroOutputBuffers(ioData, requestedFrames: frameCount)
         return noErr
     }
-    
-    #if DEBUG
-    if frameCount > manager.maxFramesPerCallback {
-         assertionFailure("CoreAudio contract violation: frameCount=\(frameCount)")
-         return kAudioUnitErr_TooManyFramesToProcess
-    }
-    #endif
     
     inputBufferList.pointee.mNumberBuffers = UInt32(inputChannelCount)
     
@@ -818,6 +839,7 @@ private func renderCallback(
     )
     
     if status != noErr {
+        zeroOutputBuffers(ioData, requestedFrames: frameCount)
         return status
     }
     
@@ -836,26 +858,30 @@ private func renderCallback(
     
     // Determine which input channels to use (first 2 from selected input device)
     let inputRange = manager.selectedInputChannelRange ?? 0..<min(2, inputChannelCount)
+    guard inputRange.lowerBound >= 0,
+          inputRange.count > 0,
+          inputRange.upperBound <= inputChannelCount else {
+        zeroOutputBuffers(ioData, requestedFrames: frameCount)
+        return noErr
+    }
     let leftInputChannel = inputRange.lowerBound
     let rightInputChannel = min(leftInputChannel + 1, inputRange.upperBound - 1)
-    
-    let shouldProcess = manager.hrirManager?.isConvolutionActive ?? false
-    
-    if shouldProcess, let channelPtrs = manager.inputChannelBufferPtrs {
-        // Create a temporary 2-channel pointer array for stereo input
-        let stereoInputPtrs = UnsafeMutablePointer<UnsafeMutablePointer<Float>>.allocate(capacity: 2)
-        defer { stereoInputPtrs.deallocate() }
-        
-        stereoInputPtrs[0] = channelPtrs[leftInputChannel]
-        stereoInputPtrs[1] = channelPtrs[rightInputChannel]
-        
+
+    if let channelPtrs = manager.inputChannelBufferPtrs {
+        let leftInput = UnsafePointer(channelPtrs[leftInputChannel])
+        let rightInput = UnsafePointer(channelPtrs[rightInputChannel])
         manager.hrirManager?.processAudio(
-            inputPtrs: stereoInputPtrs,
-            inputCount: 2,  // Always stereo input
+            inputLeft: leftInput,
+            inputRight: rightInput,
             leftOutput: manager.outputStereoLeftPtr,
             rightOutput: manager.outputStereoRightPtr,
             frameCount: frameCount
         )
+
+        if manager.hrirManager == nil {
+            memcpy(manager.outputStereoLeftPtr, leftInput, frameCount * MemoryLayout<Float>.size)
+            memcpy(manager.outputStereoRightPtr, rightInput, frameCount * MemoryLayout<Float>.size)
+        }
     } else {
         // Passthrough / Mixdown - use selected input channels
         let byteSize = frameCount * MemoryLayout<Float>.size
@@ -885,33 +911,30 @@ private func renderCallback(
     // ---------------------------------
     
     let outputChannelCount = Int(ioData.pointee.mNumberBuffers)
-    
+    zeroOutputBuffers(ioData, requestedFrames: frameCount)
+
     withUnsafeMutablePointer(to: &ioData.pointee.mBuffers) { buffersPtr in
         let bufferPtr = UnsafeMutableRawPointer(buffersPtr).assumingMemoryBound(to: AudioBuffer.self)
-        
-        // Zero ALL output channels first
-        for i in 0..<outputChannelCount {
-            let buffer = bufferPtr.advanced(by: i)
-            if let data = buffer.pointee.mData {
-                 memset(data, 0, frameCount * MemoryLayout<Float>.size)
-            }
-        }
-        
+
         // Write stereo output to SELECTED channels only
         if let channelRange = manager.selectedOutputChannelRange {
-            #if DEBUG
-            assert(channelRange.upperBound <= outputChannelCount, "Channel range validation failed!")
-            #endif
-            
+            guard channelRange.lowerBound >= 0,
+                  channelRange.count >= 2,
+                  channelRange.upperBound <= outputChannelCount else {
+                return
+            }
+
             let leftChannel = channelRange.lowerBound
             let rightChannel = leftChannel + 1
             
             if rightChannel < outputChannelCount {
                 let leftBuffer = bufferPtr.advanced(by: leftChannel)
                 let rightBuffer = bufferPtr.advanced(by: rightChannel)
-                
+
                 if let leftData = leftBuffer.pointee.mData,
-                   let rightData = rightBuffer.pointee.mData {
+                   let rightData = rightBuffer.pointee.mData,
+                   leftBuffer.pointee.mDataByteSize >= UInt32(frameCount * MemoryLayout<Float>.size),
+                   rightBuffer.pointee.mDataByteSize >= UInt32(frameCount * MemoryLayout<Float>.size) {
                     memcpy(leftData, manager.outputStereoLeftPtr, frameCount * MemoryLayout<Float>.size)
                     memcpy(rightData, manager.outputStereoRightPtr, frameCount * MemoryLayout<Float>.size)
                 }
@@ -920,6 +943,25 @@ private func renderCallback(
     }
 
     return noErr
+}
+
+private func zeroOutputBuffers(
+    _ ioData: UnsafeMutablePointer<AudioBufferList>,
+    requestedFrames: Int
+) {
+    let outputChannelCount = Int(ioData.pointee.mNumberBuffers)
+    withUnsafeMutablePointer(to: &ioData.pointee.mBuffers) { buffersPtr in
+        let bufferPtr = UnsafeMutableRawPointer(buffersPtr).assumingMemoryBound(to: AudioBuffer.self)
+        for index in 0..<outputChannelCount {
+            let buffer = bufferPtr.advanced(by: index)
+            guard let data = buffer.pointee.mData else { continue }
+            let declaredFrames = Int(buffer.pointee.mDataByteSize) / MemoryLayout<Float>.size
+            let safeFrames = min(max(requestedFrames, 0), declaredFrames)
+            if safeFrames > 0 {
+                memset(data, 0, safeFrames * MemoryLayout<Float>.size)
+            }
+        }
+    }
 }
 
 // MARK: - Error Types
@@ -933,6 +975,8 @@ enum AudioError: LocalizedError {
     case formatGetFailed(OSStatus)
     case formatSetFailed(OSStatus)
     case callbackSetFailed(OSStatus)
+    case maximumFramesSetFailed(OSStatus)
+    case maximumFramesMismatch(Int)
     case initializationFailed(OSStatus, String)
     case startFailed(OSStatus, String)
 
@@ -954,6 +998,10 @@ enum AudioError: LocalizedError {
             return "Failed to set audio format (error \(status))"
         case .callbackSetFailed(let status):
             return "Failed to set audio callback (error \(status))"
+        case .maximumFramesSetFailed(let status):
+            return "Failed to set maximum frames per slice (error \(status))"
+        case .maximumFramesMismatch(let frames):
+            return "Audio unit maximum frames per slice \(frames) exceeds supported capacity"
         case .initializationFailed(let status, let unit):
             return "Failed to initialize \(unit) (error \(status))"
         case .startFailed(let status, let detail):

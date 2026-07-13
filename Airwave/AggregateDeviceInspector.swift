@@ -69,32 +69,7 @@ class AggregateDeviceInspector {
 
     /// Check if device is an aggregate device
     func isAggregateDevice(_ device: AudioDevice) -> Bool {
-        var propertyAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyDeviceUID,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        var uid: Unmanaged<CFString>?
-        var propertySize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-
-        let status = AudioObjectGetPropertyData(
-            device.id,
-            &propertyAddress,
-            0,
-            nil,
-            &propertySize,
-            &uid
-        )
-
-        guard status == noErr, let _ = uid?.takeRetainedValue() as String? else {
-            return false
-        }
-
-        // Check if device has sub-device list property
-        propertyAddress.mSelector = kAudioAggregateDevicePropertyFullSubDeviceList
-        
-        return AudioObjectHasProperty(device.id, &propertyAddress)
+        device.isAggregateDevice
     }
 
     /// Get all sub-devices in aggregate
@@ -105,7 +80,7 @@ class AggregateDeviceInspector {
         let allDevices = AudioDeviceManager.getAllDevices()
         let devicesByUID = Dictionary(
             allDevices.compactMap { device -> (String, AudioDevice)? in
-                guard let uid = getDeviceUID(deviceID: device.id) else { return nil }
+                guard let uid = device.uid else { return nil }
                 return (uid, device)
             },
             uniquingKeysWith: { (first, _) in first }
@@ -252,8 +227,8 @@ class AggregateDeviceInspector {
                 }
             }
 
-            let inputChannels = getDeviceChannelCount(device: device, isInput: true)
-            let outputChannels = getDeviceChannelCount(device: device, isInput: false)
+            let inputChannels = Int(device.inputChannelCount)
+            let outputChannels = Int(device.outputChannelCount)
             
             var inputRange: Range<Int>? = nil
             var outputRange: Range<Int>? = nil
@@ -283,84 +258,6 @@ class AggregateDeviceInspector {
         }
 
         return subDevices
-    }
-    
-
-    
-    private func getDeviceUID(deviceID: AudioDeviceID) -> String? {
-        var propertyAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyDeviceUID,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        
-        var uid: Unmanaged<CFString>?
-        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-        
-        let status = AudioObjectGetPropertyData(
-            deviceID,
-            &propertyAddress,
-            0,
-            nil,
-            &size,
-            &uid
-        )
-        
-        if status == noErr {
-            return uid?.takeRetainedValue() as String?
-        }
-        return nil
-    }
-
-    private func getDeviceChannelCount(device: AudioDevice, isInput: Bool) -> Int {
-        let scope = isInput ? kAudioDevicePropertyScopeInput : kAudioDevicePropertyScopeOutput
-
-        var propertyAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyStreamConfiguration,
-            mScope: scope,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        var propertySize: UInt32 = 0
-
-        var status = AudioObjectGetPropertyDataSize(
-            device.id,
-            &propertyAddress,
-            0,
-            nil,
-            &propertySize
-        )
-
-        guard status == noErr else { return 0 }
-
-        let bufferListPointer = UnsafeMutableRawPointer.allocate(
-            byteCount: Int(propertySize),
-            alignment: MemoryLayout<AudioBufferList>.alignment
-        )
-        defer { bufferListPointer.deallocate() }
-
-        status = AudioObjectGetPropertyData(
-            device.id,
-            &propertyAddress,
-            0,
-            nil,
-            &propertySize,
-            bufferListPointer
-        )
-
-        guard status == noErr else { return 0 }
-
-        let bufferList = bufferListPointer.assumingMemoryBound(to: AudioBufferList.self)
-
-        var totalChannels = 0
-        for i in 0..<Int(bufferList.pointee.mNumberBuffers) {
-            let buffer = withUnsafePointer(to: bufferList.pointee.mBuffers) { ptr in
-                ptr.advanced(by: i).pointee
-            }
-            totalChannels += Int(buffer.mNumberChannels)
-        }
-
-        return totalChannels
     }
 }
 

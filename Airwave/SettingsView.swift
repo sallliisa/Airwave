@@ -397,7 +397,7 @@ struct SettingsView: View {
                                 let inputLayout = InputLayout.detect(channelCount: 2)
                                 hrirManager.activatePreset(preset, targetSampleRate: sampleRate, inputLayout: inputLayout)
                             } else {
-                                hrirManager.activePreset = nil
+                                hrirManager.deactivatePreset()
                             }
                         }
                     )) {
