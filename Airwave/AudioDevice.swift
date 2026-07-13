@@ -12,20 +12,18 @@ import Combine
 /// Represents an audio device on the system
 struct AudioDevice: Identifiable, Equatable, Hashable {
     let id: AudioDeviceID
+    let name: String
+    let uid: String?
+    let inputChannelCount: UInt32
+    let outputChannelCount: UInt32
+    let sampleRate: Double
+    let isAggregateDevice: Bool
 
-    // Computed properties query CoreAudio dynamically to ensure freshness
-    var name: String { AudioDeviceManager.getDeviceName(deviceID: id) ?? "Unknown" }
-    var hasInput: Bool { AudioDeviceManager.getChannelCount(deviceID: id, scope: kAudioObjectPropertyScopeInput) > 0 }
-    var hasOutput: Bool { AudioDeviceManager.getChannelCount(deviceID: id, scope: kAudioObjectPropertyScopeOutput) > 0 }
-    var sampleRate: Double { AudioDeviceManager.getSampleRate(deviceID: id) }
-    
+    var hasInput: Bool { inputChannelCount > 0 }
+    var hasOutput: Bool { outputChannelCount > 0 }
     var channelCount: UInt32 {
-        hasInput ? AudioDeviceManager.getChannelCount(deviceID: id, scope: kAudioObjectPropertyScopeInput)
-                 : AudioDeviceManager.getChannelCount(deviceID: id, scope: kAudioObjectPropertyScopeOutput)
+        hasInput ? inputChannelCount : outputChannelCount
     }
-    
-    var isAggregateDevice: Bool { AudioDeviceManager.isAggregateDevice(deviceID: id) }
-    var uid: String? { AudioDeviceManager.getDeviceUID(self) }
 
     static func == (lhs: AudioDevice, rhs: AudioDevice) -> Bool {
         return lhs.id == rhs.id
@@ -68,12 +66,18 @@ class AudioDeviceManager: ObservableObject {
     
     // MARK: - Initialization
     
-    private init() {
+    private let queryService: AudioDeviceQuerying
+    private var refreshGeneration = 0
+
+    init(queryService: AudioDeviceQuerying = CoreAudioDeviceQueryService(), installListeners: Bool = true) {
+        self.queryService = queryService
         // Initial device load
         refreshDevices()
         
         // Setup property listeners
-        setupPropertyListeners()
+        if installListeners {
+            setupPropertyListeners()
+        }
     }
     
     deinit {
@@ -84,15 +88,19 @@ class AudioDeviceManager: ObservableObject {
     
     /// Refresh all device lists and defaults
     func refreshDevices() {
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            
-            let allDevices = Self.getAllDevices()
-            self.inputDevices = allDevices.filter { $0.hasInput }
-            self.outputDevices = allDevices.filter { $0.hasOutput }
-            self.aggregateDevices = allDevices.filter { $0.isAggregateDevice }
-            self.defaultInputDevice = Self.getDefaultInputDevice()
-            self.defaultOutputDevice = Self.getDefaultOutputDevice()
+        refreshGeneration += 1
+        let generation = refreshGeneration
+        let service = queryService
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let result = service.refresh()
+            DispatchQueue.main.async {
+                guard let self, generation == self.refreshGeneration else { return }
+                self.inputDevices = result.devices.filter { $0.hasInput }
+                self.outputDevices = result.devices.filter { $0.hasOutput }
+                self.aggregateDevices = result.devices.filter { $0.isAggregateDevice }
+                self.defaultInputDevice = result.devices.first { $0.id == result.defaultInputID }
+                self.defaultOutputDevice = result.devices.first { $0.id == result.defaultOutputID }
+            }
         }
     }
     
@@ -320,7 +328,7 @@ class AudioDeviceManager: ObservableObject {
     /// Save the current system output device to UserDefaults
     func saveCurrentOutputDevice() {
         if let currentDevice = getSystemDefaultOutputDevice(),
-           let uid = Self.getDeviceUID(currentDevice) {
+           let uid = currentDevice.uid {
             UserDefaults.standard.set(uid, forKey: "SavedSystemOutputDeviceUID")
             Logger.log("[AudioDevice] Saved system output device: \(currentDevice.name)")
         }
@@ -461,40 +469,7 @@ class AudioDeviceManager: ObservableObject {
 
     /// Get all audio devices on the system
     static func getAllDevices() -> [AudioDevice] {
-        var propertyAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDevices,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        var dataSize: UInt32 = 0
-        guard AudioObjectGetPropertyDataSize(
-            AudioObjectID(kAudioObjectSystemObject),
-            &propertyAddress,
-            0,
-            nil,
-            &dataSize
-        ) == noErr else {
-            return []
-        }
-
-        let deviceCount = Int(dataSize) / MemoryLayout<AudioDeviceID>.size
-        var deviceIDs = [AudioDeviceID](repeating: 0, count: deviceCount)
-
-        guard AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &propertyAddress,
-            0,
-            nil,
-            &dataSize,
-            &deviceIDs
-        ) == noErr else {
-            return []
-        }
-
-        return deviceIDs.compactMap { deviceID in
-            return getDeviceInfo(deviceID: deviceID)
-        }
+        return CoreAudioDeviceQueryService().refresh().devices
     }
 
     /// Get devices that have input capability
@@ -509,60 +484,23 @@ class AudioDeviceManager: ObservableObject {
 
     /// Get the system default input device
     static func getDefaultInputDevice() -> AudioDevice? {
-        var deviceID: AudioDeviceID = 0
-        var dataSize = UInt32(MemoryLayout<AudioDeviceID>.size)
-        var propertyAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultInputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        guard AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &propertyAddress,
-            0,
-            nil,
-            &dataSize,
-            &deviceID
-        ) == noErr else {
+        guard let deviceID = queryDefaultDeviceID(selector: kAudioHardwarePropertyDefaultInputDevice) else {
             return nil
         }
-
-        return getDeviceInfo(deviceID: deviceID)
+        return makeDeviceSnapshot(deviceID: deviceID)
     }
 
     /// Get the system default output device
     static func getDefaultOutputDevice() -> AudioDevice? {
-        var deviceID: AudioDeviceID = 0
-        var dataSize = UInt32(MemoryLayout<AudioDeviceID>.size)
-        var propertyAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        guard AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &propertyAddress,
-            0,
-            nil,
-            &dataSize,
-            &deviceID
-        ) == noErr else {
+        guard let deviceID = queryDefaultDeviceID(selector: kAudioHardwarePropertyDefaultOutputDevice) else {
             return nil
         }
-
-        return getDeviceInfo(deviceID: deviceID)
+        return makeDeviceSnapshot(deviceID: deviceID)
     }
 
     /// Get detailed information about a specific device
     static func getDeviceInfo(deviceID: AudioDeviceID) -> AudioDevice? {
-        // Verify device exists by checking its name
-        guard getDeviceName(deviceID: deviceID) != nil else {
-            return nil
-        }
-
-        return AudioDevice(id: deviceID)
+        makeDeviceSnapshot(deviceID: deviceID)
     }
 
     /// Translate device UID to AudioDevice (if currently available)
@@ -597,6 +535,10 @@ class AudioDeviceManager: ObservableObject {
 
     /// Get persistent UID for an AudioDevice
     static func getDeviceUID(_ device: AudioDevice) -> String? {
+        device.uid
+    }
+
+    static func getDeviceUID(deviceID: AudioDeviceID) -> String? {
         var propertyAddress = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyDeviceUID,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -607,7 +549,7 @@ class AudioDeviceManager: ObservableObject {
         var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
 
         let status = AudioObjectGetPropertyData(
-            device.id,
+            deviceID,
             &propertyAddress,
             0,
             nil,
@@ -623,6 +565,10 @@ class AudioDeviceManager: ObservableObject {
     }
 
     static func isAggregateDevice(deviceID: AudioDeviceID) -> Bool {
+        isAggregateDevice(deviceID: deviceID, uid: getDeviceUID(deviceID: deviceID))
+    }
+
+    static func isAggregateDevice(deviceID: AudioDeviceID, uid: String?) -> Bool {
         // Method 1: Check Transport Type (Preferred)
         var transportAddress = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyTransportType,
@@ -647,37 +593,10 @@ class AudioDeviceManager: ObservableObject {
             }
         }
 
-        // Method 2: Check UID (Fallback)
-        var propertyAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyDeviceUID,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        var deviceUID: CFString? = nil
-        var size = UInt32(MemoryLayout<CFString?>.size)
-
-        let status = withUnsafeMutablePointer(to: &deviceUID) { ptr in
-            ptr.withMemoryRebound(to: CFString?.self, capacity: 1) { reboundPtr in
-                AudioObjectGetPropertyData(
-                    deviceID,
-                    &propertyAddress,
-                    0,
-                    nil,
-                    &size,
-                    reboundPtr
-                )
-            }
-        }
-        
-        guard status == noErr, let uid = deviceUID as String? else {
-            return false
-        }
-
         // Aggregate devices usually have UIDs starting with "com.apple.audio.aggregate"
         // or contain "aggregate" in their UID if created by user.
         // Make check case-insensitive.
-        return uid.localizedCaseInsensitiveContains("aggregate")
+        return uid?.localizedCaseInsensitiveContains("aggregate") ?? false
     }
     
     /// Calculates the output channel offset for the primary output device in an aggregate device.
@@ -706,6 +625,53 @@ class AudioDeviceManager: ObservableObject {
         let firstDeviceOutputChannels = getChannelCount(deviceID: firstDeviceID, scope: kAudioObjectPropertyScopeOutput)
         
         return Int(firstDeviceOutputChannels)
+    }
+
+    static func getAllDeviceIDs() -> [AudioDeviceID] {
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var dataSize: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(
+            AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &dataSize
+        ) == noErr else { return [] }
+
+        let deviceCount = Int(dataSize) / MemoryLayout<AudioDeviceID>.size
+        var deviceIDs = [AudioDeviceID](repeating: 0, count: deviceCount)
+        guard AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &dataSize, &deviceIDs
+        ) == noErr else { return [] }
+        return deviceIDs
+    }
+
+    static func queryDefaultDeviceID(selector: AudioObjectPropertySelector) -> AudioDeviceID? {
+        var deviceID: AudioDeviceID = 0
+        var dataSize = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        guard AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &dataSize, &deviceID
+        ) == noErr, deviceID != 0 else { return nil }
+        return deviceID
+    }
+
+    static func makeDeviceSnapshot(deviceID: AudioDeviceID) -> AudioDevice? {
+        guard let name = getDeviceName(deviceID: deviceID) else { return nil }
+        let uid = getDeviceUID(deviceID: deviceID)
+        return AudioDevice(
+            id: deviceID,
+            name: name,
+            uid: uid,
+            inputChannelCount: getChannelCount(deviceID: deviceID, scope: kAudioObjectPropertyScopeInput),
+            outputChannelCount: getChannelCount(deviceID: deviceID, scope: kAudioObjectPropertyScopeOutput),
+            sampleRate: getSampleRate(deviceID: deviceID),
+            isAggregateDevice: isAggregateDevice(deviceID: deviceID, uid: uid)
+        )
     }
 
     // MARK: - Private Helper Methods

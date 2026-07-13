@@ -7,7 +7,6 @@
 
 import Foundation
 import Combine
-import Accelerate
 
 /// Represents an HRIR preset
 struct HRIRPreset: Identifiable, Codable, Equatable, Hashable {
@@ -23,6 +22,37 @@ struct HRIRPreset: Identifiable, Codable, Equatable, Hashable {
 
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
+    }
+}
+
+struct PresetActivationKey: Hashable {
+    let presetID: UUID
+    let fileURL: URL
+    let sampleRate: Double
+    let inputChannels: [VirtualSpeaker]
+
+    init(preset: HRIRPreset, targetSampleRate: Double, inputLayout: InputLayout) {
+        self.presetID = preset.id
+        self.fileURL = preset.fileURL.standardizedFileURL
+        self.sampleRate = targetSampleRate
+        self.inputChannels = inputLayout.channels
+    }
+}
+
+final class ActivationCancellationToken {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
     }
 }
 
@@ -67,52 +97,27 @@ class HRIRManager: ObservableObject {
     // Immutable state container for lock-free access
     class RendererState {
         let renderers: [VirtualSpeakerRenderer]
-        let leftTempBuffers: [UnsafeMutablePointer<Float>]
-        let rightTempBuffers: [UnsafeMutablePointer<Float>]
-        let blockSize: Int
+        let processor: RealtimeAudioProcessor
         
         init(renderers: [VirtualSpeakerRenderer], blockSize: Int) {
             self.renderers = renderers
-            self.blockSize = blockSize
-            
-            // Pre-allocate temp buffers for each renderer
-            // These store convolution results before SIMD accumulation
-            var leftTemps: [UnsafeMutablePointer<Float>] = []
-            var rightTemps: [UnsafeMutablePointer<Float>] = []
-            
-            for _ in renderers {
-                let leftBuf = UnsafeMutablePointer<Float>.allocate(capacity: blockSize)
-                let rightBuf = UnsafeMutablePointer<Float>.allocate(capacity: blockSize)
-                leftTemps.append(leftBuf)
-                rightTemps.append(rightBuf)
-            }
-            
-            self.leftTempBuffers = leftTemps
-            self.rightTempBuffers = rightTemps
-        }
-        
-        deinit {
-            // Clean up allocated buffers
-            for buffer in leftTempBuffers {
-                buffer.deallocate()
-            }
-            for buffer in rightTempBuffers {
-                buffer.deallocate()
-            }
+            self.processor = RealtimeAudioProcessor(renderers: renderers, blockSize: blockSize)
         }
     }
     
-    // Atomic reference to current state using OSAllocatedUnfairLock (macOS 13+)
-    // Version counter for cache invalidation (lock-free reads on audio thread)
+    // Writers publish immutable state under one lock. Render thread makes one non-blocking snapshot attempt.
     private let stateLock = OSAllocatedUnfairLock<RendererState?>(initialState: nil)
-    private let stateVersion = OSAllocatedUnfairLock<Int>(initialState: 0)
+    private var audioThreadState: RendererState?
+
+    private var activationTask: DispatchWorkItem?
+    private var activationGeneration = 0
+    private var currentActivationKey: PresetActivationKey?
+    private var inFlightActivationKey: PresetActivationKey?
+    private var activationCancellationToken: ActivationCancellationToken?
     
     private var rendererState: RendererState? {
         get { stateLock.withLock { $0 } }
-        set { 
-            stateLock.withLock { $0 = newValue }
-            stateVersion.withLock { $0 += 1 }  // Increment version on state change
-        }
+        set { stateLock.withLock { $0 = newValue } }
     }
     
     private let processingBlockSize: Int = 512  // Balance between latency (~10.7ms @ 48kHz) and CPU efficiency
@@ -163,9 +168,7 @@ class HRIRManager: ObservableObject {
 
         // Clear active preset if it was removed
         if activePreset?.id == preset.id {
-            activePreset = nil
-            activePreset = nil
-            self.rendererState = nil
+            deactivatePreset()
         }
 
         savePresets()
@@ -183,15 +186,33 @@ class HRIRManager: ObservableObject {
         inputLayout: InputLayout,
         hrirMap: HRIRChannelMap? = nil
     ) {
-        // Perform loading and processing on a background queue
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else { return }
-            
-            do {
-                // Load WAV file
-                let wavData = try WAVLoader.load(from: preset.fileURL)
+        let activationKey = hrirMap == nil
+            ? PresetActivationKey(preset: preset, targetSampleRate: targetSampleRate, inputLayout: inputLayout)
+            : nil
 
-                // Determine HRIR mapping
+        if let activationKey,
+           activationKey == currentActivationKey,
+           rendererState != nil {
+            return
+        }
+        if let activationKey, activationKey == inFlightActivationKey {
+            return
+        }
+
+        activationTask?.cancel()
+        activationCancellationToken?.cancel()
+        activationGeneration += 1
+        let generation = activationGeneration
+        inFlightActivationKey = activationKey
+        let blockSize = processingBlockSize
+        let cancellationToken = ActivationCancellationToken()
+        activationCancellationToken = cancellationToken
+
+        let task = DispatchWorkItem { [weak self] in
+            do {
+                let wavData = try WAVLoader.load(from: preset.fileURL)
+                guard !cancellationToken.isCancelled else { return }
+
                 let speakers = inputLayout.channels
                 let channelMap: HRIRChannelMap
                 
@@ -204,8 +225,11 @@ class HRIRManager: ObservableObject {
 
                 // Build renderers for each input channel
                 var newRenderers: [VirtualSpeakerRenderer] = []
+                newRenderers.reserveCapacity(speakers.count)
                 
                 for (_, speaker) in inputLayout.channels.enumerated() {
+                    guard !cancellationToken.isCancelled else { return }
+
                     // Look up HRIR indices for this speaker
                     guard let (leftEarIdx, rightEarIdx) = channelMap.getIndices(for: speaker) else {
                         continue
@@ -242,13 +266,9 @@ class HRIRManager: ObservableObject {
                         resampledRight = rightEarIR
                     }
                     
-                    // Create convolution engines with shared FFTSetup for memory efficiency
-                    let blockSize = self.processingBlockSize
-                    let log2n = vDSP_Length(log2(Double(blockSize * 2)))
-                    let sharedSetup = FFTSetupManager.shared.getSetup(log2n: log2n)
-                    
-                    guard let leftEngine = ConvolutionEngine(hrirSamples: resampledLeft, blockSize: blockSize, sharedFFTSetup: sharedSetup),
-                          let rightEngine = ConvolutionEngine(hrirSamples: resampledRight, blockSize: blockSize, sharedFFTSetup: sharedSetup) else {
+                    // Create convolution engines off the render thread.
+                    guard let leftEngine = ConvolutionEngine(hrirSamples: resampledLeft, blockSize: blockSize),
+                          let rightEngine = ConvolutionEngine(hrirSamples: resampledRight, blockSize: blockSize) else {
                         throw HRIRError.convolutionSetupFailed("Failed to create engines for \(speaker.displayName)")
                     }
                     
@@ -265,125 +285,125 @@ class HRIRManager: ObservableObject {
                     throw HRIRError.convolutionSetupFailed("No valid renderers created")
                 }
 
-                // Activate safely (atomic reference swap)
-                let newState = RendererState(renderers: newRenderers, blockSize: self.processingBlockSize)
-                self.rendererState = newState
-                
+                guard !cancellationToken.isCancelled else { return }
                 DispatchQueue.main.async {
-                    self.activePreset = preset
-                    self.currentInputLayout = inputLayout
-                    self.currentHRIRMap = channelMap
-                    self.errorMessage = nil
+                    self?.publishActivation(
+                        generation: generation,
+                        key: activationKey,
+                        preset: preset,
+                        inputLayout: inputLayout,
+                        channelMap: channelMap,
+                        renderers: newRenderers
+                    )
                 }
-
             } catch {
+                guard !cancellationToken.isCancelled else { return }
                 DispatchQueue.main.async {
-                    self.errorMessage = "Failed to activate preset: \(error.localizedDescription)"
+                    self?.publishActivationFailure(
+                        generation: generation,
+                        message: "Failed to activate preset: \(error.localizedDescription)"
+                    )
                 }
             }
         }
+        activationTask = task
+        DispatchQueue.global(qos: .userInitiated).async(execute: task)
     }
 
-    /// Process multi-channel audio through convolution (zero-allocation version)
-    /// - Parameters:
-    ///   - inputPtrs: Array of pointers to input channel buffers
-    ///   - inputCount: Number of input channels to process
-    ///   - leftOutput: Pointer to left ear output buffer
-    ///   - rightOutput: Pointer to right ear output buffer
-    ///   - frameCount: Number of frames to process
+    /// Reuse matching renderer state; rebuild only when device configuration changed.
+    func ensurePresetConfiguration(targetSampleRate: Double, inputLayout: InputLayout) {
+        guard let preset = activePreset else { return }
+        let key = PresetActivationKey(preset: preset, targetSampleRate: targetSampleRate, inputLayout: inputLayout)
+        if key != currentActivationKey {
+            rendererState = nil
+            currentActivationKey = nil
+        }
+        activatePreset(preset, targetSampleRate: targetSampleRate, inputLayout: inputLayout)
+    }
+
+    /// Cancel activation and atomically publish passthrough state.
+    func deactivatePreset() {
+        activationTask?.cancel()
+        activationTask = nil
+        activationCancellationToken?.cancel()
+        activationCancellationToken = nil
+        activationGeneration += 1
+        inFlightActivationKey = nil
+        currentActivationKey = nil
+        // Dropping immutable state also drops its pending FIFO; render thread observes this via try-lock.
+        rendererState = nil
+        activePreset = nil
+        currentInputLayout = nil
+        currentHRIRMap = nil
+        errorMessage = nil
+    }
+
+    private func publishActivation(
+        generation: Int,
+        key: PresetActivationKey?,
+        preset: HRIRPreset,
+        inputLayout: InputLayout,
+        channelMap: HRIRChannelMap,
+        renderers: [VirtualSpeakerRenderer]
+    ) {
+        guard generation == activationGeneration else { return }
+        rendererState = RendererState(renderers: renderers, blockSize: processingBlockSize)
+        currentActivationKey = key
+        inFlightActivationKey = nil
+        activationTask = nil
+        activationCancellationToken = nil
+        activePreset = preset
+        currentInputLayout = inputLayout
+        currentHRIRMap = channelMap
+        errorMessage = nil
+    }
+
+    private func publishActivationFailure(generation: Int, message: String) {
+        guard generation == activationGeneration else { return }
+        inFlightActivationKey = nil
+        activationTask = nil
+        activationCancellationToken = nil
+        errorMessage = message
+    }
+
+    /// Process selected stereo input through convolution without render-thread allocation.
     func processAudio(
-        inputPtrs: UnsafeMutablePointer<UnsafeMutablePointer<Float>>,
-        inputCount: Int,
+        inputLeft: UnsafePointer<Float>,
+        inputRight: UnsafePointer<Float>?,
         leftOutput: UnsafeMutablePointer<Float>,
         rightOutput: UnsafeMutablePointer<Float>,
         frameCount: Int
     ) {
-        // Thread-local cached state to avoid lock contention on audio thread
-        // This eliminates the semaphore wait issue (65ms @ 8.7% CPU)
-        struct AudioThreadCache {
-            static var cachedState: RendererState? = nil
-            static var cachedVersion: Int = -1
+        // A writer can never stall the render thread. A failed attempt keeps prior immutable state.
+        var state = audioThreadState
+        enum StateRead {
+            case available(RendererState?)
         }
-        
-        // Check if state update needed (lock-free read of version counter)
-        let currentVersion = stateVersion.withLock { $0 }
-        if currentVersion != AudioThreadCache.cachedVersion {
-            // Update cache (single lock acquisition only when state changes)
-            AudioThreadCache.cachedState = stateLock.withLock { $0 }
-            AudioThreadCache.cachedVersion = currentVersion
-        }
-        // Use cached state (no lock acquisition in common case)
-        guard let state = AudioThreadCache.cachedState, !state.renderers.isEmpty else {
-            // Passthrough mode - simple copy
-            if inputCount >= 1 {
-                memcpy(leftOutput, inputPtrs[0], frameCount * MemoryLayout<Float>.size)
-            } else {
-                memset(leftOutput, 0, frameCount * MemoryLayout<Float>.size)
+        if let read = stateLock.withLockIfAvailable({ StateRead.available($0) }) {
+            if case .available(let publishedState) = read {
+                state = publishedState
+                audioThreadState = publishedState
             }
-            
-            if inputCount >= 2 {
-                memcpy(rightOutput, inputPtrs[1], frameCount * MemoryLayout<Float>.size)
-            } else if inputCount >= 1 {
-                memcpy(rightOutput, inputPtrs[0], frameCount * MemoryLayout<Float>.size)
+        }
+
+        guard let state, !state.renderers.isEmpty else {
+            // Passthrough mode - simple copy
+            memcpy(leftOutput, inputLeft, frameCount * MemoryLayout<Float>.size)
+            if let inputRight {
+                memcpy(rightOutput, inputRight, frameCount * MemoryLayout<Float>.size)
             } else {
-                memset(rightOutput, 0, frameCount * MemoryLayout<Float>.size)
+                memcpy(rightOutput, inputLeft, frameCount * MemoryLayout<Float>.size)
             }
             return
         }
 
-        // Process in chunks of processingBlockSize
-        var offset = 0
-        
-        while offset + processingBlockSize <= frameCount {
-            let currentLeftOut = leftOutput.advanced(by: offset)
-            let currentRightOut = rightOutput.advanced(by: offset)
-            
-            // Zero the output for this block
-            memset(currentLeftOut, 0, processingBlockSize * MemoryLayout<Float>.size)
-            memset(currentRightOut, 0, processingBlockSize * MemoryLayout<Float>.size)
-            
-            // OPTIMIZATION: Batched convolution + SIMD accumulation
-            // Phase 1: Process all convolutions to temporary buffers (no accumulation)
-            // This is faster than processAndAccumulate because it avoids the intermediate add
-            let validChannelCount = min(inputCount, state.renderers.count)
-            
-            for channelIndex in 0..<validChannelCount {
-                let currentInput = inputPtrs[channelIndex].advanced(by: offset)
-                
-                // Process to dedicated temp buffers (faster than processAndAccumulate)
-                state.renderers[channelIndex].convolverLeftEar.process(
-                    input: currentInput,
-                    output: state.leftTempBuffers[channelIndex]
-                )
-                
-                state.renderers[channelIndex].convolverRightEar.process(
-                    input: currentInput,
-                    output: state.rightTempBuffers[channelIndex]
-                )
-            }
-            
-            // Phase 2: SIMD accumulation using vDSP (vectorized addition)
-            // This is 4-8x faster than scalar addition in processAndAccumulate
-            for channelIndex in 0..<validChannelCount {
-                // Left ear accumulation
-                vDSP_vadd(
-                    currentLeftOut, 1,
-                    state.leftTempBuffers[channelIndex], 1,
-                    currentLeftOut, 1,
-                    vDSP_Length(processingBlockSize)
-                )
-                
-                // Right ear accumulation
-                vDSP_vadd(
-                    currentRightOut, 1,
-                    state.rightTempBuffers[channelIndex], 1,
-                    currentRightOut, 1,
-                    vDSP_Length(processingBlockSize)
-                )
-            }
-            
-            offset += processingBlockSize
-        }
+        state.processor.process(
+            inputLeft: inputLeft,
+            inputRight: inputRight,
+            leftOutput: leftOutput,
+            rightOutput: rightOutput,
+            frameCount: frameCount
+        )
     }
 
 
@@ -391,10 +411,7 @@ class HRIRManager: ObservableObject {
     /// Useful when changing presets or seeking to clear old audio buffers
     func resetConvolutionState() {
         guard let state = rendererState else { return }
-        for renderer in state.renderers {
-            renderer.convolverLeftEar.reset()
-            renderer.convolverRightEar.reset()
-        }
+        state.processor.reset()
     }
 
     // MARK: - Private Methods
@@ -524,9 +541,7 @@ class HRIRManager: ObservableObject {
             
             // Check if active preset is still valid
             if let active = self.activePreset, !updatedPresets.contains(where: { $0.id == active.id }) {
-                self.activePreset = nil
-                self.activePreset = nil
-                self.rendererState = nil
+                self.deactivatePreset()
             }
         }
     }

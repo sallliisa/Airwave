@@ -393,7 +393,7 @@ struct AirwaveMenuView: View {
                             name: "None",
                             isSelected: hrirManager.activePreset == nil
                         ) {
-                            hrirManager.activePreset = nil
+                            hrirManager.deactivatePreset()
                         }
                         
                         // Preset options (sorted alphabetically)

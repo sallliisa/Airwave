@@ -5,8 +5,6 @@
    
    <br/>
 
-   <strong>Version: </strong>1.1.1
-   <br />
    <a href="https://github.com/sallliisa/Airwave/releases"><strong>Download</strong></a>
     · 
    <a href="https://github.com/sallliisa/Airwave/commits">Commits</a>
@@ -39,6 +37,25 @@ This project was created to offer a free, customizable alternative to proprietar
 ## Requirements
 - macOS 14.0 or later
 - Virtual audio device (e.g., BlackHole 2ch)
+
+## Development
+
+Prerequisites: macOS, full Xcode 26, and macOS SDK. Unit tests need no BlackHole or microphone permission.
+
+Open project:
+
+```bash
+open Airwave.xcodeproj
+```
+
+Unsigned local build and test:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project Airwave.xcodeproj -scheme Airwave -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project Airwave.xcodeproj -scheme Airwave -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO test
+```
+
+Manual audio smoke tests require a virtual device, microphone permission, aggregate-device setup, and an HRIR preset. If `xcode-select -p` points at Command Line Tools, set `DEVELOPER_DIR` to the full Xcode developer directory shown above.
 
 ## Installation
 ### 1. Install Virtual Audio Device (BlackHole 2ch Recommended)
