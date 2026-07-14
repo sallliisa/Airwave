@@ -2,10 +2,19 @@
 
 Status: BLOCKED — operator hardware smoke matrix required
 
-`AudioRouteTransitionPlanner` now specifies no-op, internal-stop/apply/restart,
-and stop/restore/clear effect ordering. Wire this planner and coordinator into
-`AudioGraphManager`, `MenuBarViewModel`, and `SettingsView` only after manual
-validation on supported devices.
+`AudioRouteTransitionPlanner` specifies no-op, internal-stop/apply/restart, and
+stop/restore/clear effect ordering. Coordinator wiring is available only behind
+hidden launch argument `-UseSelectionCoordinator`; production default remains
+legacy until manual validation passes.
+
+Run opt-in build:
+
+```sh
+xcodebuild -project Airwave.xcodeproj -scheme Airwave -configuration Debug \
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build
+APP_PATH=$(find "$HOME/Library/Developer/Xcode/DerivedData" -path '*/Build/Products/Debug/Airwave.app' -print -quit)
+open "$APP_PATH" --args -UseSelectionCoordinator
+```
 
 Required manual gates:
 

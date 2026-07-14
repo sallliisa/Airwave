@@ -136,6 +136,42 @@ class SettingsManager {
         cachedSettings = settings
         debounceSave()
     }
+
+    func updateSelectionPreferences(
+        aggregateUID: String?,
+        inputUID: String?,
+        outputUID: String?
+    ) {
+        var settings = loadSettings()
+        settings.aggregateDeviceUID = aggregateUID
+        settings.selectedInputDeviceUID = inputUID
+        settings.selectedOutputDeviceUID = outputUID
+        saveSettings(settings)
+    }
+
+    func updateAggregatePreference(_ uid: String?) {
+        var settings = loadSettings()
+        settings.aggregateDeviceUID = uid
+        saveSettings(settings)
+    }
+
+    func updateInputPreference(_ uid: String?) {
+        var settings = loadSettings()
+        settings.selectedInputDeviceUID = uid
+        saveSettings(settings)
+    }
+
+    func updateOutputPreference(_ uid: String?) {
+        var settings = loadSettings()
+        settings.selectedOutputDeviceUID = uid
+        saveSettings(settings)
+    }
+
+    func updateAutoStart(_ enabled: Bool) {
+        var settings = loadSettings()
+        settings.autoStart = enabled
+        saveSettings(settings)
+    }
     
     private func debounceSave() {
         saveWorkItem?.cancel()

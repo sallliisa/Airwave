@@ -50,6 +50,7 @@ struct SettingsView: View {
         .frame(minWidth: 500, idealWidth: 500, maxWidth: 500)
         .frame(minHeight: 400, idealHeight: 560)
         .onAppear {
+            guard !RuntimeEnvironment.useSelectionCoordinator else { return }
             // Start monitoring if there's already an aggregate device selected
             if let device = audioManager.aggregateDevice {
                 deviceManager.startMonitoringAggregateDevice(device)
@@ -58,6 +59,7 @@ struct SettingsView: View {
             diagnosticsManager.refresh()
         }
         .onChange(of: audioManager.aggregateDevice?.id) {
+            guard !RuntimeEnvironment.useSelectionCoordinator else { return }
             // Start monitoring the new aggregate device for sub-device changes
             if let device = audioManager.aggregateDevice {
                 deviceManager.startMonitoringAggregateDevice(device)
@@ -67,6 +69,7 @@ struct SettingsView: View {
             refreshAvailableOutputs()
         }
         .onChange(of: deviceManager.aggregateDevices.count) {
+            guard !RuntimeEnvironment.useSelectionCoordinator else { return }
             // Aggregate devices added/removed - validate current selection and refresh UI
             validateCurrentSelection()
             
@@ -80,15 +83,18 @@ struct SettingsView: View {
             refreshAvailableOutputs()
         }
         .onChange(of: deviceManager.outputDevices.count) {
+            guard !RuntimeEnvironment.useSelectionCoordinator else { return }
             // Output devices changed - refresh outputs for current aggregate (catches sub-device additions)
             refreshAvailableOutputs()
             diagnosticsManager.refresh()
         }
         .onChange(of: deviceManager.inputDevices.count) {
+            guard !RuntimeEnvironment.useSelectionCoordinator else { return }
             // Input devices changed - refresh diagnostics
             diagnosticsManager.refresh()
         }
         .onChange(of: deviceManager.aggregateSubDeviceChangeCount) {
+            guard !RuntimeEnvironment.useSelectionCoordinator else { return }
             // Sub-devices added/removed from the currently monitored aggregate device
             refreshAvailableOutputs()
             diagnosticsManager.refresh()
@@ -447,9 +453,20 @@ struct SettingsView: View {
                         get: { audioManager.isRunning },
                         set: { shouldRun in
                             if shouldRun {
-                                audioManager.start()
+                                if RuntimeEnvironment.useSelectionCoordinator {
+                                    audioManager.startTransactionalRoute()
+                                } else {
+                                    audioManager.start()
+                                }
                             } else {
-                                audioManager.stop()
+                                if RuntimeEnvironment.useSelectionCoordinator {
+                                    audioManager.stopTransactionalRoute()
+                                } else {
+                                    audioManager.stop()
+                                }
+                            }
+                            if RuntimeEnvironment.useSelectionCoordinator {
+                                SettingsManager.shared.updateAutoStart(shouldRun)
                             }
                         }
                     ))
@@ -772,6 +789,10 @@ struct SettingsView: View {
     
     /// Select an aggregate device and configure outputs
     private func selectAggregateDevice(_ device: AudioDevice) {
+        if RuntimeEnvironment.useSelectionCoordinator {
+            MenuBarViewModel.shared.selectAggregateDevice(device)
+            return
+        }
         // Stop audio if running
         let wasRunning = audioManager.isRunning
         if wasRunning {
@@ -819,6 +840,10 @@ struct SettingsView: View {
     /// Select an input device
     /// - Parameter switchSystemAudio: Whether to switch system audio output to this device (default: true)
     private func selectInputDevice(_ input: AggregateDeviceInspector.SubDeviceInfo, switchSystemAudio: Bool = true) {
+        if RuntimeEnvironment.useSelectionCoordinator {
+            MenuBarViewModel.shared.selectionCoordinator?.selectInput(uid: input.uid)
+            return
+        }
         // VOLUME SYNC: Get volume from previous input device before switching
         var previousVolume: Float? = nil
         if let previousInput = audioManager.selectedInputDevice {
@@ -858,6 +883,7 @@ struct SettingsView: View {
     
     /// Refresh available outputs from current aggregate device
     private func refreshAvailableOutputs() {
+        guard !RuntimeEnvironment.useSelectionCoordinator else { return }
         guard let currentAggregate = audioManager.aggregateDevice else {
             audioManager.availableOutputs = []
             audioManager.selectedOutputDevice = nil
@@ -964,6 +990,7 @@ struct SettingsView: View {
     
     /// Validate that current selections still exist in system device list
     private func validateCurrentSelection() {
+        guard !RuntimeEnvironment.useSelectionCoordinator else { return }
         // If we had an aggregate selected but it no longer exists, clear it
         if let currentAggregate = audioManager.aggregateDevice {
             let stillExists = deviceManager.aggregateDevices.contains { $0.id == currentAggregate.id }

@@ -6,4 +6,8 @@ enum RuntimeEnvironment {
     static var isTestHost: Bool {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
     }
+
+    static var useSelectionCoordinator: Bool {
+        ProcessInfo.processInfo.arguments.contains("-UseSelectionCoordinator")
+    }
 }
