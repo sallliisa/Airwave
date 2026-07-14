@@ -39,7 +39,10 @@ class AudioDeviceManager: ObservableObject {
     
     // MARK: - Singleton
     
-    static let shared = AudioDeviceManager()
+    static let shared = AudioDeviceManager(
+        installListeners: !RuntimeEnvironment.isTestHost,
+        loadInitialDevices: !RuntimeEnvironment.isTestHost
+    )
     
     // MARK: - Published Properties
     
@@ -69,10 +72,14 @@ class AudioDeviceManager: ObservableObject {
     private let queryService: AudioDeviceQuerying
     private var refreshGeneration = 0
 
-    init(queryService: AudioDeviceQuerying = CoreAudioDeviceQueryService(), installListeners: Bool = true) {
+    init(
+        queryService: AudioDeviceQuerying = CoreAudioDeviceQueryService(),
+        installListeners: Bool = true,
+        loadInitialDevices: Bool = true
+    ) {
         self.queryService = queryService
         // Initial device load
-        refreshDevices()
+        if loadInitialDevices { refreshDevices() }
         
         // Setup property listeners
         if installListeners {

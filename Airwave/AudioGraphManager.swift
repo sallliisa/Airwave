@@ -64,6 +64,8 @@ class AudioGraphManager: ObservableObject {
     // Reference to HRIR manager for convolution
     var hrirManager: HRIRManager?
 
+    private var transactionalRouteIdentity: AudioRouteIdentity?
+
     // MARK: - Initialization
 
     init() {
@@ -212,6 +214,123 @@ class AudioGraphManager: ObservableObject {
         DispatchQueue.main.async {
             self.isRunning = false
         }
+    }
+
+    /// Apply coordinator route without restoring macOS output through an
+    /// obsolete route. Public stop remains the only user-facing restore path.
+    func applyTransactionalRoute(_ route: AudioRoute) {
+        guard route.identity != transactionalRouteIdentity else { return }
+
+        let wasRunning = isRunning
+        let previousOutput = selectedOutputDevice
+        let previousInputID = selectedInputDevice?.device.id
+        if wasRunning { stopAudioUnitOnly() }
+
+        aggregateDevice = route.aggregate
+        selectedInputDevice = route.input
+        selectedOutputDevice = route.output
+        selectedInputChannelRange = route.inputChannelRange
+        selectedOutputChannelRange = route.outputChannelRange
+
+        do {
+            try setupAudioUnit(
+                aggregateDevice: route.aggregate,
+                outputChannelRange: route.outputChannelRange
+            )
+            transactionalRouteIdentity = route.identity
+
+            if wasRunning {
+                if previousInputID != route.input?.device.id {
+                    switchSystemAudioToInputDevice()
+                }
+                try startConfiguredAudioUnit()
+            }
+        } catch {
+            errorMessage = "Failed to configure audio route: \(error.localizedDescription)"
+            selectedOutputDevice = previousOutput
+            if wasRunning {
+                restoreSystemAudioToSelected()
+            }
+            clearTransactionalRoute()
+        }
+    }
+
+    /// Start already-configured coordinator route. No obsolete public stop.
+    func startTransactionalRoute() {
+        guard !isRunning else { return }
+        guard let aggregateDevice, selectedOutputDevice != nil else {
+            errorMessage = "Select an aggregate and output device before starting"
+            return
+        }
+        guard SystemDiagnosticsManager.shared.diagnostics.isFullyConfigured else {
+            errorMessage = "Complete all diagnostics setup steps before starting"
+            return
+        }
+        do {
+            if audioUnit == nil {
+                try setupAudioUnit(
+                    aggregateDevice: aggregateDevice,
+                    outputChannelRange: selectedOutputChannelRange
+                )
+            }
+            switchSystemAudioToInputDevice()
+            try startConfiguredAudioUnit()
+        } catch {
+            errorMessage = "Failed to start audio: \(error.localizedDescription)"
+            restoreSystemAudioToSelected()
+        }
+    }
+
+    /// Stop coordinator route and restore physical output once.
+    func stopTransactionalRoute() {
+        guard isRunning else { return }
+        stopAudioUnitOnly()
+        restoreSystemAudioToSelected()
+    }
+
+    /// Clear coordinator route. Restore physical output only when a running
+    /// route is being invalidated; stopped engines remain stopped.
+    func clearTransactionalRoute() {
+        let wasRunning = isRunning
+        if wasRunning {
+            stopAudioUnitOnly()
+            restoreSystemAudioToSelected()
+        }
+        aggregateDevice = nil
+        selectedInputDevice = nil
+        selectedOutputDevice = nil
+        selectedInputChannelRange = nil
+        selectedOutputChannelRange = nil
+        transactionalRouteIdentity = nil
+    }
+
+    private func stopAudioUnitOnly() {
+        if let unit = audioUnit {
+            AudioOutputUnitStop(unit)
+            AudioUnitUninitialize(unit)
+            AudioComponentInstanceDispose(unit)
+            audioUnit = nil
+        }
+        isRunning = false
+    }
+
+    private func startConfiguredAudioUnit() throws {
+        if let hrirManager, hrirManager.activePreset != nil {
+            let inputLayout = InputLayout.detect(channelCount: Int(inputChannelCount))
+            hrirManager.ensurePresetConfiguration(
+                targetSampleRate: currentSampleRate,
+                inputLayout: inputLayout
+            )
+        }
+        guard let audioUnit else {
+            throw AudioError.startFailed(-1, "Audio unit is not configured")
+        }
+        let status = AudioOutputUnitStart(audioUnit)
+        guard status == noErr else {
+            throw AudioError.startFailed(status, "Failed to start audio unit")
+        }
+        isRunning = true
+        errorMessage = nil
     }
     
     /// Setup with aggregate device and optional output channel specification
