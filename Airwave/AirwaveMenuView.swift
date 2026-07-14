@@ -297,7 +297,6 @@ struct AirwaveMenuView: View {
     @ObservedObject private var hrirManager = HRIRManager.shared
     @EnvironmentObject private var viewModel: MenuBarViewModel
     @EnvironmentObject private var onboardingViewModel: OnboardingViewModel
-    @ObservedObject private var diagnosticsManager = SystemDiagnosticsManager.shared
     @Environment(\.openWindow) private var openWindow
     
     // Static UUID for "None" option in HRIR picker
@@ -424,20 +423,16 @@ struct AirwaveMenuView: View {
             
             // Settings
             VStack(spacing: 2) {
-                ActionRow(
-                    onboardingViewModel.menuTitle,
-                    showWarning: onboardingViewModel.isIncomplete
-                ) {
-                    viewModel.closeMenuBarPopover()
-                    onboardingViewModel.resume()
-                    openWindow(id: "onboarding")
-                    OnboardingWindowPresenter.presentExistingWindow()
+                if onboardingViewModel.shouldShowSetupMenuItem {
+                    ActionRow("Complete set up...", showWarning: true) {
+                        viewModel.closeMenuBarPopover()
+                        onboardingViewModel.resume()
+                        openWindow(id: "onboarding")
+                        OnboardingWindowPresenter.presentExistingWindow()
+                    }
                 }
 
-                ActionRow(
-                    "Settings",
-                    showWarning: !diagnosticsManager.diagnostics.isFullyConfigured
-                ) {
+                ActionRow("Settings") {
                     viewModel.closeMenuBarPopover()
                     openWindow(id: "settings")
                     SettingsWindowPresenter.presentExistingWindow()

@@ -45,6 +45,46 @@ final class OnboardingModelTests: XCTestCase {
         XCTAssertTrue(snapshot.isReadyToRun)
     }
 
+    func testCompletionStepIsFinalChecksAndListsAllRequirements() {
+        XCTAssertEqual(SetupStep.completion.title, "Final checks")
+        XCTAssertEqual(
+            SetupStep.requirementSteps,
+            [.virtualDriver, .aggregateDevice, .microphonePermission, .hrirPreset, .audioRoute]
+        )
+    }
+
+    func testSetupMenuVisibilityTracksLiveSnapshotReadiness() {
+        let ready = SetupSnapshot(
+            driverStatus: .complete,
+            aggregateStatus: .complete,
+            permissionStatus: .complete,
+            hrirStatus: .complete,
+            routeStatus: .complete,
+            route: SetupRouteState(
+                aggregateSelected: true,
+                inputSelected: true,
+                outputSelected: true,
+                presetSelected: true
+            )
+        )
+        let incomplete = SetupSnapshot(
+            driverStatus: .complete,
+            aggregateStatus: .complete,
+            permissionStatus: .complete,
+            hrirStatus: .incomplete,
+            routeStatus: .complete
+        )
+
+        XCTAssertFalse(OnboardingViewModel.shouldShowSetupMenuItem(for: ready))
+        XCTAssertTrue(OnboardingViewModel.shouldShowSetupMenuItem(for: incomplete))
+        XCTAssertTrue(OnboardingViewModel.shouldShowSetupMenuItem(for: .checking))
+    }
+
+    func testStartUsingAirwaveRequiresAllLiveChecks() {
+        XCTAssertTrue(OnboardingViewModel.canStartUsingAirwave(for: readySnapshot()))
+        XCTAssertFalse(OnboardingViewModel.canStartUsingAirwave(for: .checking))
+    }
+
     func testSnapshotBlocksInvalidAggregateAndDeniedPermission() {
         var diagnostics = readyDiagnostics()
         diagnostics.validAggregateExists = false
@@ -225,6 +265,22 @@ final class OnboardingModelTests: XCTestCase {
             fileURL: URL(fileURLWithPath: "/tmp/test.wav"),
             channelCount: 2,
             sampleRate: 48_000
+        )
+    }
+
+    private func readySnapshot() -> SetupSnapshot {
+        SetupSnapshot(
+            driverStatus: .complete,
+            aggregateStatus: .complete,
+            permissionStatus: .complete,
+            hrirStatus: .complete,
+            routeStatus: .complete,
+            route: SetupRouteState(
+                aggregateSelected: true,
+                inputSelected: true,
+                outputSelected: true,
+                presetSelected: true
+            )
         )
     }
 }

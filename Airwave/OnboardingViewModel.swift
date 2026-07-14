@@ -49,6 +49,9 @@ final class OnboardingViewModel: ObservableObject {
 
     var isCompleted: Bool { persistence.isComplete }
     var isIncomplete: Bool { !persistence.isComplete }
+    var shouldShowSetupMenuItem: Bool {
+        Self.shouldShowSetupMenuItem(for: snapshot)
+    }
     var shouldAutoPresent: Bool {
         isIncomplete && !persistence.isDismissedForCurrentLaunch
     }
@@ -140,7 +143,7 @@ final class OnboardingViewModel: ObservableObject {
 
     @discardableResult
     func startUsingAirwave() -> Bool {
-        guard snapshot.isReadyToRun else { return false }
+        guard Self.canStartUsingAirwave(for: snapshot) else { return false }
         persistence.isComplete = true
         persistence.checkpoint = .completion
         currentStep = .completion
@@ -184,7 +187,7 @@ final class OnboardingViewModel: ObservableObject {
     func quitAirwave() { actions.quitAirwave() }
 
     private var firstUnmetStep: SetupStep? {
-        SetupStep.allCases.first { step in
+        SetupStep.requirementSteps.first { step in
             guard let status = snapshot.status(for: step) else { return false }
             return !status.isComplete
         }
@@ -316,5 +319,13 @@ final class OnboardingViewModel: ObservableObject {
         diagnosticsIsRefreshing: Bool
     ) -> Bool {
         !hasPublishedResolvedSnapshot && diagnosticsIsRefreshing
+    }
+
+    static func shouldShowSetupMenuItem(for snapshot: SetupSnapshot) -> Bool {
+        !snapshot.isReadyToRun
+    }
+
+    static func canStartUsingAirwave(for snapshot: SetupSnapshot) -> Bool {
+        snapshot.isReadyToRun
     }
 }

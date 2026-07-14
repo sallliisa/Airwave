@@ -20,7 +20,7 @@ enum SetupStep: String, Codable, CaseIterable, Identifiable {
         case .microphonePermission: return "Mic permission"
         case .hrirPreset: return "HRIR preset"
         case .audioRoute: return "Audio route"
-        case .completion: return "Ready to use"
+        case .completion: return "Final checks"
         }
     }
 
@@ -41,6 +41,10 @@ enum SetupStep: String, Codable, CaseIterable, Identifiable {
         case .introduction, .completion: return nil
         default: return self
         }
+    }
+
+    static var requirementSteps: [SetupStep] {
+        allCases.filter { $0.requirementStep != nil }
     }
 }
 
@@ -106,6 +110,12 @@ struct SetupSnapshot: Equatable {
         hrirStatus.isComplete &&
         routeStatus.isComplete
     }
+
+    var isChecking: Bool {
+        Self.requirementSteps.contains { status(for: $0) == .checking }
+    }
+
+    private static let requirementSteps = SetupStep.requirementSteps
 
     static var checking: SetupSnapshot {
         SetupSnapshot(
