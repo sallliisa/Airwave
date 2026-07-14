@@ -9,11 +9,10 @@
 /* Begin PBXBuildFile section */
 		A00100000000000000000011 /* ConvolutionEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00100000000000000000002 /* ConvolutionEngineTests.swift */; };
 		A00100000000000000000012 /* RealtimeAudioProcessorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00100000000000000000003 /* RealtimeAudioProcessorTests.swift */; };
-		A00100000000000000000013 /* AudioDeviceQueryServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00100000000000000000004 /* AudioDeviceQueryServiceTests.swift */; };
+		A00100000000000000000013 /* AudioRuntimeStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00100000000000000000004 /* AudioRuntimeStateTests.swift */; };
 		A00100000000000000000014 /* PresetActivationCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00100000000000000000005 /* PresetActivationCoordinatorTests.swift */; };
 		A00200000000000000000001 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A00200000000000000000003 /* Sparkle */; };
 		A00200000000000000000005 /* UpdateStateModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00200000000000000000004 /* UpdateStateModelTests.swift */; };
-		A00300000000000000000001 /* OnboardingModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00300000000000000000002 /* OnboardingModelTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -31,10 +30,9 @@
 		A00100000000000000000001 /* AirwaveTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AirwaveTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A00100000000000000000002 /* ConvolutionEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConvolutionEngineTests.swift; sourceTree = "<group>"; };
 		A00100000000000000000003 /* RealtimeAudioProcessorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealtimeAudioProcessorTests.swift; sourceTree = "<group>"; };
-		A00100000000000000000004 /* AudioDeviceQueryServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioDeviceQueryServiceTests.swift; sourceTree = "<group>"; };
+		A00100000000000000000004 /* AudioRuntimeStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRuntimeStateTests.swift; sourceTree = "<group>"; };
 		A00100000000000000000005 /* PresetActivationCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresetActivationCoordinatorTests.swift; sourceTree = "<group>"; };
 		A00200000000000000000004 /* UpdateStateModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateStateModelTests.swift; sourceTree = "<group>"; };
-		A00300000000000000000002 /* OnboardingModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingModelTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -100,10 +98,9 @@
 			children = (
 				A00100000000000000000002 /* ConvolutionEngineTests.swift */,
 				A00100000000000000000003 /* RealtimeAudioProcessorTests.swift */,
-				A00100000000000000000004 /* AudioDeviceQueryServiceTests.swift */,
+				A00100000000000000000004 /* AudioRuntimeStateTests.swift */,
 				A00100000000000000000005 /* PresetActivationCoordinatorTests.swift */,
 				A00200000000000000000004 /* UpdateStateModelTests.swift */,
-				A00300000000000000000002 /* OnboardingModelTests.swift */,
 			);
 			path = AirwaveTests;
 			sourceTree = "<group>";
@@ -225,10 +222,9 @@
 			files = (
 				A00100000000000000000011 /* ConvolutionEngineTests.swift in Sources */,
 				A00100000000000000000012 /* RealtimeAudioProcessorTests.swift in Sources */,
-				A00100000000000000000013 /* AudioDeviceQueryServiceTests.swift in Sources */,
+				A00100000000000000000013 /* AudioRuntimeStateTests.swift in Sources */,
 				A00100000000000000000014 /* PresetActivationCoordinatorTests.swift in Sources */,
 				A00200000000000000000005 /* UpdateStateModelTests.swift in Sources */,
-				A00300000000000000000001 /* OnboardingModelTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -297,7 +293,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MACOSX_DEPLOYMENT_TARGET = 15.7;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -356,7 +352,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MACOSX_DEPLOYMENT_TARGET = 15.7;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = macosx;
@@ -405,7 +401,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.southneuhof.Airwave;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -467,7 +463,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.southneuhof.Airwave;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -496,7 +492,7 @@
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGN_IDENTITY = "";
 				GENERATE_INFOPLIST_FILE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.southneuhof.AirwaveTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
@@ -511,7 +507,7 @@
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGN_IDENTITY = "";
 				GENERATE_INFOPLIST_FILE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.southneuhof.AirwaveTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;

@@ -14,8 +14,6 @@
 	<key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
 	<key>LSMinimumSystemVersion</key><string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>LSUIElement</key><true/>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>Microphone is needed to capture system audio for HRIR convolution.</string>
 	<key>SUAllowsAutomaticUpdates</key><false/>
 	<key>SUAutomaticallyUpdate</key><false/>
 	<key>SUEnableAutomaticChecks</key><true/>
