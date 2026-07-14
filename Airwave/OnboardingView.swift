@@ -23,92 +23,166 @@ private final class OnboardingWindowObservingView: NSView {
     }
 }
 
+private enum OnboardingPalette {
+    static let canvas = Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255)
+    static let raised = Color(red: 29 / 255, green: 29 / 255, blue: 29 / 255)
+    static let accent = Color(red: 77 / 255, green: 116 / 255, blue: 158 / 255)
+    static let hover = Color.white.opacity(0.08)
+}
+
 struct OnboardingView: View {
     @ObservedObject var viewModel: OnboardingViewModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var navigationDirection: NavigationDirection = .forward
+    @State private var isFinishLaterHovered = false
+
+    private enum NavigationDirection {
+        case forward
+        case backward
+    }
 
     var body: some View {
-        HStack(spacing: 0) {
-            sidebar
-            Divider()
+        ZStack {
+            OnboardingPalette.canvas
+                .ignoresSafeArea()
+
             content
+
+            scrollEdgeFades
+
+            VStack(spacing: 0) {
+                topChrome
+                Spacer(minLength: 0)
+                footer
+                    .padding(.horizontal, 24)
+                    .padding(.top, 26)
+                    .padding(.bottom, 14)
+            }
         }
         .frame(minWidth: 760, idealWidth: 820, minHeight: 540, idealHeight: 590)
         .background(OnboardingWindowAccessor())
+        .preferredColorScheme(.dark)
+        .tint(OnboardingPalette.accent)
         .onAppear {
             viewModel.beginLaunch()
         }
     }
 
-    private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("Airwave")
-                .font(.title3.weight(.semibold))
-                .padding(.bottom, 12)
-
-            ForEach(SetupStep.allCases) { step in
-                let isNavigable = viewModel.canSelectStep(step)
-
-                Button {
-                    viewModel.selectStep(step)
-                } label: {
-                    HStack(spacing: 9) {
-                        Image(systemName: step.systemImage)
-                            .frame(width: 18)
-                        Text(step.title)
-                            .lineLimit(1)
-                        Spacer()
-                        if let status = viewModel.snapshot.status(for: step) {
-                            Image(systemName: status.icon)
-                                .foregroundStyle(statusColor(status))
-                        }
-                    }
-                    .padding(.vertical, 6)
-                    .padding(.horizontal, 8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(viewModel.currentStep == step ? Color.accentColor.opacity(0.12) : .clear)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .font(.callout)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .foregroundStyle(viewModel.currentStep == step ? Color.accentColor : .primary)
-                .disabled(!isNavigable)
-                .opacity(isNavigable ? 1 : 0.5)
-                .accessibilityElement(children: .combine)
+    private var topChrome: some View {
+        ZStack {
+            HStack {
+                Image("AirwaveIcon")
+                    .renderingMode(.template)
+                    .resizable()
+                    .scaledToFit()
+                    .foregroundStyle(.primary)
+                    .frame(width: 24, height: 24)
+                    .accessibilityLabel("Airwave")
+                Spacer()
+                Text("Page \(currentPageNumber) of \(SetupStep.allCases.count)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
             }
 
-            Spacer()
-
-            Text("You can finish setup later. Airwave will remind you about incomplete steps in the menu bar.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            OnboardingProgressIndicator(
+                currentStep: viewModel.currentStep,
+                snapshot: viewModel.snapshot,
+                canSelect: viewModel.canSelectStep,
+                onSelect: navigate(to:)
+            )
         }
-        .padding(22)
-        .frame(width: 230)
-        .frame(maxHeight: .infinity, alignment: .topLeading)
-        .background(Color(nsColor: .windowBackgroundColor).opacity(0.65))
+        .padding(.horizontal, 24)
+        .padding(.top, 14)
+        .padding(.bottom, 24)
+    }
+
+    private var scrollEdgeFades: some View {
+        VStack(spacing: 0) {
+            LinearGradient(
+                stops: [
+                    .init(color: OnboardingPalette.canvas, location: 0),
+                    .init(color: OnboardingPalette.canvas, location: 0.3),
+                    .init(color: OnboardingPalette.canvas.opacity(0.55), location: 0.58),
+                    .init(color: .clear, location: 1)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 112)
+
+            Spacer(minLength: 0)
+
+            LinearGradient(
+                colors: [.clear, OnboardingPalette.canvas.opacity(0.94), OnboardingPalette.canvas],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 110)
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
     }
 
     private var content: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    stepHeader
-                    stepBody
-                }
-                .padding(30)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                stepHeader
+                stepBody
             }
-
-            Divider()
-            footer
-                .padding(.horizontal, 24)
-                .padding(.vertical, 14)
+            .padding(.horizontal, 30)
+            .padding(.top, 94)
+            .padding(.bottom, 104)
+            .frame(maxWidth: 680, alignment: .leading)
+            .frame(maxWidth: .infinity)
+            .id(viewModel.currentStep)
+            .transition(pageTransition)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var currentPageNumber: Int {
+        (SetupStep.allCases.firstIndex(of: viewModel.currentStep) ?? 0) + 1
+    }
+
+    private var pageTransition: AnyTransition {
+        guard !reduceMotion else { return .opacity }
+        let insertionEdge: Edge = navigationDirection == .forward ? .trailing : .leading
+        let removalEdge: Edge = navigationDirection == .forward ? .leading : .trailing
+        return .asymmetric(
+            insertion: .opacity.combined(with: .move(edge: insertionEdge)),
+            removal: .opacity.combined(with: .move(edge: removalEdge))
+        )
+    }
+
+    private var pageAnimation: Animation {
+        reduceMotion ? .easeOut(duration: 0.16) : .smooth(duration: 0.26)
+    }
+
+    private func navigate(to step: SetupStep) {
+        guard step != viewModel.currentStep else { return }
+        navigationDirection = index(of: step) > index(of: viewModel.currentStep) ? .forward : .backward
+        withAnimation(pageAnimation) {
+            viewModel.selectStep(step)
+        }
+    }
+
+    private func navigateForward() {
+        navigationDirection = .forward
+        withAnimation(pageAnimation) {
+            viewModel.advance()
+        }
+    }
+
+    private func navigateBackward() {
+        navigationDirection = .backward
+        withAnimation(pageAnimation) {
+            viewModel.goBack()
+        }
+    }
+
+    private func index(of step: SetupStep) -> Int {
+        SetupStep.allCases.firstIndex(of: step) ?? 0
     }
 
     private var stepHeader: some View {
@@ -160,8 +234,10 @@ struct OnboardingView: View {
                 .font(.title3)
             Text("Airwave processes sound from your Mac and sends it to your headphones or speakers. Setup usually takes a few minutes.")
                 .foregroundStyle(.secondary)
-            infoCard("Before you begin", systemImage: "checklist", text: "You’ll need a virtual audio driver and the headphones or speakers you want to use. Airwave does not install drivers or create devices.")
-            infoCard("Pause setup", systemImage: "pause.circle", text: "Finish Later saves your progress. If a driver requires a restart, quit Airwave first, restart your Mac, then resume from the menu bar.")
+            VStack(spacing: 8) {
+                infoCard("Before you begin", systemImage: "checklist", text: "You’ll need a virtual audio driver and the headphones or speakers you want to use. Airwave does not install drivers or create devices.")
+                infoCard("Pause setup", systemImage: "pause.circle", text: "Finish Later saves your progress. If a driver requires a restart, quit Airwave first, restart your Mac, then resume from the menu bar.")
+            }
         }
     }
 
@@ -293,7 +369,7 @@ struct OnboardingView: View {
                     if let preset = viewModel.presets.first(where: { $0.id.uuidString == value }) { viewModel.selectPreset(preset) }
                 }
             }
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+            .background(OnboardingPalette.raised, in: RoundedRectangle(cornerRadius: 8))
         }
     }
 
@@ -309,7 +385,7 @@ struct OnboardingView: View {
                     }
                 }
             }
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+            .background(OnboardingPalette.raised, in: RoundedRectangle(cornerRadius: 8))
 
             VStack(alignment: .leading, spacing: 7) {
                 Text("Current audio route")
@@ -320,7 +396,7 @@ struct OnboardingView: View {
                 summaryRow("HRIR", value: viewModel.snapshot.route.presetName)
             }
             .padding(14)
-            .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+            .background(OnboardingPalette.raised, in: RoundedRectangle(cornerRadius: 8))
 
             Text("You can change these choices later in Settings. Select a check above to return to the relevant setup step.")
                 .foregroundStyle(.secondary)
@@ -367,7 +443,7 @@ struct OnboardingView: View {
         let status = viewModel.snapshot.status(for: step) ?? .checking
 
         return Button {
-            viewModel.selectStep(step)
+            navigate(to: step)
         } label: {
             HStack(alignment: .center, spacing: 10) {
                 Image(systemName: status.icon)
@@ -416,32 +492,58 @@ struct OnboardingView: View {
     }
 
     private var footer: some View {
-        HStack {
-            Button("Finish Later") {
-                viewModel.finishLater()
-                dismiss()
+        let isCompletion = viewModel.currentStep == .completion
+        let primaryLabel = isCompletion
+            ? "Start Airwave"
+            : (viewModel.currentStep == .introduction ? "Begin Setup" : "Continue")
+
+        return HStack {
+            HStack(spacing: 12) {
+                Button("Finish Later") {
+                    viewModel.finishLater()
+                    dismiss()
+                }
+                .buttonStyle(.plain)
+                .font(.callout.weight(.medium))
+                .foregroundStyle(isFinishLaterHovered ? .primary : .secondary)
+                .keyboardShortcut(.cancelAction)
+                .help("Save progress and finish setup later")
+                .onHover { hovering in
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.14)) {
+                        isFinishLaterHovered = hovering
+                    }
+                }
+
+                Text("Your progress is saved automatically.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .keyboardShortcut(.cancelAction)
 
             Spacer()
 
-            Button("Back") { viewModel.goBack() }
-                .disabled(viewModel.currentStep == .introduction)
+            OnboardingIconButton(
+                systemImage: "chevron.left",
+                accessibilityLabel: "Back",
+                help: "Back",
+                isProminent: false,
+                isEnabled: viewModel.currentStep != .introduction,
+                action: navigateBackward
+            )
 
-            if viewModel.currentStep == .completion {
-                Button("Start Airwave") {
+            OnboardingIconButton(
+                systemImage: isCompletion ? "play.fill" : "arrow.right",
+                accessibilityLabel: primaryLabel,
+                help: primaryLabel,
+                isProminent: true,
+                isEnabled: isCompletion ? viewModel.snapshot.isReadyToRun : viewModel.canContinue
+            ) {
+                if isCompletion {
                     if viewModel.startUsingAirwave() { dismiss() }
+                } else {
+                    navigateForward()
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(!viewModel.snapshot.isReadyToRun)
-            } else {
-                Button(viewModel.currentStep == .introduction ? "Begin Setup" : "Continue") {
-                    viewModel.advance()
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!viewModel.canContinue)
-                .keyboardShortcut(.defaultAction)
             }
+            .keyboardShortcut(.defaultAction)
         }
     }
 
@@ -556,13 +658,13 @@ struct OnboardingView: View {
             }
         }
         .padding(14)
-        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+        .background(OnboardingPalette.raised, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func infoCard(_ title: String, systemImage: String, text: String) -> some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: systemImage)
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(OnboardingPalette.accent)
                 .frame(width: 24, alignment: .center)
 
             VStack(alignment: .leading, spacing: 3) {
@@ -572,7 +674,7 @@ struct OnboardingView: View {
             Spacer(minLength: 0)
         }
         .padding(14)
-        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+        .background(OnboardingPalette.raised, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func summaryRow(_ title: String, value: String?) -> some View {
@@ -598,5 +700,175 @@ struct OnboardingView: View {
         case .blocked: return .red
         case .complete: return .green
         }
+    }
+}
+
+private struct OnboardingProgressIndicator: View {
+    let currentStep: SetupStep
+    let snapshot: SetupSnapshot
+    let canSelect: (SetupStep) -> Bool
+    let onSelect: (SetupStep) -> Void
+
+    var body: some View {
+        let currentIndex = SetupStep.allCases.firstIndex(of: currentStep) ?? 0
+
+        HStack(spacing: 7) {
+            ForEach(Array(SetupStep.allCases.enumerated()), id: \.element.id) { index, step in
+                OnboardingProgressItem(
+                    step: step,
+                    pageNumber: index + 1,
+                    pageCount: SetupStep.allCases.count,
+                    status: snapshot.status(for: step),
+                    isCurrent: currentStep == step,
+                    isPast: index < currentIndex,
+                    isSetupReady: snapshot.isReadyToRun,
+                    isEnabled: canSelect(step),
+                    action: { onSelect(step) }
+                )
+            }
+        }
+        .animation(nil, value: currentStep)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Onboarding progress")
+    }
+}
+
+private struct OnboardingProgressItem: View {
+    let step: SetupStep
+    let pageNumber: Int
+    let pageCount: Int
+    let status: SetupRequirementStatus?
+    let isCurrent: Bool
+    let isPast: Bool
+    let isSetupReady: Bool
+    let isEnabled: Bool
+    let action: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: step.systemImage)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(iconColor)
+                .frame(width: 32, height: 32)
+                .background {
+                    Circle()
+                        .fill(indicatorBackground)
+                }
+                .contentShape(Circle())
+        }
+        .buttonStyle(OnboardingProgressButtonStyle())
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.45)
+        .help(helpText)
+        .accessibilityLabel("\(step.title), page \(pageNumber) of \(pageCount)")
+        .accessibilityValue(accessibilityValue)
+        .accessibilityAddTraits(isCurrent ? .isSelected : [])
+        .onHover { hovering in
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.14)) {
+                isHovering = hovering
+            }
+        }
+    }
+
+    private var iconColor: Color {
+        if isCurrent { return Color.white.opacity(0.94) }
+        switch step {
+        case .introduction:
+            return isPast ? .white : .secondary
+        case .completion:
+            return isSetupReady ? .white : .secondary
+        default:
+            guard let status else { return .secondary }
+            switch status {
+            case .complete: return .white
+            case .blocked: return .orange
+            case .checking, .incomplete: return .secondary
+            }
+        }
+    }
+
+    private var indicatorBackground: Color {
+        if isCurrent {
+            return OnboardingPalette.accent.opacity(isHovering ? 0.78 : 0.62)
+        }
+        return isHovering ? OnboardingPalette.hover : .clear
+    }
+
+    private var helpText: String {
+        "\(step.title) — \(statusDescription)"
+    }
+
+    private var accessibilityValue: String {
+        [isCurrent ? "Current page" : nil, statusDescription].compactMap { $0 }.joined(separator: ", ")
+    }
+
+    private var statusDescription: String {
+        if step == .introduction { return isPast ? "Complete" : "Setup page" }
+        if step == .completion { return isSetupReady ? "Complete" : "Needs setup" }
+        guard let status else { return "Needs setup" }
+        switch status {
+        case .checking: return "Checking"
+        case .incomplete: return "Needs setup"
+        case .blocked: return "Action needed"
+        case .complete: return "Complete"
+        }
+    }
+
+}
+
+private struct OnboardingProgressButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.96 : 1)
+            .opacity(configuration.isPressed ? 0.82 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: configuration.isPressed)
+    }
+}
+
+private struct OnboardingIconButton: View {
+    let systemImage: String
+    let accessibilityLabel: String
+    let help: String
+    let isProminent: Bool
+    let isEnabled: Bool
+    let action: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(isProminent ? Color.white : (isHovering ? Color.primary : Color.secondary))
+                .frame(width: 34, height: 34)
+                .background {
+                    Circle()
+                        .fill(buttonBackground)
+                }
+                .contentShape(Circle())
+        }
+        .buttonStyle(OnboardingProgressButtonStyle())
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.35)
+        .help(help)
+        .accessibilityLabel(accessibilityLabel)
+        .onHover { hovering in
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.14)) {
+                isHovering = hovering
+            }
+        }
+    }
+
+    private var buttonBackground: Color {
+        if isProminent {
+            return isHovering ? OnboardingPalette.accent.opacity(0.82) : OnboardingPalette.accent
+        }
+        return isHovering ? OnboardingPalette.hover : .clear
     }
 }
