@@ -2,6 +2,7 @@ import AVFoundation
 import XCTest
 @testable import Airwave
 
+@MainActor
 final class OnboardingModelTests: XCTestCase {
     private func readyDiagnostics() -> DiagnosticsResult {
         var result = DiagnosticsResult()
