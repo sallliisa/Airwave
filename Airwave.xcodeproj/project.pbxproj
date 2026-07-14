@@ -16,6 +16,7 @@
 		A00300000000000000000001 /* AudioPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00300000000000000000002 /* AudioPipelineTests.swift */; };
 		A00500000000000000000001 /* AudioRuntimeControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00500000000000000000002 /* AudioRuntimeControllerTests.swift */; };
 		A00400000000000000000001 /* CoreAudioPlatformClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00400000000000000000002 /* CoreAudioPlatformClientTests.swift */; };
+		A00600000000000000000001 /* ProductSurfaceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00600000000000000000002 /* ProductSurfaceTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -39,6 +40,7 @@
 		A00300000000000000000002 /* AudioPipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPipelineTests.swift; sourceTree = "<group>"; };
 		A00500000000000000000002 /* AudioRuntimeControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRuntimeControllerTests.swift; sourceTree = "<group>"; };
 		A00400000000000000000002 /* CoreAudioPlatformClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreAudioPlatformClientTests.swift; sourceTree = "<group>"; };
+		A00600000000000000000002 /* ProductSurfaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProductSurfaceTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -110,6 +112,7 @@
 				A00300000000000000000002 /* AudioPipelineTests.swift */,
 				A00500000000000000000002 /* AudioRuntimeControllerTests.swift */,
 				A00400000000000000000002 /* CoreAudioPlatformClientTests.swift */,
+				A00600000000000000000002 /* ProductSurfaceTests.swift */,
 			);
 			path = AirwaveTests;
 			sourceTree = "<group>";
@@ -237,6 +240,7 @@
 				A00300000000000000000001 /* AudioPipelineTests.swift in Sources */,
 				A00500000000000000000001 /* AudioRuntimeControllerTests.swift in Sources */,
 				A00400000000000000000001 /* CoreAudioPlatformClientTests.swift in Sources */,
+				A00600000000000000000001 /* ProductSurfaceTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -58,6 +58,7 @@ final class AudioRuntimeController {
     private var generation = 0
     private var presetReady = false
     private var permissionGranted = false
+    private var permissionProbeRequested = false
     private var launched = false
     private var sleeping = false
     private var terminated = false
@@ -124,6 +125,17 @@ final class AudioRuntimeController {
         reconcile()
     }
 
+    /// Performs the same safe tap setup used for processing, but permits a
+    /// short native-passthrough probe before an HRIR preset has been selected.
+    func requestSystemAudioAccess() {
+        permissionProbeRequested = true
+        retryNow()
+    }
+
+    func openSystemAudioRecordingSettings() {
+        platform.openAudioCapturePermissionSettings()
+    }
+
     func willSleep() {
         sleeping = true
         guard stopForInvalidation() else { return }
@@ -155,7 +167,7 @@ final class AudioRuntimeController {
 
     private func reconcile() {
         guard launched, !sleeping, !terminated else { return }
-        guard presetReady else {
+        guard presetReady || permissionProbeRequested else {
             state.publish(.needsSetup)
             return
         }
@@ -180,6 +192,18 @@ final class AudioRuntimeController {
             try candidate.start(on: output)
             guard currentGeneration == generation, !sleeping, !terminated else {
                 do { try candidate.stop() } catch {
+                    pipeline = candidate
+                    scheduleCleanupRetry(error)
+                }
+                return
+            }
+            let completedPermissionProbe = permissionProbeRequested
+            permissionProbeRequested = false
+            if completedPermissionProbe && !presetReady {
+                do {
+                    try candidate.stop()
+                    state.publish(.needsSetup, output: output)
+                } catch {
                     pipeline = candidate
                     scheduleCleanupRetry(error)
                 }
@@ -230,7 +254,9 @@ final class AudioRuntimeController {
     }
 
     private func scheduleRetry(reason: String, output: OutputDeviceDescriptor?) {
-        guard retryToken == nil, presetReady, permissionGranted, !sleeping, !terminated else { return }
+        guard retryToken == nil,
+              presetReady || permissionProbeRequested,
+              permissionGranted, !sleeping, !terminated else { return }
         let delay = retryDelays[min(retryAttempt, retryDelays.count - 1)]
         retryAttempt += 1
         let scheduledGeneration = generation
@@ -296,3 +322,5 @@ final class AudioRuntimeController {
         }
     }
 }
+
+extension AudioRuntimeController: AudioRuntimeUserActions {}

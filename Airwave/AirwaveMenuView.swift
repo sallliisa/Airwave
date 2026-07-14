@@ -2,10 +2,18 @@ import SwiftUI
 
 struct MenuBarLabel: View {
     @ObservedObject private var runtime = AudioRuntimeState.shared
+    @ObservedObject private var onboarding = OnboardingViewModel.shared
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Image(systemName: runtime.status.isProcessing ? "waveform.circle.fill" : "waveform.circle")
-            .accessibilityLabel("Airwave: \(runtime.status.title)")
+        let presentation = RuntimeMenuPresentation.make(from: runtime.status)
+        Image(systemName: presentation.iconName)
+            .accessibilityLabel("Airwave: \(presentation.healthTitle)")
+            .task {
+                if onboarding.shouldPresentAutomatically {
+                    openWindow(id: "onboarding")
+                }
+            }
     }
 }
 
@@ -16,50 +24,51 @@ struct AirwaveMenuView: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(runtime.status.title)
-                    .font(.headline)
-                Text(runtime.status.detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+        let presentation = RuntimeMenuPresentation.make(from: runtime.status)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: presentation.iconName)
+                    .foregroundStyle(runtime.status.isProcessing ? .green : .secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(presentation.healthTitle).font(.headline)
+                    Text(presentation.healthDetail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            if presentation.canRetry {
+                Button("Retry") { viewModel.retryAudio() }
             }
 
             Divider()
 
-            if hrirManager.presets.isEmpty {
-                Text("No HRIR presets found")
-                    .foregroundStyle(.secondary)
-            } else {
-                Picker("HRIR preset", selection: Binding(
-                    get: { hrirManager.activePreset?.id },
-                    set: { id in
-                        guard let preset = hrirManager.presets.first(where: { $0.id == id }) else { return }
-                        viewModel.selectPreset(preset)
-                    }
-                )) {
-                    Text("None").tag(UUID?.none)
-                    ForEach(hrirManager.presets) { preset in
-                        Text(preset.name).tag(Optional(preset.id))
-                    }
+            Picker("HRIR preset", selection: Binding(
+                get: { hrirManager.activePreset?.id },
+                set: { id in
+                    guard let preset = hrirManager.presets.first(where: { $0.id == id }) else { return }
+                    viewModel.selectPreset(preset)
+                }
+            )) {
+                Text("None").tag(UUID?.none)
+                ForEach(hrirManager.presets) { preset in
+                    Text(preset.name).tag(Optional(preset.id))
                 }
             }
 
-            Button("Manage HRIR Presets") {
-                viewModel.openPresetsDirectory()
-            }
+            LabeledContent("Current output", value: runtime.currentOutput?.name ?? "Not available")
+                .font(.caption)
 
             Divider()
 
             HStack {
                 Button("Settings") { openWindow(id: "settings") }
                 Spacer()
-                Button("About") { viewModel.showAbout() }
                 Button("Quit") { viewModel.quitApp() }
             }
         }
         .padding(16)
-        .frame(width: 340)
+        .frame(width: 350)
     }
 }
