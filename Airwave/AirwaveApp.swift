@@ -39,7 +39,7 @@ struct AirwaveApp: App {
             SettingsView()
         }
         .windowResizability(.contentSize)
-        .defaultSize(width: 500, height: 815)
+        .defaultSize(width: 820, height: 650)
 
         Window("Set up Airwave", id: "onboarding") {
             OnboardingView(viewModel: onboardingViewModel)

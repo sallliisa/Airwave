@@ -52,30 +52,40 @@ struct SettingsView: View {
     private static let nonePresetID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
     
     var body: some View {
-        ScrollView {
-            VStack(spacing: 20) {
-                // Status Card (at the very top)
-                overallStatusCard
-                
-                // General Settings
-                generalSection
+        ZStack {
+            AirwavePalette.canvas
+                .ignoresSafeArea()
 
-                // Application Settings
-                applicationSection
-                
-                // Diagnostics
-                checklistSection
-                
-                #if DEBUG
-                // Debug Info
-                debugSection
-                #endif
+            ScrollView {
+                VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
+                    pageHeader
+                    overallStatusCard
+                    generalSection
+                    applicationSection
+                    checklistSection
+
+                    #if DEBUG
+                    debugSection
+                    #endif
+                }
+                .padding(.horizontal, 30)
+                .padding(.top, 94)
+                .padding(.bottom, 64)
+                .frame(maxWidth: 680, alignment: .leading)
+                .frame(maxWidth: .infinity)
             }
-            .padding(20)
+
+            scrollEdgeFades
+
+            VStack(spacing: 0) {
+                topChrome
+                Spacer(minLength: 0)
+            }
         }
-        .frame(minWidth: 500, idealWidth: 500, maxWidth: 500)
-        .frame(minHeight: 400, idealHeight: 560)
+        .frame(minWidth: 760, idealWidth: 820, minHeight: 540, idealHeight: 650)
         .background(SettingsWindowAccessor())
+        .preferredColorScheme(.dark)
+        .tint(AirwavePalette.accent)
         .onAppear {
             guard !RuntimeEnvironment.useSelectionCoordinator else { return }
             // Start monitoring if there's already an aggregate device selected
@@ -129,6 +139,72 @@ struct SettingsView: View {
     }
     
     // MARK: - Subviews
+
+    private var topChrome: some View {
+        HStack(spacing: 12) {
+            Image("AirwaveIcon")
+                .renderingMode(.template)
+                .resizable()
+                .scaledToFit()
+                .foregroundStyle(.primary)
+                .frame(width: 24, height: 24)
+                .accessibilityLabel("Airwave")
+
+            Text("Settings")
+                .font(.headline)
+
+            Spacer()
+
+            AirwaveIconButton(
+                systemImage: "arrow.clockwise",
+                accessibilityLabel: "Refresh settings",
+                help: diagnosticsManager.isRefreshing ? "Refreshing…" : "Refresh",
+                isProminent: true,
+                isEnabled: !diagnosticsManager.isRefreshing,
+                action: refreshAll
+            )
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 14)
+        .padding(.bottom, 24)
+    }
+
+    private var scrollEdgeFades: some View {
+        VStack(spacing: 0) {
+            LinearGradient(
+                stops: [
+                    .init(color: AirwavePalette.canvas, location: 0),
+                    .init(color: AirwavePalette.canvas, location: 0.3),
+                    .init(color: AirwavePalette.canvas.opacity(0.55), location: 0.58),
+                    .init(color: .clear, location: 1)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 112)
+
+            Spacer(minLength: 0)
+
+            LinearGradient(
+                colors: [.clear, AirwavePalette.canvas.opacity(0.94), AirwavePalette.canvas],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 58)
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+    }
+
+    private var pageHeader: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("Airwave Settings")
+                .font(.largeTitle.weight(.semibold))
+            Text("Manage your audio route, spatial profile, and application preferences.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+    }
     
     private var overallStatusCard: some View {
         let diagnostics = diagnosticsManager.diagnostics
@@ -148,33 +224,26 @@ struct SettingsView: View {
             hasOutputDevice: hasOutputDevice
         )
         
-        return HStack(spacing: 10) {
+        return HStack(alignment: .top, spacing: 10) {
             Image(systemName: statusIcon)
                 .font(.system(size: 18))
                 .foregroundStyle(statusColor)
                 .frame(width: 24)
             
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(statusTitle)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(statusColor)
                 
                 Text(statusMessage)
-                    .font(.system(size: 11))
+                    .font(.callout)
                     .foregroundStyle(.secondary)
             }
             
             Spacer()
         }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(statusColor.opacity(0.1))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .strokeBorder(statusColor.opacity(0.3), lineWidth: 0.5)
-        )
+        .padding(13)
+        .background(statusColor.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
     }
     
     private func getStatusInfo(
@@ -213,35 +282,8 @@ struct SettingsView: View {
     }
     
     private var generalSection: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("General")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-
-                Spacer()
-
-                Button(action: {
-                    refreshAll()
-                }) {
-                    HStack(spacing: 4) {
-                        if diagnosticsManager.isRefreshing {
-                            ProgressView()
-                                .scaleEffect(0.6)
-                                .frame(width: 12, height: 12)
-                        } else {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 11))
-                        }
-                        Text("Refresh")
-                            .font(.system(size: 11))
-                    }
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(diagnosticsManager.isRefreshing)
-            }
-            .padding(.bottom, 8)
+        VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
+            sectionHeader("Audio Route", subtitle: "Choose where Airwave receives and sends audio.")
             
             VStack(spacing: 0) {
                 // Aggregate Device Selector
@@ -489,20 +531,15 @@ struct SettingsView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
             }
-            .background(.ultraThinMaterial)
-            .cornerRadius(6)
-            
+            .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: 8))
+
             getMoreHRIRSection
-                .padding(.top, 8)
         }
     }
 
     private var applicationSection: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("Application")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .padding(.bottom, 8)
+        VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
+            sectionHeader("Application", subtitle: "Control startup behavior and software updates.")
             VStack(spacing: 0) {
                 // Run on Startup
                 HStack(spacing: 10) {
@@ -558,7 +595,7 @@ struct SettingsView: View {
                                 updateManager.checkForUpdates()
                             }
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.borderedProminent)
                         .controlSize(.small)
                         .disabled(!updateManager.canCheckForUpdates)
                     }
@@ -566,8 +603,7 @@ struct SettingsView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
             }
-            .background(.ultraThinMaterial)
-            .cornerRadius(6)
+            .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: 8))
         }
     }
 
@@ -616,73 +652,83 @@ struct SettingsView: View {
     }
     
     private var checklistSection: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Diagnostics")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
+            sectionHeader("Diagnostics", subtitle: "Check the system requirements Airwave depends on.")
 
-                Spacer()
+            VStack(spacing: AirwaveLayout.cardSpacing) {
+                helpSection
+                setupAirwaveSection
 
-                Button("Set up Airwave…") {
-                    onboardingViewModel.resume()
-                    openWindow(id: "onboarding")
-                    OnboardingWindowPresenter.presentExistingWindow()
+                VStack(spacing: 0) {
+                    ChecklistRow(
+                        title: "Virtual Audio Driver",
+                        subtitle: diagnosticsManager.diagnostics.virtualDriverInstalled
+                            ? diagnosticsManager.diagnostics.detectedVirtualDrivers.joined(separator: ", ")
+                            : "BlackHole, Loopback, or Soundflower",
+                        status: diagnosticsManager.diagnostics.virtualDriverInstalled ? .complete : .missing,
+                        actionTitle: diagnosticsManager.diagnostics.virtualDriverInstalled ? nil : "Install BlackHole",
+                        action: {
+                            SystemSetupActions.shared.openBlackHoleDownload()
+                        },
+                        secondaryActionLink: ConfigurationManager.ExternalLinks.setupGuide,
+                        secondaryActionLinkTitle: "Setup Guide"
+                    )
+
+                    Divider().padding(.leading, 30)
+
+                    ChecklistRow(
+                        title: "Aggregate Device",
+                        subtitle: aggregateSubtitle,
+                        status: aggregateStatus,
+                        secondaryActionTitle: "Configure...",
+                        secondaryAction: {
+                            SystemSetupActions.shared.openAudioMIDISetup()
+                        }
+                    )
+
+                    Divider().padding(.leading, 30)
+
+                    ChecklistRow(
+                        title: "Microphone Permission",
+                        subtitle: micPermissionSubtitle,
+                        status: micPermissionStatus,
+                        secondaryActionTitle: "Configure...",
+                        secondaryAction: {
+                            SystemSetupActions.shared.openMicrophoneSettings()
+                        }
+                    )
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: 8))
             }
-            .padding(.bottom, 8)
-
-            // Help Section
-            helpSection
-                .padding(.bottom, 8)
-            
-            VStack(spacing: 0) {
-                // Virtual Audio Driver
-                ChecklistRow(
-                    title: "Virtual Audio Driver",
-                    subtitle: diagnosticsManager.diagnostics.virtualDriverInstalled
-                        ? diagnosticsManager.diagnostics.detectedVirtualDrivers.joined(separator: ", ")
-                        : "BlackHole, Loopback, or Soundflower",
-                    status: diagnosticsManager.diagnostics.virtualDriverInstalled ? .complete : .missing,
-                    actionTitle: diagnosticsManager.diagnostics.virtualDriverInstalled ? nil : "Install BlackHole",
-                    action: {
-                        SystemSetupActions.shared.openBlackHoleDownload()
-                    },
-                    secondaryActionLink: ConfigurationManager.ExternalLinks.setupGuide,
-                    secondaryActionLinkTitle: "Setup Guide"
-                )
-                
-                Divider().padding(.leading, 30)
-                
-                // Aggregate Device
-                ChecklistRow(
-                    title: "Aggregate Device",
-                    subtitle: aggregateSubtitle,
-                    status: aggregateStatus,
-                    secondaryActionTitle: "Configure...",
-                    secondaryAction: {
-                        SystemSetupActions.shared.openAudioMIDISetup()
-                    }
-                )
-                
-                Divider().padding(.leading, 30)
-                
-                // Microphone Permission
-                ChecklistRow(
-                    title: "Microphone Permission",
-                    subtitle: micPermissionSubtitle,
-                    status: micPermissionStatus,
-                    secondaryActionTitle: "Configure...",
-                    secondaryAction: {
-                        SystemSetupActions.shared.openMicrophoneSettings()
-                    }
-                )
-            }
-            .background(.ultraThinMaterial)
-            .cornerRadius(6)
         }
+    }
+
+    private var setupAirwaveSection: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "checklist")
+                .foregroundStyle(AirwavePalette.accent)
+                .frame(width: 24)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Set Up Airwave Again")
+                    .fontWeight(.semibold)
+                Text("Reopen the guided setup to review your devices, permissions, and audio route.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 12)
+
+            Button("Open Setup") {
+                onboardingViewModel.resume()
+                openWindow(id: "onboarding")
+                OnboardingWindowPresenter.presentExistingWindow()
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+        }
+        .padding(14)
+        .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var getMoreHRIRSection: some View {
@@ -713,8 +759,7 @@ struct SettingsView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.ultraThinMaterial)
-        .cornerRadius(6)
+        .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: 8))
     }
     
     private var helpSection: some View {
@@ -729,17 +774,13 @@ struct SettingsView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.ultraThinMaterial)
-        .cornerRadius(6)
+        .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: 8))
     }
     
     #if DEBUG
     private var debugSection: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("Debug Info")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .padding(.bottom, 8)
+        VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
+            sectionHeader("Debug Info", subtitle: "Inspect the active channel mappings.")
             
             VStack(spacing: 0) {
                 // Input Device
@@ -806,11 +847,20 @@ struct SettingsView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
             }
-            .background(.ultraThinMaterial)
-            .cornerRadius(6)
+            .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: 8))
         }
     }
     #endif
+
+    private func sectionHeader(_ title: String, subtitle: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.title3.weight(.semibold))
+            Text(subtitle)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+    }
     
     // MARK: - Computed Properties
     
@@ -1192,7 +1242,7 @@ struct ChecklistRow: View {
                 Button(secondaryActionTitle) {
                     secondaryAction()
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.borderedProminent)
                 .controlSize(.small)
                 .font(.system(size: 11))
             }
@@ -1202,7 +1252,7 @@ struct ChecklistRow: View {
                 Button(actionTitle) {
                     action()
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.borderedProminent)
                 .controlSize(.small)
                 .font(.system(size: 11))
             }
@@ -1243,10 +1293,7 @@ struct AggregateDeviceRow: View {
             Spacer()
         }
         .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(.ultraThinMaterial)
-        )
+        .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
                 .strokeBorder(Color.primary.opacity(0.1), lineWidth: 1)
