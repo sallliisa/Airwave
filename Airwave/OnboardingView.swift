@@ -23,11 +23,16 @@ private final class OnboardingWindowObservingView: NSView {
     }
 }
 
-private enum OnboardingPalette {
+enum AirwavePalette {
     static let canvas = Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255)
     static let raised = Color(red: 29 / 255, green: 29 / 255, blue: 29 / 255)
-    static let accent = Color(red: 77 / 255, green: 116 / 255, blue: 158 / 255)
+    static let accent = Color(red: 206 / 255, green: 108 / 255, blue: 75 / 255)
     static let hover = Color.white.opacity(0.08)
+}
+
+enum AirwaveLayout {
+    static let sectionSpacing: CGFloat = 18
+    static let cardSpacing: CGFloat = 12
 }
 
 struct OnboardingView: View {
@@ -44,7 +49,7 @@ struct OnboardingView: View {
 
     var body: some View {
         ZStack {
-            OnboardingPalette.canvas
+            AirwavePalette.canvas
                 .ignoresSafeArea()
 
             content
@@ -63,7 +68,7 @@ struct OnboardingView: View {
         .frame(minWidth: 760, idealWidth: 820, minHeight: 540, idealHeight: 590)
         .background(OnboardingWindowAccessor())
         .preferredColorScheme(.dark)
-        .tint(OnboardingPalette.accent)
+        .tint(AirwavePalette.accent)
         .onAppear {
             viewModel.beginLaunch()
         }
@@ -101,9 +106,9 @@ struct OnboardingView: View {
         VStack(spacing: 0) {
             LinearGradient(
                 stops: [
-                    .init(color: OnboardingPalette.canvas, location: 0),
-                    .init(color: OnboardingPalette.canvas, location: 0.3),
-                    .init(color: OnboardingPalette.canvas.opacity(0.55), location: 0.58),
+                    .init(color: AirwavePalette.canvas, location: 0),
+                    .init(color: AirwavePalette.canvas, location: 0.3),
+                    .init(color: AirwavePalette.canvas.opacity(0.55), location: 0.58),
                     .init(color: .clear, location: 1)
                 ],
                 startPoint: .top,
@@ -114,7 +119,7 @@ struct OnboardingView: View {
             Spacer(minLength: 0)
 
             LinearGradient(
-                colors: [.clear, OnboardingPalette.canvas.opacity(0.94), OnboardingPalette.canvas],
+                colors: [.clear, AirwavePalette.canvas.opacity(0.94), AirwavePalette.canvas],
                 startPoint: .top,
                 endPoint: .bottom
             )
@@ -126,7 +131,7 @@ struct OnboardingView: View {
 
     private var content: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
                 stepHeader
                 stepBody
             }
@@ -229,12 +234,12 @@ struct OnboardingView: View {
     }
 
     private var introduction: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
             Text("Set up Airwave for spatial audio.")
                 .font(.title3)
             Text("Airwave processes sound from your Mac and sends it to your headphones or speakers. Setup usually takes a few minutes.")
                 .foregroundStyle(.secondary)
-            VStack(spacing: 8) {
+            VStack(spacing: AirwaveLayout.cardSpacing) {
                 infoCard("Before you begin", systemImage: "checklist", text: "You’ll need a virtual audio driver and the headphones or speakers you want to use. Airwave does not install drivers or create devices.")
                 infoCard("Pause setup", systemImage: "pause.circle", text: "Finish Later saves your progress. If a driver requires a restart, quit Airwave first, restart your Mac, then resume from the menu bar.")
             }
@@ -242,7 +247,7 @@ struct OnboardingView: View {
     }
 
     private var driver: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
             Text("Airwave needs a virtual audio device to receive sound from your Mac. BlackHole 2ch is recommended and tested; other supported drivers may also work.")
             statusCard(status: viewModel.snapshot.driverStatus, detail: driverDetail)
             if !viewModel.snapshot.detectedDrivers.isEmpty {
@@ -263,7 +268,7 @@ struct OnboardingView: View {
     }
 
     private var aggregate: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
             Text("Combine the virtual driver with your headphones or speakers in macOS Audio MIDI Setup. Follow these steps:")
             statusCard(status: viewModel.snapshot.aggregateStatus, detail: aggregateDetail)
             instructionCard(
@@ -282,7 +287,7 @@ struct OnboardingView: View {
     }
 
     private var microphone: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
             Text("Airwave uses macOS’s audio capture path to receive sound from the aggregate device. Microphone permission is required and is requested when you select the button below.")
             statusCard(status: viewModel.snapshot.permissionStatus, detail: permissionDetail)
             if case .blocked = viewModel.snapshot.permissionStatus {
@@ -304,7 +309,7 @@ struct OnboardingView: View {
     }
 
     private var hrir: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
             Text("Choose an HRIR preset for the spatial audio effect. Airwave supports WAV presets from the HeSuVi HRTF Database and stores them in its presets folder.")
             statusCard(status: viewModel.snapshot.hrirStatus, detail: viewModel.presets.isEmpty ? "We haven’t found any usable HRIR presets yet." : "We found \(viewModel.presets.count) usable preset\(viewModel.presets.count == 1 ? "" : "s").")
             HStack {
@@ -325,7 +330,7 @@ struct OnboardingView: View {
     }
 
     private var route: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
             Text("Choose the devices and HRIR preset Airwave should use. These options match Settings and include only currently available devices.")
             statusCard(status: viewModel.snapshot.routeStatus, detail: routeDetail)
             VStack(spacing: 0) {
@@ -369,12 +374,12 @@ struct OnboardingView: View {
                     if let preset = viewModel.presets.first(where: { $0.id.uuidString == value }) { viewModel.selectPreset(preset) }
                 }
             }
-            .background(OnboardingPalette.raised, in: RoundedRectangle(cornerRadius: 8))
+            .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: 8))
         }
     }
 
     private var completion: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: AirwaveLayout.cardSpacing) {
             finalChecksOverview
 
             VStack(spacing: 0) {
@@ -385,7 +390,7 @@ struct OnboardingView: View {
                     }
                 }
             }
-            .background(OnboardingPalette.raised, in: RoundedRectangle(cornerRadius: 8))
+            .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: 8))
 
             VStack(alignment: .leading, spacing: 7) {
                 Text("Current audio route")
@@ -396,7 +401,7 @@ struct OnboardingView: View {
                 summaryRow("HRIR", value: viewModel.snapshot.route.presetName)
             }
             .padding(14)
-            .background(OnboardingPalette.raised, in: RoundedRectangle(cornerRadius: 8))
+            .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: 8))
 
             Text("You can change these choices later in Settings. Select a check above to return to the relevant setup step.")
                 .foregroundStyle(.secondary)
@@ -521,7 +526,7 @@ struct OnboardingView: View {
 
             Spacer()
 
-            OnboardingIconButton(
+            AirwaveIconButton(
                 systemImage: "chevron.left",
                 accessibilityLabel: "Back",
                 help: "Back",
@@ -530,7 +535,7 @@ struct OnboardingView: View {
                 action: navigateBackward
             )
 
-            OnboardingIconButton(
+            AirwaveIconButton(
                 systemImage: isCompletion ? "play.fill" : "arrow.right",
                 accessibilityLabel: primaryLabel,
                 help: primaryLabel,
@@ -658,13 +663,13 @@ struct OnboardingView: View {
             }
         }
         .padding(14)
-        .background(OnboardingPalette.raised, in: RoundedRectangle(cornerRadius: 8))
+        .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func infoCard(_ title: String, systemImage: String, text: String) -> some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: systemImage)
-                .foregroundStyle(OnboardingPalette.accent)
+                .foregroundStyle(AirwavePalette.accent)
                 .frame(width: 24, alignment: .center)
 
             VStack(alignment: .leading, spacing: 3) {
@@ -674,7 +679,7 @@ struct OnboardingView: View {
             Spacer(minLength: 0)
         }
         .padding(14)
-        .background(OnboardingPalette.raised, in: RoundedRectangle(cornerRadius: 8))
+        .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func summaryRow(_ title: String, value: String?) -> some View {
@@ -792,9 +797,9 @@ private struct OnboardingProgressItem: View {
 
     private var indicatorBackground: Color {
         if isCurrent {
-            return OnboardingPalette.accent.opacity(isHovering ? 0.78 : 0.62)
+            return AirwavePalette.accent.opacity(isHovering ? 0.78 : 0.62)
         }
-        return isHovering ? OnboardingPalette.hover : .clear
+        return isHovering ? AirwavePalette.hover : .clear
     }
 
     private var helpText: String {
@@ -830,7 +835,7 @@ private struct OnboardingProgressButtonStyle: ButtonStyle {
     }
 }
 
-private struct OnboardingIconButton: View {
+struct AirwaveIconButton: View {
     let systemImage: String
     let accessibilityLabel: String
     let help: String
@@ -867,8 +872,8 @@ private struct OnboardingIconButton: View {
 
     private var buttonBackground: Color {
         if isProminent {
-            return isHovering ? OnboardingPalette.accent.opacity(0.82) : OnboardingPalette.accent
+            return isHovering ? AirwavePalette.accent.opacity(0.82) : AirwavePalette.accent
         }
-        return isHovering ? OnboardingPalette.hover : .clear
+        return isHovering ? AirwavePalette.hover : .clear
     }
 }
