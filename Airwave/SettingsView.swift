@@ -218,9 +218,9 @@ struct SettingsView: View {
                 Text("General")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
-                
+
                 Spacer()
-                
+
                 Button(action: {
                     refreshAll()
                 }) {
@@ -240,14 +240,6 @@ struct SettingsView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .disabled(diagnosticsManager.isRefreshing)
-
-                Button(onboardingViewModel.menuTitle) {
-                    onboardingViewModel.resume()
-                    openWindow(id: "onboarding")
-                    OnboardingWindowPresenter.presentExistingWindow()
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
             }
             .padding(.bottom, 8)
             
@@ -625,10 +617,22 @@ struct SettingsView: View {
     
     private var checklistSection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Diagnostics")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .padding(.bottom, 8)
+            HStack {
+                Text("Diagnostics")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Button("Set up Airwave…") {
+                    onboardingViewModel.resume()
+                    openWindow(id: "onboarding")
+                    OnboardingWindowPresenter.presentExistingWindow()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+            .padding(.bottom, 8)
 
             // Help Section
             helpSection

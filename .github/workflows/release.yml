@@ -136,6 +136,8 @@ jobs:
             --embed-release-notes \
             --maximum-deltas 0 \
             build/update
+          shasum -a 256 "build/update/Airwave_v$VERSION.zip" \
+            > "build/update/Airwave_v$VERSION.zip.sha256"
           rm -f "$RUNNER_TEMP/sparkle-private-key"
 
       - name: Publish tag and release
@@ -148,6 +150,7 @@ jobs:
           git push origin "$TAG"
           gh release create "$TAG" \
             "build/update/Airwave_v$VERSION.zip" \
+            "build/update/Airwave_v$VERSION.zip.sha256" \
             build/update/appcast.xml \
             --title "$TAG" \
             --notes-file build/release-notes.md \
