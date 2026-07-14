@@ -13,6 +13,7 @@
 		A00100000000000000000014 /* PresetActivationCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00100000000000000000005 /* PresetActivationCoordinatorTests.swift */; };
 		A00200000000000000000001 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A00200000000000000000003 /* Sparkle */; };
 		A00200000000000000000005 /* UpdateStateModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00200000000000000000004 /* UpdateStateModelTests.swift */; };
+		A00300000000000000000001 /* AudioPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00300000000000000000002 /* AudioPipelineTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -33,6 +34,7 @@
 		A00100000000000000000004 /* AudioRuntimeStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRuntimeStateTests.swift; sourceTree = "<group>"; };
 		A00100000000000000000005 /* PresetActivationCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresetActivationCoordinatorTests.swift; sourceTree = "<group>"; };
 		A00200000000000000000004 /* UpdateStateModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateStateModelTests.swift; sourceTree = "<group>"; };
+		A00300000000000000000002 /* AudioPipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPipelineTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -101,6 +103,7 @@
 				A00100000000000000000004 /* AudioRuntimeStateTests.swift */,
 				A00100000000000000000005 /* PresetActivationCoordinatorTests.swift */,
 				A00200000000000000000004 /* UpdateStateModelTests.swift */,
+				A00300000000000000000002 /* AudioPipelineTests.swift */,
 			);
 			path = AirwaveTests;
 			sourceTree = "<group>";
@@ -225,6 +228,7 @@
 				A00100000000000000000013 /* AudioRuntimeStateTests.swift in Sources */,
 				A00100000000000000000014 /* PresetActivationCoordinatorTests.swift in Sources */,
 				A00200000000000000000005 /* UpdateStateModelTests.swift in Sources */,
+				A00300000000000000000001 /* AudioPipelineTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
