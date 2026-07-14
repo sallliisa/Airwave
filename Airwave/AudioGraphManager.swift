@@ -257,13 +257,23 @@ class AudioGraphManager: ObservableObject {
 
     /// Start already-configured coordinator route. No obsolete public stop.
     func startTransactionalRoute() {
-        guard !isRunning, transactionalRouteIdentity != nil else { return }
+        guard !isRunning else { return }
+        guard let aggregateDevice, selectedOutputDevice != nil else {
+            errorMessage = "Select an aggregate and output device before starting"
+            return
+        }
         guard SystemDiagnosticsManager.shared.diagnostics.isFullyConfigured else {
             errorMessage = "Complete all diagnostics setup steps before starting"
             return
         }
-        switchSystemAudioToInputDevice()
         do {
+            if audioUnit == nil {
+                try setupAudioUnit(
+                    aggregateDevice: aggregateDevice,
+                    outputChannelRange: selectedOutputChannelRange
+                )
+            }
+            switchSystemAudioToInputDevice()
             try startConfiguredAudioUnit()
         } catch {
             errorMessage = "Failed to start audio: \(error.localizedDescription)"
