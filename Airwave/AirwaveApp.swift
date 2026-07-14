@@ -13,6 +13,11 @@ struct AirwaveApp: App {
     
     // Ensure the singleton initializes early and is injected into the view tree.
     @StateObject private var viewModel = MenuBarViewModel.shared
+
+    init() {
+        // Start silent update discovery with app lifecycle, not Settings lifecycle.
+        _ = UpdateManager.shared
+    }
     
     var body: some Scene {
         MenuBarExtra {

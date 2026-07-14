@@ -1,0 +1,158 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable version to publish (X.Y.Z)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: airwave-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Validate version
+        id: version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          latest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname | head -1)
+          scripts/validate-release-version.sh "$VERSION" "$latest" >> "$GITHUB_OUTPUT"
+          echo "COMMIT_SHA=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if git rev-parse --verify --quiet "refs/tags/v$VERSION"; then
+            echo "Tag v$VERSION already exists" >&2
+            exit 1
+          fi
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "Release v$VERSION already exists" >&2
+            exit 1
+          fi
+
+      - name: Test release validation
+        run: scripts/test-release-version.sh
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Resolve packages
+        run: xcodebuild -resolvePackageDependencies -project Airwave.xcodeproj -scheme Airwave
+
+      - name: Test
+        run: xcodebuild -project Airwave.xcodeproj -scheme Airwave -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO test
+
+      - name: Analyze
+        run: xcodebuild -project Airwave.xcodeproj -scheme Airwave -configuration Release -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO analyze
+
+      - name: Build universal release
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          BUILD_NUMBER: ${{ steps.version.outputs.BUILD_NUMBER }}
+        run: |
+          xcodebuild archive \
+            -project Airwave.xcodeproj \
+            -scheme Airwave \
+            -configuration Release \
+            -archivePath "$PWD/build/Airwave.xcarchive" \
+            -destination 'generic/platform=macOS' \
+            ARCHS='arm64 x86_64' \
+            ONLY_ACTIVE_ARCH=NO \
+            MARKETING_VERSION="$VERSION" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY=- \
+            DEVELOPMENT_TEAM= \
+            archive
+
+      - name: Re-sign Sparkle helpers ad-hoc
+        run: |
+          app="$PWD/build/Airwave.xcarchive/Products/Applications/Airwave.app"
+          framework="$app/Contents/Frameworks/Sparkle.framework/Versions/B"
+          codesign --force --sign - --options runtime "$framework/XPCServices/Installer.xpc"
+          codesign --force --sign - --options runtime --preserve-metadata=entitlements "$framework/XPCServices/Downloader.xpc"
+          codesign --force --sign - --options runtime "$framework/Autoupdate"
+          codesign --force --sign - --options runtime "$framework/Updater.app"
+          codesign --force --sign - --options runtime "$app/Contents/Frameworks/Sparkle.framework"
+          codesign --force --sign - --options runtime --preserve-metadata=identifier,entitlements,requirements,flags "$app"
+
+      - name: Verify release bundle
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          BUILD_NUMBER: ${{ steps.version.outputs.BUILD_NUMBER }}
+        run: |
+          app="$PWD/build/Airwave.xcarchive/Products/Applications/Airwave.app"
+          test "$(defaults read "$app/Contents/Info.plist" CFBundleIdentifier)" = com.southneuhof.Airwave
+          test "$(defaults read "$app/Contents/Info.plist" CFBundleShortVersionString)" = "$VERSION"
+          test "$(defaults read "$app/Contents/Info.plist" CFBundleVersion)" = "$BUILD_NUMBER"
+          test "$(defaults read "$app/Contents/Info.plist" SUPublicEDKey)" = 't7ScyDMhT5qnuQx9OROZBaprpFgmZKXS7hbsm9FVvRY='
+          test "$(defaults read "$app/Contents/Info.plist" SUAutomaticallyUpdate)" = 0
+          lipo "$app/Contents/MacOS/Airwave" -verify_arch arm64 x86_64
+          codesign --verify --strict --verbose=2 "$app"
+          test -f "$app/Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle"
+
+      - name: Generate release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.TAG }}
+        run: |
+          gh api --method POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+            -f tag_name="$TAG" \
+            -f target_commitish="${{ steps.version.outputs.COMMIT_SHA }}" \
+            --jq .body > build/release-notes.md
+
+      - name: Package and sign update
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          TAG: ${{ steps.version.outputs.TAG }}
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          test -n "$SPARKLE_ED_PRIVATE_KEY" || { echo 'SPARKLE_ED_PRIVATE_KEY is not configured' >&2; exit 1; }
+          mkdir -p build/update
+          archive="Airwave_v$VERSION.zip"
+          ditto -c -k --sequesterRsrc --keepParent \
+            build/Airwave.xcarchive/Products/Applications/Airwave.app \
+            "build/update/$archive"
+          cp build/release-notes.md "build/update/Airwave_v$VERSION.md"
+          tools=$(find ~/Library/Developer/Xcode/DerivedData/Airwave-*/SourcePackages/artifacts/sparkle/Sparkle/bin -type d | head -1)
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle-private-key"
+          chmod 600 "$RUNNER_TEMP/sparkle-private-key"
+          "$tools/generate_appcast" \
+            --ed-key-file "$RUNNER_TEMP/sparkle-private-key" \
+            --download-url-prefix "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/" \
+            --embed-release-notes \
+            --maximum-deltas 0 \
+            build/update
+          rm -f "$RUNNER_TEMP/sparkle-private-key"
+
+      - name: Publish tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.TAG }}
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          git tag "$TAG" "${{ steps.version.outputs.COMMIT_SHA }}"
+          git push origin "$TAG"
+          gh release create "$TAG" \
+            "build/update/Airwave_v$VERSION.zip" \
+            build/update/appcast.xml \
+            --title "$TAG" \
+            --notes-file build/release-notes.md \
+            --verify-tag
+
+      - name: Remove signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/sparkle-private-key"
