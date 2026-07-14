@@ -420,6 +420,7 @@ struct AirwaveMenuView: View {
                 ) {
                     viewModel.closeMenuBarPopover()
                     openWindow(id: "settings")
+                    SettingsWindowPresenter.presentExistingWindow()
                 }
             }
             .padding(.vertical, 4)
