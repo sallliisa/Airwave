@@ -32,6 +32,14 @@ class MenuBarViewModel: ObservableObject {
     private var isRestoringState = false
     private var saveDebounceTimer: Timer?
 
+    private let usesCoordinator = RuntimeEnvironment.useSelectionCoordinator
+    private(set) var selectionCoordinator: DeviceSelectionCoordinator?
+    private var coordinatorRouteSink: AudioGraphRouteSink?
+    private var coordinatorPreferenceSink: SettingsRoutePreferenceSink?
+    private var coordinatorGeneration = 0
+    private var coordinatorSettings: AppSettings?
+    private var coordinatorMonitoredAggregateID: AudioDeviceID?
+
     @Published var selectionAlert: SelectionAlert?
     
     // Track the last user-selected output by UID (persistent across reconnections)
@@ -50,10 +58,14 @@ class MenuBarViewModel: ObservableObject {
         
         guard startServices else { return }
 
-        setupObservers()
-        
-        // Wait for devices to populate before loading settings
-        waitForDevicesAndInitialize()
+        if usesCoordinator {
+            setupCoordinatorServices()
+        } else {
+            setupObservers()
+
+            // Wait for devices to populate before loading settings
+            waitForDevicesAndInitialize()
+        }
         
         // Trigger microphone permission prompt on startup if needed
         PermissionManager.shared.requestMicrophonePermissionIfNeeded()
@@ -61,6 +73,91 @@ class MenuBarViewModel: ObservableObject {
 
     static func testingInstance() -> MenuBarViewModel {
         MenuBarViewModel(startServices: false)
+    }
+
+    private func setupCoordinatorServices() {
+        let routeSink = AudioGraphRouteSink(audioManager: audioManager)
+        let preferenceSink = SettingsRoutePreferenceSink(settings: settingsManager)
+        coordinatorRouteSink = routeSink
+        coordinatorPreferenceSink = preferenceSink
+        let coordinator = DeviceSelectionCoordinator(
+            routeSink: routeSink,
+            preferenceSink: preferenceSink
+        )
+        selectionCoordinator = coordinator
+        coordinator.start()
+
+        let settings = settingsManager.loadSettings()
+        coordinatorSettings = settings
+        coordinator.restorePreferences(DeviceSelectionPreferences(
+            aggregateUID: settings.aggregateDeviceUID,
+            inputUID: settings.selectedInputDeviceUID,
+            outputUID: settings.selectedOutputDeviceUID
+        ))
+
+        deviceManager.$aggregateDevices
+            .debounce(for: .milliseconds(100), scheduler: RunLoop.main)
+            .sink { [weak self] _ in self?.publishCoordinatorSnapshot() }
+            .store(in: &cancellables)
+        deviceManager.$outputDevices
+            .debounce(for: .milliseconds(100), scheduler: RunLoop.main)
+            .sink { [weak self] _ in self?.publishCoordinatorSnapshot() }
+            .store(in: &cancellables)
+        deviceManager.$aggregateSubDeviceChangeCount
+            .sink { [weak self] _ in self?.publishCoordinatorSnapshot() }
+            .store(in: &cancellables)
+
+        publishCoordinatorSnapshot()
+    }
+
+    private func publishCoordinatorSnapshot() {
+        guard usesCoordinator, let coordinator = selectionCoordinator else { return }
+        let aggregate = coordinator.state.preferences.aggregateUID
+            .flatMap { uid in deviceManager.aggregateDevices.first { $0.uid == uid } }
+            ?? deviceManager.aggregateDevices.first
+
+        var subdevices: [AggregateDeviceInspector.SubDeviceInfo] = []
+        if let aggregate {
+            if coordinatorMonitoredAggregateID != aggregate.id {
+                deviceManager.startMonitoringAggregateDevice(aggregate)
+                coordinatorMonitoredAggregateID = aggregate.id
+            }
+            do {
+                subdevices = try inspector.getSubDevices(aggregate: aggregate)
+            } catch {
+                Logger.log("[Selection] Failed to inspect aggregate: \(error)")
+            }
+        } else if coordinatorMonitoredAggregateID != nil {
+            deviceManager.stopMonitoringAggregateDevice()
+            coordinatorMonitoredAggregateID = nil
+        }
+
+        audioManager.availableInputs = subdevices.filter { $0.inputChannelRange != nil }
+        audioManager.availableOutputs = DeviceOutputEligibility.filter(subdevices)
+        coordinatorGeneration += 1
+        coordinator.receive(snapshot: DeviceSelectionSnapshot(
+            generation: coordinatorGeneration,
+            aggregate: aggregate,
+            subdevices: subdevices
+        ))
+
+        if !isInitialized, coordinator.state.effective?.output != nil {
+            isInitialized = true
+            isRestoringState = true
+            if let settings = coordinatorSettings,
+               let presetID = settings.activePresetID,
+               let preset = hrirManager.presets.first(where: { $0.id == presetID }) {
+                hrirManager.activatePreset(
+                    preset,
+                    targetSampleRate: settings.targetSampleRate,
+                    inputLayout: InputLayout.detect(channelCount: 2)
+                )
+            }
+            isRestoringState = false
+            if let settings = coordinatorSettings, settings.autoStart {
+                checkAutoStart(with: settings)
+            }
+        }
     }
     
     private func setupObservers() {
@@ -160,6 +257,11 @@ class MenuBarViewModel: ObservableObject {
     // MARK: - Device Selection Actions
     
     func selectAggregateDevice(_ device: AudioDevice) {
+        if usesCoordinator {
+            selectionCoordinator?.selectAggregate(uid: device.uid)
+            publishCoordinatorSnapshot()
+            return
+        }
         // Log device health
         let health = inspector.getDeviceHealth(aggregate: device)
         Logger.log("[MenuBarViewModel] Aggregate '\(device.name)': \(health.connected) connected, \(health.missing) missing")
@@ -213,6 +315,10 @@ class MenuBarViewModel: ObservableObject {
     }
     
     func selectOutputDevice(_ output: AggregateDeviceInspector.SubDeviceInfo) {
+        if usesCoordinator {
+            selectionCoordinator?.selectOutput(uid: output.uid)
+            return
+        }
         audioManager.selectedOutputDevice = output
         lastUserSelectedOutputUID = output.uid  // Track user's choice
         
@@ -233,9 +339,20 @@ class MenuBarViewModel: ObservableObject {
     
     func toggleAudioEngine() {
         if audioManager.isRunning {
-            audioManager.stop()
+            if usesCoordinator {
+                audioManager.stopTransactionalRoute()
+            } else {
+                audioManager.stop()
+            }
         } else {
-            audioManager.start()
+            if usesCoordinator {
+                audioManager.startTransactionalRoute()
+            } else {
+                audioManager.start()
+            }
+        }
+        if usesCoordinator {
+            settingsManager.updateAutoStart(audioManager.isRunning)
         }
     }
     
@@ -436,7 +553,11 @@ class MenuBarViewModel: ObservableObject {
     private func checkAutoStart(with settings: AppSettings) {
         if settings.autoStart && audioManager.aggregateDevice != nil && audioManager.selectedOutputDevice != nil {
             Logger.log("[MenuBarViewModel] Auto-starting audio engine...")
-            audioManager.start()
+            if usesCoordinator {
+                audioManager.startTransactionalRoute()
+            } else {
+                audioManager.start()
+            }
         }
     }
     

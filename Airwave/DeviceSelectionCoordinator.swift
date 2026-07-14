@@ -83,6 +83,40 @@ protocol DeviceSelectionPreferenceSink: AnyObject {
     func persist(preferences: DeviceSelectionPreferences)
 }
 
+@MainActor
+final class AudioGraphRouteSink: DeviceSelectionRouteSink {
+    private let audioManager: AudioGraphManager
+
+    init(audioManager: AudioGraphManager = .shared) {
+        self.audioManager = audioManager
+    }
+
+    func apply(route: AudioRoute) {
+        audioManager.applyTransactionalRoute(route)
+    }
+
+    func clear() {
+        audioManager.clearTransactionalRoute()
+    }
+}
+
+@MainActor
+final class SettingsRoutePreferenceSink: DeviceSelectionPreferenceSink {
+    private let settings: SettingsManager
+
+    init(settings: SettingsManager = SettingsManager.shared) {
+        self.settings = settings
+    }
+
+    func persist(preferences: DeviceSelectionPreferences) {
+        settings.updateSelectionPreferences(
+            aggregateUID: preferences.aggregateUID,
+            inputUID: preferences.inputUID,
+            outputUID: preferences.outputUID
+        )
+    }
+}
+
 /// Policy/effect coordinator. Production wiring is intentionally deferred until
 /// route-effect and hardware gates pass; tests can submit immutable snapshots.
 @MainActor
