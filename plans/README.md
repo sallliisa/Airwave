@@ -33,7 +33,7 @@ Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED — <reason>`, `REJECTED 
 | 007 | Restore and verify pre-004 routing baseline | P0 | — | DONE |
 | 008 | Isolate routing effects and characterize virtual-output rules | P1 | 007 | DONE |
 | 009 | Build coordinator off production path | P1 | 008 | DONE |
-| 010 | Cut over to transactional routing behind a safety gate | P0 | 009 | IN PROGRESS — coordinator default; hardware soak ongoing |
+| 010 | Cut over to transactional routing behind a safety gate | P0 | 009 | DONE |
 - Recommended continuation order: 004 → 005 → 006. Do not parallelize them.
 
 ## Audit coverage represented

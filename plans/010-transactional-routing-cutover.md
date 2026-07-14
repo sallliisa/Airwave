@@ -1,6 +1,6 @@
 # Plan 010: Cut over to transactional routing
 
-Status: IN PROGRESS — coordinator default; hardware soak ongoing
+Status: DONE — automated and operator hardware gates passed 2026-07-14
 
 `AudioRouteTransitionPlanner` specifies no-op, internal-stop/apply/restart, and
 stop/restore/clear effect ordering. Coordinator wiring is now production default.
@@ -28,5 +28,9 @@ Required manual gates:
 4. Rapid unplug/replug and aggregate changes produce no stale route or loop.
 5. Stop/quit restores physical output exactly once.
 
-Keep legacy path as one-release escape hatch during soak. Do not remove it until
-hardware matrix and rapid-reconnect gates pass.
+Keep legacy path as one-release escape hatch. Remove only after one release
+without routing regressions.
+
+Operator validation complete: fallback, preferred-device reconnect, rapid
+unplug/replug, stop/quit restore, Settings isolation, auto-start stability, and
+startup restoration all passed.
