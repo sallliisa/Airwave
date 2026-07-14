@@ -318,7 +318,7 @@ struct AirwaveMenuView: View {
             VStack(spacing: 2) {
                 // Output Device Section
                 if audioManager.aggregateDevice != nil {
-                    if audioManager.availableOutputs.isEmpty {
+                    if DeviceOutputEligibility.filter(audioManager.availableOutputs).isEmpty {
                         // Disabled state when no outputs available
                         HStack(spacing: 6) {
                             Image(systemName: "chevron.right")
@@ -347,7 +347,7 @@ struct AirwaveMenuView: View {
                             }
                         ) {
                             VStack(spacing: 0) {
-                                ForEach(audioManager.availableOutputs, id: \.uid) { output in
+                                ForEach(DeviceOutputEligibility.filter(audioManager.availableOutputs), id: \.uid) { output in
                                     DeviceRow(
                                         name: output.name,
                                         isSelected: output.device.id == audioManager.selectedOutputDevice?.device.id
