@@ -445,9 +445,9 @@ struct AirwaveMenuView: View {
             
             // About & Quit
             VStack(spacing: 2) {
-                ActionRow("About Airwave") {
-                    viewModel.showAbout()
-                }
+//                ActionRow("About Airwave") {
+//                    viewModel.showAbout()
+//                }
                 
                 ActionRow("Quit Airwave", shortcut: "⌘Q") {
                     viewModel.quitApp()
