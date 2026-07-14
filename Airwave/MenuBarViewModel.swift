@@ -41,13 +41,15 @@ class MenuBarViewModel: ObservableObject {
     private var aggregateListenerAdded = false
     private var currentMonitoredAggregate: AudioDevice?
     
-    private init() {
+    private init(startServices: Bool = true) {
         // Configure inspector to skip missing devices gracefully
         inspector.missingDeviceStrategy = .skipMissing
         
         // Connect managers
         audioManager.hrirManager = hrirManager
         
+        guard startServices else { return }
+
         setupObservers()
         
         // Wait for devices to populate before loading settings
@@ -55,6 +57,10 @@ class MenuBarViewModel: ObservableObject {
         
         // Trigger microphone permission prompt on startup if needed
         PermissionManager.shared.requestMicrophonePermissionIfNeeded()
+    }
+
+    static func testingInstance() -> MenuBarViewModel {
+        MenuBarViewModel(startServices: false)
     }
     
     private func setupObservers() {
@@ -496,12 +502,7 @@ class MenuBarViewModel: ObservableObject {
     
     /// Helper to filter out virtual loopback devices
     private func filterAvailableOutputs(_ allOutputs: [AggregateDeviceInspector.SubDeviceInfo]) -> [AggregateDeviceInspector.SubDeviceInfo] {
-        // Filter out virtual loopback devices (BlackHole, Soundflower, etc.)
-        // These are input-only virtual devices that users never want to output to
-        return allOutputs.filter { output in
-            let name = output.name.lowercased()
-            return !name.contains("blackhole") && !name.contains("soundflower")
-        }
+        DeviceOutputEligibility.filter(allOutputs)
     }
 
     /// Refresh available outputs if we have an aggregate device selected

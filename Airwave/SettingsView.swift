@@ -984,10 +984,7 @@ struct SettingsView: View {
     
     /// Filter out virtual loopback devices (BlackHole, Soundflower, etc.)
     private func filterAvailableOutputs(_ allOutputs: [AggregateDeviceInspector.SubDeviceInfo]) -> [AggregateDeviceInspector.SubDeviceInfo] {
-        return allOutputs.filter { output in
-            let name = output.name.lowercased()
-            return !name.contains("blackhole") && !name.contains("soundflower")
-        }
+        DeviceOutputEligibility.filter(allOutputs)
     }
 }
 

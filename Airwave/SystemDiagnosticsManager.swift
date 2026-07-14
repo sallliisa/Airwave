@@ -127,7 +127,7 @@ class SystemDiagnosticsManager: ObservableObject {
     
     // MARK: - Singleton
     
-    static let shared = SystemDiagnosticsManager()
+    static let shared = SystemDiagnosticsManager(startServices: !RuntimeEnvironment.isTestHost)
     
     // MARK: - Published Properties
     
@@ -142,10 +142,12 @@ class SystemDiagnosticsManager: ObservableObject {
     
     // MARK: - Initialization
     
-    private init() {
+    private init(startServices: Bool = true) {
         // Configure inspector for diagnostics (skip missing devices gracefully)
         inspector.missingDeviceStrategy = .skipMissing
         
+        guard startServices else { return }
+
         // Initial refresh
         refresh()
         
@@ -307,11 +309,7 @@ class SystemDiagnosticsManager: ObservableObject {
                 let inputs = try inspector.getInputDevices(aggregate: aggregate)
                 let allOutputs = try inspector.getOutputDevices(aggregate: aggregate)
                 
-                // Filter out virtual loopback devices from outputs (same logic as SettingsView)
-                let outputs = allOutputs.filter { output in
-                    let name = output.name.lowercased()
-                    return !name.contains("blackhole") && !name.contains("soundflower")
-                }
+                let outputs = DeviceOutputEligibility.filter(allOutputs)
                 
                 let hasInput = !inputs.isEmpty
                 let hasOutput = !outputs.isEmpty

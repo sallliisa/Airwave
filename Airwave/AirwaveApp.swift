@@ -11,8 +11,15 @@ import SwiftUI
 struct AirwaveApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     
-    // Ensure the singleton initializes early and is injected into the view tree.
-    @StateObject private var viewModel = MenuBarViewModel.shared
+    @StateObject private var viewModel: MenuBarViewModel
+
+    init() {
+        _viewModel = StateObject(
+            wrappedValue: RuntimeEnvironment.isTestHost
+                ? MenuBarViewModel.testingInstance()
+                : MenuBarViewModel.shared
+        )
+    }
     
     var body: some Scene {
         MenuBarExtra {

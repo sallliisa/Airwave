@@ -12,6 +12,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var terminationHandled = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        guard !RuntimeEnvironment.isTestHost else { return }
         // Safety check: Restore system audio if app crashed while on BlackHole
         checkAndRestoreSystemAudio()
         
