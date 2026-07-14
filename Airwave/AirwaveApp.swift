@@ -19,6 +19,8 @@ struct AirwaveApp: App {
                 ? MenuBarViewModel.testingInstance()
                 : MenuBarViewModel.shared
         )
+        // Start silent update discovery with app lifecycle, not Settings lifecycle.
+        _ = UpdateManager.shared
     }
     
     var body: some Scene {
