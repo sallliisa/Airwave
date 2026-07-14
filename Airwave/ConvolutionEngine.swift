@@ -11,7 +11,7 @@ import Foundation
 import Accelerate
 
 /// Real-time partitioned convolution engine
-class ConvolutionEngine {
+nonisolated class ConvolutionEngine {
 
     // MARK: - Properties
 

@@ -70,7 +70,7 @@ nonisolated enum AudioRuntimeError: Error, Equatable {
     case cleanupFailed(String)
 }
 
-typealias DefaultOutputChangeHandler = @Sendable (OutputDeviceDescriptor?) -> Void
+typealias DefaultOutputChangeHandler = (OutputDeviceDescriptor?) -> Void
 typealias AudioIOCallback = (
     _ inputLeft: UnsafePointer<Float>,
     _ inputRight: UnsafePointer<Float>?,

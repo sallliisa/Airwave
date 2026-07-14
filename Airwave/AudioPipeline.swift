@@ -10,6 +10,29 @@ nonisolated protocol StereoAudioProcessing: AnyObject {
     )
 }
 
+extension HRIRManager: StereoAudioProcessing {
+    nonisolated func process(
+        inputLeft: UnsafePointer<Float>,
+        inputRight: UnsafePointer<Float>?,
+        outputLeft: UnsafeMutablePointer<Float>,
+        outputRight: UnsafeMutablePointer<Float>,
+        frameCount: Int
+    ) {
+        processAudio(
+            inputLeft: inputLeft,
+            inputRight: inputRight,
+            leftOutput: outputLeft,
+            rightOutput: outputRight,
+            frameCount: frameCount
+        )
+    }
+}
+
+nonisolated protocol AudioPipelineControlling: AnyObject {
+    func start(on output: OutputDeviceDescriptor) throws
+    func stop() throws
+}
+
 extension RealtimeAudioProcessor: StereoAudioProcessing {
     func process(
         inputLeft: UnsafePointer<Float>,
@@ -29,7 +52,7 @@ extension RealtimeAudioProcessor: StereoAudioProcessing {
 }
 
 /// Owns one strict tap -> private aggregate -> I/O lifecycle.
-nonisolated final class AudioPipeline {
+nonisolated final class AudioPipeline: AudioPipelineControlling {
     private let platform: AudioPlatformClient
     private let processor: StereoAudioProcessing
 
@@ -52,10 +75,13 @@ nonisolated final class AudioPipeline {
     }
 
     func start() throws {
+        try start(on: platform.defaultOutputDevice())
+    }
+
+    func start(on output: OutputDeviceDescriptor) throws {
         guard tap == nil, aggregate == nil, io == nil else { return }
 
         do {
-            let output = try platform.defaultOutputDevice()
             guard output.outputChannelCount == 2, !output.isVirtual, !output.isAggregate else {
                 throw AudioRuntimeError.unsupportedOutput(output.name)
             }

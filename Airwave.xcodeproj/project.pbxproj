@@ -14,6 +14,7 @@
 		A00200000000000000000001 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A00200000000000000000003 /* Sparkle */; };
 		A00200000000000000000005 /* UpdateStateModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00200000000000000000004 /* UpdateStateModelTests.swift */; };
 		A00300000000000000000001 /* AudioPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00300000000000000000002 /* AudioPipelineTests.swift */; };
+		A00500000000000000000001 /* AudioRuntimeControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00500000000000000000002 /* AudioRuntimeControllerTests.swift */; };
 		A00400000000000000000001 /* CoreAudioPlatformClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00400000000000000000002 /* CoreAudioPlatformClientTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -36,6 +37,7 @@
 		A00100000000000000000005 /* PresetActivationCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresetActivationCoordinatorTests.swift; sourceTree = "<group>"; };
 		A00200000000000000000004 /* UpdateStateModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateStateModelTests.swift; sourceTree = "<group>"; };
 		A00300000000000000000002 /* AudioPipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPipelineTests.swift; sourceTree = "<group>"; };
+		A00500000000000000000002 /* AudioRuntimeControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRuntimeControllerTests.swift; sourceTree = "<group>"; };
 		A00400000000000000000002 /* CoreAudioPlatformClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreAudioPlatformClientTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -106,6 +108,7 @@
 				A00100000000000000000005 /* PresetActivationCoordinatorTests.swift */,
 				A00200000000000000000004 /* UpdateStateModelTests.swift */,
 				A00300000000000000000002 /* AudioPipelineTests.swift */,
+				A00500000000000000000002 /* AudioRuntimeControllerTests.swift */,
 				A00400000000000000000002 /* CoreAudioPlatformClientTests.swift */,
 			);
 			path = AirwaveTests;
@@ -232,6 +235,7 @@
 				A00100000000000000000014 /* PresetActivationCoordinatorTests.swift in Sources */,
 				A00200000000000000000005 /* UpdateStateModelTests.swift in Sources */,
 				A00300000000000000000001 /* AudioPipelineTests.swift in Sources */,
+				A00500000000000000000001 /* AudioRuntimeControllerTests.swift in Sources */,
 				A00400000000000000000001 /* CoreAudioPlatformClientTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
