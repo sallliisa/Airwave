@@ -17,6 +17,17 @@
               0
             ]
           }
+        },
+        {
+          "image-name" : "deb6a63ef374b8454fd2c7e44209e02a59863b79.png",
+          "name" : "deb6a63ef374b8454fd2c7e44209e02a59863b79",
+          "position" : {
+            "scale" : 0.5,
+            "translation-in-points" : [
+              352.36346714370984,
+              0
+            ]
+          }
         }
       ],
       "shadow" : {
