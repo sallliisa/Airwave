@@ -18,6 +18,7 @@ struct SettingsView: View {
     @ObservedObject private var hrirManager = HRIRManager.shared
     @ObservedObject private var audioManager = AudioGraphManager.shared
     @ObservedObject private var deviceManager = AudioDeviceManager.shared
+    @ObservedObject private var updateManager = UpdateManager.shared
     
     // Inspector for aggregate device info
     private let inspector = AggregateDeviceInspector()
@@ -498,9 +499,91 @@ struct SettingsView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
+
+                Divider().padding(.leading, 30)
+
+                HStack(spacing: 10) {
+                    Image(systemName: updateIconName)
+                        .font(.system(size: 13))
+                        .foregroundStyle(updateIconColor)
+                        .frame(width: 20)
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Software Update")
+                            .font(.system(size: 12))
+                        Text(updateStatusText)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+
+                    Spacer()
+
+                    if case .checking = updateManager.state {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Button(updateButtonTitle) {
+                            if case .available = updateManager.state {
+                                updateManager.presentAvailableUpdate()
+                            } else {
+                                updateManager.checkForUpdates()
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(!updateManager.canCheckForUpdates)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
             }
             .background(.ultraThinMaterial)
             .cornerRadius(6)
+        }
+    }
+
+    private var updateStatusText: String {
+        switch updateManager.state {
+        case .idle:
+            return "Airwave \(updateManager.installedVersion)"
+        case .checking:
+            return "Checking for updates…"
+        case .current:
+            return "Airwave \(updateManager.installedVersion) is up to date"
+        case .available(let version):
+            return "Airwave \(version) is available"
+        case .error(let message):
+            return "Update check failed: \(message)"
+        }
+    }
+
+    private var updateButtonTitle: String {
+        if case .available = updateManager.state {
+            return "Update…"
+        }
+        return "Check for Updates…"
+    }
+
+    private var updateIconName: String {
+        switch updateManager.state {
+        case .available:
+            return "arrow.down.circle.fill"
+        case .error:
+            return "exclamationmark.triangle.fill"
+        default:
+            return "arrow.triangle.2.circlepath.circle.fill"
+        }
+    }
+
+    private var updateIconColor: Color {
+        switch updateManager.state {
+        case .available:
+            return .blue
+        case .error:
+            return .orange
+        default:
+            return .secondary
         }
     }
     
