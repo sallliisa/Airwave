@@ -60,11 +60,7 @@ struct MenuHeaderSection: View {
             Toggle("", isOn: Binding(
                 get: { audioManager.isRunning },
                 set: { shouldRun in
-                    if shouldRun {
-                        audioManager.start()
-                    } else {
-                        audioManager.stop()
-                    }
+                    MenuBarViewModel.shared.setEngineRunning(shouldRun)
                 }
             ))
             .toggleStyle(.switch)

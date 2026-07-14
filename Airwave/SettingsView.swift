@@ -452,22 +452,7 @@ struct SettingsView: View {
                     Toggle("", isOn: Binding(
                         get: { audioManager.isRunning },
                         set: { shouldRun in
-                            if shouldRun {
-                                if RuntimeEnvironment.useSelectionCoordinator {
-                                    audioManager.startTransactionalRoute()
-                                } else {
-                                    audioManager.start()
-                                }
-                            } else {
-                                if RuntimeEnvironment.useSelectionCoordinator {
-                                    audioManager.stopTransactionalRoute()
-                                } else {
-                                    audioManager.stop()
-                                }
-                            }
-                            if RuntimeEnvironment.useSelectionCoordinator {
-                                SettingsManager.shared.updateAutoStart(shouldRun)
-                            }
+                            MenuBarViewModel.shared.setEngineRunning(shouldRun)
                         }
                     ))
                         .labelsHidden()

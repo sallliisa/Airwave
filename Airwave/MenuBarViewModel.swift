@@ -337,23 +337,28 @@ class MenuBarViewModel: ObservableObject {
     
     // MARK: - Menu Actions
     
-    func toggleAudioEngine() {
-        if audioManager.isRunning {
-            if usesCoordinator {
-                audioManager.stopTransactionalRoute()
-            } else {
-                audioManager.stop()
-            }
-        } else {
+    func setEngineRunning(_ shouldRun: Bool) {
+        guard shouldRun != audioManager.isRunning else { return }
+        if shouldRun {
             if usesCoordinator {
                 audioManager.startTransactionalRoute()
             } else {
                 audioManager.start()
             }
+        } else {
+            if usesCoordinator {
+                audioManager.stopTransactionalRoute()
+            } else {
+                audioManager.stop()
+            }
         }
         if usesCoordinator {
             settingsManager.updateAutoStart(audioManager.isRunning)
         }
+    }
+
+    func toggleAudioEngine() {
+        setEngineRunning(!audioManager.isRunning)
     }
     
     func showAbout() {
