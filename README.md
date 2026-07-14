@@ -52,7 +52,14 @@ brew install blackhole-2ch
 Or download and install it from [ExistentialAudio/BlackHole](https://github.com/ExistentialAudio/BlackHole)
 
 ### 2. Get Airwave
-Download Airwave and copy it to your Applications folder. The latest release can be downloaded from [Airwave Releases](https://github.com/sallliisa/Airwave/releases).
+Install Airwave with Homebrew:
+
+```bash
+brew tap sallliisa/airwave
+brew install --cask airwave
+```
+
+Alternatively, download Airwave and copy it to your Applications folder from [Airwave Releases](https://github.com/sallliisa/Airwave/releases).
 
 > [!IMPORTANT]
 > This step is necessary, because the app has not been notarized by Apple due to the membership fees of the Apple Developer Program. "Apple could not verify 'Airwave.app' is free of malware" refers to the [lack of notarization](https://support.apple.com/en-us/102445), not to any anomalies detected.
