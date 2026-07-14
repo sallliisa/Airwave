@@ -81,6 +81,76 @@ enum SettingsWindowPresenter {
     }
 }
 
+@MainActor
+enum OnboardingWindowPresenter {
+    static let windowIdentifier = NSUserInterfaceItemIdentifier("com.southneuhof.Airwave.onboarding")
+
+    static func register(_ window: NSWindow) {
+        window.identifier = windowIdentifier
+        window.collectionBehavior.insert(.moveToActiveSpace)
+    }
+
+    static func presentExistingWindow() {
+        presentExistingWindow(retriesRemaining: 5)
+    }
+
+    private static func presentExistingWindow(retriesRemaining: Int) {
+        if let window = NSApp.windows.first(where: {
+            $0.identifier == windowIdentifier || $0.title == "Set up Airwave"
+        }) {
+            present(window)
+            return
+        }
+
+        guard retriesRemaining > 0 else { return }
+        Task { @MainActor in
+            await Task.yield()
+            presentExistingWindow(retriesRemaining: retriesRemaining - 1)
+        }
+    }
+
+    static func present(_ window: NSWindow) {
+        register(window)
+        window.hidesOnDeactivate = false
+
+        if window.isMiniaturized {
+            window.deminiaturize(nil)
+        }
+
+        NSRunningApplication.current.activate(options: [
+            .activateIgnoringOtherApps,
+            .activateAllWindows
+        ])
+        NSApp.activate(ignoringOtherApps: true)
+        window.orderFrontRegardless()
+        window.makeKeyAndOrderFront(nil)
+
+        Task { @MainActor in
+            await Task.yield()
+            guard window.isVisible else { return }
+            NSRunningApplication.current.activate(options: [
+                .activateIgnoringOtherApps,
+                .activateAllWindows
+            ])
+            NSApp.activate(ignoringOtherApps: true)
+            window.orderFrontRegardless()
+            window.makeKeyAndOrderFront(nil)
+        }
+
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard window.isVisible else { return }
+            NSRunningApplication.current.activate(options: [
+                .activateIgnoringOtherApps,
+                .activateAllWindows
+            ])
+            NSApp.activate(ignoringOtherApps: true)
+            window.orderFrontRegardless()
+            window.makeKeyAndOrderFront(nil)
+        }
+    }
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var signalSources: [DispatchSourceSignal] = []
     private var terminationHandled = false

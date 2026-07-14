@@ -12,6 +12,7 @@ import SwiftUI
 struct MenuBarLabel: View {
     @ObservedObject private var audioManager = AudioGraphManager.shared
     @ObservedObject private var diagnosticsManager = SystemDiagnosticsManager.shared
+    @Environment(\.openWindow) private var openWindow
     
     private var iconName: String {
         let hasWarning = !diagnosticsManager.diagnostics.isFullyConfigured
@@ -20,12 +21,20 @@ struct MenuBarLabel: View {
     }
     
     var body: some View {
-        if iconName == "MenuBarIcon.warning" {
-            Image(iconName)
-                .renderingMode(.original)
-        } else {
-            Image(iconName)
-                .renderingMode(.template)
+        Group {
+            if iconName == "MenuBarIcon.warning" {
+                Image(iconName)
+                    .renderingMode(.original)
+            } else {
+                Image(iconName)
+                    .renderingMode(.template)
+            }
+        }
+        .onAppear {
+            if OnboardingViewModel.shared.requestAutomaticPresentationIfNeeded() {
+                openWindow(id: "onboarding")
+                OnboardingWindowPresenter.presentExistingWindow()
+            }
         }
     }
 }
@@ -287,6 +296,7 @@ struct AirwaveMenuView: View {
     @ObservedObject private var audioManager = AudioGraphManager.shared
     @ObservedObject private var hrirManager = HRIRManager.shared
     @EnvironmentObject private var viewModel: MenuBarViewModel
+    @EnvironmentObject private var onboardingViewModel: OnboardingViewModel
     @ObservedObject private var diagnosticsManager = SystemDiagnosticsManager.shared
     @Environment(\.openWindow) private var openWindow
     
@@ -415,6 +425,16 @@ struct AirwaveMenuView: View {
             // Settings
             VStack(spacing: 2) {
                 ActionRow(
+                    onboardingViewModel.menuTitle,
+                    showWarning: onboardingViewModel.isIncomplete
+                ) {
+                    viewModel.closeMenuBarPopover()
+                    onboardingViewModel.resume()
+                    openWindow(id: "onboarding")
+                    OnboardingWindowPresenter.presentExistingWindow()
+                }
+
+                ActionRow(
                     "Settings",
                     showWarning: !diagnosticsManager.diagnostics.isFullyConfigured
                 ) {
@@ -449,6 +469,12 @@ struct AirwaveMenuView: View {
                 message: Text(alert.message),
                 dismissButton: .default(Text("OK"))
             )
+        }
+        .onAppear {
+            guard onboardingViewModel.requestAutomaticPresentationIfNeeded() else { return }
+            viewModel.closeMenuBarPopover()
+            openWindow(id: "onboarding")
+            OnboardingWindowPresenter.presentExistingWindow()
         }
     }
 }

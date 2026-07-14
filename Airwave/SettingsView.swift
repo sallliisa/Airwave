@@ -42,6 +42,8 @@ struct SettingsView: View {
     @ObservedObject private var audioManager = AudioGraphManager.shared
     @ObservedObject private var deviceManager = AudioDeviceManager.shared
     @ObservedObject private var updateManager = UpdateManager.shared
+    @ObservedObject private var onboardingViewModel = OnboardingViewModel.shared
+    @Environment(\.openWindow) private var openWindow
     
     // Inspector for aggregate device info
     private let inspector = AggregateDeviceInspector()
@@ -238,6 +240,14 @@ struct SettingsView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .disabled(diagnosticsManager.isRefreshing)
+
+                Button(onboardingViewModel.menuTitle) {
+                    onboardingViewModel.resume()
+                    openWindow(id: "onboarding")
+                    OnboardingWindowPresenter.presentExistingWindow()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
             .padding(.bottom, 8)
             
@@ -408,7 +418,7 @@ struct SettingsView: View {
                                 .font(.system(size: 11))
                                 .foregroundStyle(.secondary)
                             Button(action: {
-                                hrirManager.openPresetsDirectory()
+                                SystemSetupActions.shared.openHRIRFolder()
                             }) {
                                 Text("Manage files")
                                     .font(.system(size: 11))
@@ -634,7 +644,7 @@ struct SettingsView: View {
                     status: diagnosticsManager.diagnostics.virtualDriverInstalled ? .complete : .missing,
                     actionTitle: diagnosticsManager.diagnostics.virtualDriverInstalled ? nil : "Install BlackHole",
                     action: {
-                        NSWorkspace.shared.open(ConfigurationManager.ExternalLinks.blackHoleDownload)
+                        SystemSetupActions.shared.openBlackHoleDownload()
                     },
                     secondaryActionLink: ConfigurationManager.ExternalLinks.setupGuide,
                     secondaryActionLinkTitle: "Setup Guide"
@@ -649,7 +659,7 @@ struct SettingsView: View {
                     status: aggregateStatus,
                     secondaryActionTitle: "Configure...",
                     secondaryAction: {
-                        NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Audio MIDI Setup.app"))
+                        SystemSetupActions.shared.openAudioMIDISetup()
                     }
                 )
                 
@@ -662,7 +672,7 @@ struct SettingsView: View {
                     status: micPermissionStatus,
                     secondaryActionTitle: "Configure...",
                     secondaryAction: {
-                        PermissionManager.shared.openSystemSettings()
+                        SystemSetupActions.shared.openMicrophoneSettings()
                     }
                 )
             }
