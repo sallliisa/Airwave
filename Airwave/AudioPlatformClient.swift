@@ -3,7 +3,7 @@ import Foundation
 /// Stable metadata safe to expose to UI. Core Audio object identifiers never cross this boundary.
 nonisolated struct OutputDeviceDescriptor: Equatable, Sendable {
     nonisolated struct ID: Hashable, Sendable {
-        fileprivate let value: UInt64
+        let value: UInt64
 
         init(_ value: UInt64) {
             self.value = value
@@ -21,11 +21,18 @@ nonisolated struct OutputDeviceDescriptor: Equatable, Sendable {
 }
 
 nonisolated struct AudioStreamFormat: Equatable, Sendable {
+    enum SampleType: Equatable, Sendable {
+        case float32
+        case unsupported
+    }
+
     let sampleRate: Double
     let channelCount: Int
+    let sampleType: SampleType
+    let isInterleaved: Bool
 
     static func stereo(sampleRate: Double) -> Self {
-        Self(sampleRate: sampleRate, channelCount: 2)
+        Self(sampleRate: sampleRate, channelCount: 2, sampleType: .float32, isInterleaved: false)
     }
 }
 

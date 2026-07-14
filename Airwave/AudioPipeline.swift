@@ -43,6 +43,10 @@ nonisolated final class AudioPipeline {
         self.processor = processor
     }
 
+    convenience init(processor: StereoAudioProcessing) {
+        self.init(platform: CoreAudioPlatformClient(), processor: processor)
+    }
+
     deinit {
         try? stop()
     }
