@@ -7,6 +7,80 @@
 
 import AppKit
 
+@MainActor
+enum SettingsWindowPresenter {
+    static let windowIdentifier = NSUserInterfaceItemIdentifier("com.southneuhof.Airwave.settings")
+
+    static func register(_ window: NSWindow) {
+        window.identifier = windowIdentifier
+        window.collectionBehavior.insert(.moveToActiveSpace)
+    }
+
+    static func presentExistingWindow() {
+        presentExistingWindow(retriesRemaining: 4)
+    }
+
+    private static func presentExistingWindow(retriesRemaining: Int) {
+        if let window = NSApp.windows.first(where: {
+            $0.identifier == windowIdentifier || $0.title == "Settings"
+        }) {
+            present(window)
+            return
+        }
+
+        guard retriesRemaining > 0 else { return }
+        Task { @MainActor in
+            await Task.yield()
+            presentExistingWindow(retriesRemaining: retriesRemaining - 1)
+        }
+    }
+
+    static func present(_ window: NSWindow) {
+        register(window)
+        window.hidesOnDeactivate = false
+
+        if window.isMiniaturized {
+            window.deminiaturize(nil)
+        }
+
+        NSRunningApplication.current.activate(options: [
+            .activateIgnoringOtherApps,
+            .activateAllWindows
+        ])
+        NSApp.activate(ignoringOtherApps: true)
+        window.orderFrontRegardless()
+        window.makeKeyAndOrderFront(nil)
+
+        // Activation of an accessory/menu-bar app can complete on the next run-loop turn.
+        // Repeat the ordering after activation settles without changing the window level.
+        Task { @MainActor in
+            await Task.yield()
+            guard window.isVisible else { return }
+            NSRunningApplication.current.activate(options: [
+                .activateIgnoringOtherApps,
+                .activateAllWindows
+            ])
+            NSApp.activate(ignoringOtherApps: true)
+            window.orderFrontRegardless()
+            window.makeKeyAndOrderFront(nil)
+        }
+
+        // The menu-bar popover may finish dismissing after the first activation pass.
+        // Re-assert focus once that dismissal has completed.
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard window.isVisible else { return }
+            NSRunningApplication.current.activate(options: [
+                .activateIgnoringOtherApps,
+                .activateAllWindows
+            ])
+            NSApp.activate(ignoringOtherApps: true)
+            window.orderFrontRegardless()
+            window.makeKeyAndOrderFront(nil)
+        }
+    }
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var signalSources: [DispatchSourceSignal] = []
     private var terminationHandled = false

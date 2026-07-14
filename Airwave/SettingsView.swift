@@ -11,6 +11,29 @@ private typealias PlatformColor = NSColor
 import AppKit
 import CoreAudio
 
+private struct SettingsWindowAccessor: NSViewRepresentable {
+    func makeNSView(context: Context) -> SettingsWindowObservingView {
+        let view = SettingsWindowObservingView()
+        view.onWindowAvailable = { window in
+            SettingsWindowPresenter.present(window)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: SettingsWindowObservingView, context: Context) {}
+}
+
+private final class SettingsWindowObservingView: NSView {
+    var onWindowAvailable: ((NSWindow) -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+
+        guard let window else { return }
+        onWindowAvailable?(window)
+    }
+}
+
 struct SettingsView: View {
     // Shared singleton instances - not owned by this view
     @ObservedObject private var diagnosticsManager = SystemDiagnosticsManager.shared
@@ -49,6 +72,7 @@ struct SettingsView: View {
         }
         .frame(minWidth: 500, idealWidth: 500, maxWidth: 500)
         .frame(minHeight: 400, idealHeight: 560)
+        .background(SettingsWindowAccessor())
         .onAppear {
             guard !RuntimeEnvironment.useSelectionCoordinator else { return }
             // Start monitoring if there's already an aggregate device selected
