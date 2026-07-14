@@ -12,6 +12,7 @@
 		A00100000000000000000013 /* AudioDeviceQueryServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00100000000000000000004 /* AudioDeviceQueryServiceTests.swift */; };
 		A00100000000000000000014 /* PresetActivationCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00100000000000000000005 /* PresetActivationCoordinatorTests.swift */; };
 		A00200000000000000000005 /* UpdateStateModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00200000000000000000004 /* UpdateStateModelTests.swift */; };
+		A00300000000000000000001 /* OnboardingModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00300000000000000000002 /* OnboardingModelTests.swift */; };
 		A00200000000000000000001 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A00200000000000000000003 /* Sparkle */; };
 /* End PBXBuildFile section */
 
@@ -33,6 +34,7 @@
 		A00100000000000000000004 /* AudioDeviceQueryServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioDeviceQueryServiceTests.swift; sourceTree = "<group>"; };
 		A00100000000000000000005 /* PresetActivationCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresetActivationCoordinatorTests.swift; sourceTree = "<group>"; };
 		A00200000000000000000004 /* UpdateStateModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateStateModelTests.swift; sourceTree = "<group>"; };
+		A00300000000000000000002 /* OnboardingModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingModelTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -101,6 +103,7 @@
 				A00100000000000000000004 /* AudioDeviceQueryServiceTests.swift */,
 				A00100000000000000000005 /* PresetActivationCoordinatorTests.swift */,
 				A00200000000000000000004 /* UpdateStateModelTests.swift */,
+				A00300000000000000000002 /* OnboardingModelTests.swift */,
 			);
 			path = AirwaveTests;
 			sourceTree = "<group>";
@@ -225,6 +228,7 @@
 				A00100000000000000000013 /* AudioDeviceQueryServiceTests.swift in Sources */,
 				A00100000000000000000014 /* PresetActivationCoordinatorTests.swift in Sources */,
 				A00200000000000000000005 /* UpdateStateModelTests.swift in Sources */,
+				A00300000000000000000001 /* OnboardingModelTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

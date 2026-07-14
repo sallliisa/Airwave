@@ -12,6 +12,7 @@ struct AirwaveApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     
     @StateObject private var viewModel: MenuBarViewModel
+    @StateObject private var onboardingViewModel: OnboardingViewModel
 
     init() {
         _viewModel = StateObject(
@@ -19,6 +20,7 @@ struct AirwaveApp: App {
                 ? MenuBarViewModel.testingInstance()
                 : MenuBarViewModel.shared
         )
+        _onboardingViewModel = StateObject(wrappedValue: OnboardingViewModel.shared)
         // Start silent update discovery with app lifecycle, not Settings lifecycle.
         _ = UpdateManager.shared
     }
@@ -27,6 +29,7 @@ struct AirwaveApp: App {
         MenuBarExtra {
             AirwaveMenuView()
                 .environmentObject(viewModel)
+                .environmentObject(onboardingViewModel)
         } label: {
             MenuBarLabel()
         }
@@ -37,5 +40,11 @@ struct AirwaveApp: App {
         }
         .windowResizability(.contentSize)
         .defaultSize(width: 500, height: 815)
+
+        Window("Set up Airwave", id: "onboarding") {
+            OnboardingView(viewModel: onboardingViewModel)
+        }
+        .windowResizability(.contentSize)
+        .defaultSize(width: 820, height: 590)
     }
 }

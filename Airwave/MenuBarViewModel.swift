@@ -67,8 +67,6 @@ class MenuBarViewModel: ObservableObject {
             waitForDevicesAndInitialize()
         }
         
-        // Trigger microphone permission prompt on startup if needed
-        PermissionManager.shared.requestMicrophonePermissionIfNeeded()
     }
 
     static func testingInstance() -> MenuBarViewModel {
@@ -332,6 +330,21 @@ class MenuBarViewModel: ObservableObject {
         let channelRange = output.stereoChannelRange
         audioManager.setOutputChannels(channelRange)
         
+        saveSettings()
+    }
+
+    /// Select aggregate input without prompting for microphone access or changing
+    /// system output unless caller explicitly requests it.
+    func selectInputDevice(_ input: AggregateDeviceInspector.SubDeviceInfo, switchSystemAudio: Bool = true) {
+        audioManager.selectedInputDevice = input
+        if let inputRange = input.inputChannelRange {
+            audioManager.setInputChannels(inputRange.lowerBound..<min(inputRange.lowerBound + 2, inputRange.upperBound))
+        }
+
+        if switchSystemAudio && audioManager.isRunning {
+            _ = deviceManager.setSystemDefaultOutputDevice(input.device)
+        }
+        SettingsManager.shared.setInputDevice(input.device)
         saveSettings()
     }
     
