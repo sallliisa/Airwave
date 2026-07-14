@@ -58,6 +58,12 @@ class MenuBarViewModel: ObservableObject {
         
         guard startServices else { return }
 
+        // Request microphone access before the audio unit is configured. HAL audio
+        // initialization can otherwise trigger the macOS prompt without going
+        // through PermissionManager, leaving diagnostics with a stale state after
+        // the user grants access.
+        PermissionManager.shared.requestMicrophonePermissionIfNeeded()
+
         if usesCoordinator {
             setupCoordinatorServices()
         } else {

@@ -124,7 +124,7 @@ struct OnboardingView: View {
     private var stepProgressLabel: String {
         switch viewModel.currentStep {
         case .introduction: return "Before you begin"
-        case .completion: return "Everything is ready"
+        case .completion: return "Diagnostics summary"
         default: return "Step \(stepNumber) of 5"
         }
     }
@@ -299,19 +299,119 @@ struct OnboardingView: View {
 
     private var completion: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Image(systemName: "checkmark.seal.fill")
-                .font(.system(size: 48))
-                .foregroundStyle(.green)
-            Text("Airwave is ready for spatial audio.")
-                .font(.title2.weight(.semibold))
+            finalChecksOverview
+
+            VStack(spacing: 0) {
+                ForEach(SetupStep.requirementSteps) { step in
+                    finalCheckRow(step)
+                    if step.id != SetupStep.requirementSteps.last?.id {
+                        Divider().padding(.leading, 42)
+                    }
+                }
+            }
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+
             VStack(alignment: .leading, spacing: 7) {
+                Text("Current audio route")
+                    .fontWeight(.semibold)
                 summaryRow("Aggregate", value: viewModel.snapshot.route.aggregateName)
                 summaryRow("Input", value: viewModel.snapshot.route.inputName)
                 summaryRow("Output", value: viewModel.snapshot.route.outputName)
                 summaryRow("HRIR", value: viewModel.snapshot.route.presetName)
             }
-            Text("You can change these choices later in Settings. If a device disconnects, use the Diagnostics warning to repair the configuration.")
+            .padding(14)
+            .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+
+            Text("You can change these choices later in Settings. Select a check above to return to the relevant setup step.")
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    private var finalChecksOverview: some View {
+        let isChecking = viewModel.snapshot.isChecking
+        let isReady = viewModel.snapshot.isReadyToRun
+        let icon = isChecking
+            ? "hourglass"
+            : (isReady ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+        let color: Color = isChecking ? .secondary : (isReady ? .green : .orange)
+        let title = isChecking
+            ? "Checking setup..."
+            : (isReady ? "All checks passed" : "Setup needs attention")
+        let message = isChecking
+            ? "Airwave is checking the current audio configuration."
+            : (isReady
+                ? "All requirements are met. Airwave is ready for audio processing."
+                : "Some requirements still need attention. Select a check below to continue setup.")
+
+        return HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 18))
+                .foregroundStyle(color)
+                .frame(width: 24)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(color)
+                Text(message)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(13)
+        .background(color.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func finalCheckRow(_ step: SetupStep) -> some View {
+        let status = viewModel.snapshot.status(for: step) ?? .checking
+
+        return Button {
+            viewModel.selectStep(step)
+        } label: {
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: status.icon)
+                    .foregroundStyle(statusColor(status))
+                    .frame(width: 24)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(step.title)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.primary)
+                    Text(finalCheckDetail(for: step))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.leading)
+                }
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 13)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func finalCheckDetail(for step: SetupStep) -> String {
+        if viewModel.snapshot.status(for: step) == .checking {
+            return "Checking the current setup state..."
+        }
+
+        switch step {
+        case .virtualDriver: return driverDetail
+        case .aggregateDevice: return aggregateDetail
+        case .microphonePermission: return permissionDetail
+        case .hrirPreset:
+            return viewModel.presets.isEmpty
+                ? "We haven’t found any usable HRIR presets yet."
+                : "We found \(viewModel.presets.count) usable preset\(viewModel.presets.count == 1 ? "" : "s")."
+        case .audioRoute: return routeDetail
+        case .introduction, .completion: return ""
         }
     }
 
@@ -333,6 +433,7 @@ struct OnboardingView: View {
                     if viewModel.startUsingAirwave() { dismiss() }
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(!viewModel.snapshot.isReadyToRun)
             } else {
                 Button(viewModel.currentStep == .introduction ? "Begin Setup" : "Continue") {
                     viewModel.advance()
@@ -459,13 +560,16 @@ struct OnboardingView: View {
     }
 
     private func infoCard(_ title: String, systemImage: String, text: String) -> some View {
-        Label {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: systemImage)
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 24, alignment: .center)
+
             VStack(alignment: .leading, spacing: 3) {
                 Text(title).fontWeight(.semibold)
                 Text(text).font(.callout).foregroundStyle(.secondary)
             }
-        } icon: {
-        Image(systemName: systemImage).foregroundStyle(Color.accentColor)
+            Spacer(minLength: 0)
         }
         .padding(14)
         .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
