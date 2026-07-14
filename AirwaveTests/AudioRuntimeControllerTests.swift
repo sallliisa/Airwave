@@ -3,6 +3,52 @@ import XCTest
 
 @MainActor
 final class AudioRuntimeControllerTests: XCTestCase {
+    func testSystemAudioPermissionRequestUsesShortSafeProbeWithoutPreset() {
+        let harness = Harness()
+        harness.controller.launch(presetReady: false)
+        XCTAssertEqual(harness.state.status, .needsSetup)
+
+        harness.controller.requestSystemAudioAccess()
+
+        XCTAssertEqual(harness.pipelines.startedOutputs.count, 1)
+        XCTAssertEqual(harness.pipelines.liveCount, 0)
+        XCTAssertEqual(harness.state.status, .needsSetup)
+    }
+
+    func testTransientPermissionProbeFailureRecoversAndReleasesProbeResources() {
+        let harness = Harness()
+        harness.pipelines.startErrors = [.deviceLost, nil]
+        harness.controller.launch(presetReady: false)
+
+        harness.controller.requestSystemAudioAccess()
+
+        guard case .recovering = harness.state.status else {
+            return XCTFail("Expected recovering permission probe")
+        }
+        XCTAssertEqual(harness.scheduler.pendingDelays, [1])
+        harness.scheduler.runNext()
+        XCTAssertEqual(harness.state.status, .needsSetup)
+        XCTAssertEqual(harness.pipelines.startedOutputs.count, 2)
+        XCTAssertEqual(harness.pipelines.liveCount, 0)
+    }
+
+    func testRepeatedPermissionProbeFailuresUseCappedBackoff() {
+        let harness = Harness()
+        harness.pipelines.defaultError = .deviceLost
+        harness.controller.launch(presetReady: false)
+        harness.controller.requestSystemAudioAccess()
+
+        var observed: [TimeInterval] = []
+        for _ in 0..<7 {
+            observed.append(harness.scheduler.pendingDelays.last!)
+            harness.scheduler.runNext()
+        }
+
+        XCTAssertEqual(observed, [1, 2, 4, 8, 15, 15, 15])
+        XCTAssertEqual(harness.scheduler.activeTaskCount, 1)
+        XCTAssertEqual(harness.pipelines.liveCount, 0)
+    }
+
     func testReadyLaunchStartsExactlyOnceAndPublishesOutput() {
         let harness = Harness()
         harness.controller.launch(presetReady: true)
