@@ -55,6 +55,24 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project Air
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project Airwave.xcodeproj -scheme Airwave -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO test
 ```
 
+## Releases and In-App Updates
+
+Airwave uses [Sparkle](https://sparkle-project.org/) for stable in-app updates. The app checks at launch and every 24 hours, but never downloads or installs an update without explicit user action in Settings.
+
+Releases are created only from `main` through **Actions → Release → Run workflow**. Enter a version in `X.Y.Z` form. The workflow tests and analyzes the app, builds a universal `arm64`/`x86_64` ZIP, signs the update, creates the matching `vX.Y.Z` tag, and publishes the GitHub release and appcast.
+
+Version components must be between 0 and 999 and the new version must exceed the latest stable tag. The workflow derives the bundle build number as `major × 1,000,000 + minor × 1,000 + patch`.
+
+One-time Sparkle signing setup:
+
+1. Resolve packages, then run Sparkle's `generate_keys --account Airwave` tool from Xcode DerivedData.
+2. Confirm its printed public key matches `SUPublicEDKey` in the Airwave target build settings.
+3. Export the private key with `generate_keys --account Airwave -x sparkle-private-key`.
+4. Add that file's contents as the repository Actions secret `SPARKLE_ED_PRIVATE_KEY`, then securely delete the exported file.
+5. Keep a separate offline backup. Losing the key prevents existing installations from trusting future ad-hoc-signed updates; exposing it allows forged updates.
+
+The app and Sparkle archive are currently ad-hoc signed and are not Apple-notarized. Sparkle's EdDSA signature authenticates in-app update archives, but first-time installation still requires the Gatekeeper steps below. When Developer ID signing is adopted, remove the Release-only library-validation exception and retain the existing Sparkle key/feed.
+
 Manual audio smoke tests require a virtual device, microphone permission, aggregate-device setup, and an HRIR preset. If `xcode-select -p` points at Command Line Tools, set `DEVELOPER_DIR` to the full Xcode developer directory shown above.
 
 ## Installation
