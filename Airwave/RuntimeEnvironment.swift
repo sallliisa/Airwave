@@ -8,6 +8,7 @@ enum RuntimeEnvironment {
     }
 
     static var useSelectionCoordinator: Bool {
-        ProcessInfo.processInfo.arguments.contains("-UseSelectionCoordinator")
+        guard !isTestHost else { return false }
+        return !ProcessInfo.processInfo.arguments.contains("-UseLegacyRouting")
     }
 }
