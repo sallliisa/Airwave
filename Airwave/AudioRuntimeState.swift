@@ -31,7 +31,7 @@ final class AudioRuntimeState: ObservableObject {
             case .inactive:
                 "No HRIR preset selected; native audio remains unchanged."
             case .needsPermission:
-                "Allow System Audio Recording in macOS Settings to enable processing."
+                "Allow System Audio Capture in macOS Settings to enable processing."
             case .starting:
                 "Airwave is preparing native audio processing."
             case .processing:

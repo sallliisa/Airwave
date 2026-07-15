@@ -382,7 +382,7 @@ struct SettingsView: View {
                     Divider().padding(.leading, 30)
                     settingsActionRow(
                         icon: "lock.open.fill",
-                        title: "System Audio Recording",
+                        title: "System Audio Capture",
                         subtitle: "Open the macOS privacy setting for Airwave",
                         buttonTitle: "Open Settings",
                         action: viewModel.openSystemAudioRecordingSettings

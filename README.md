@@ -7,7 +7,7 @@ Airwave applies system-wide stereo HRIR convolution on macOS without changing th
 - macOS 15 Sequoia or later
 - A physical stereo output supported by macOS
 - A stereo HRIR WAV preset (HeSuVi-compatible presets are supported)
-- System Audio Recording permission
+- System Audio Capture permission
 
 BlackHole, public aggregate devices, and other virtual routing software are neither required nor supported. If macOS currently uses one as its output, Airwave stays in native passthrough and asks you to choose a physical stereo output in System Settings.
 
@@ -22,7 +22,7 @@ Airwave is currently distributed without Apple notarization. On first launch, ma
 1. Open Airwave and choose **Manage HRIR Files**.
 2. Copy a compatible stereo HRIR WAV file into the presets folder.
 3. Select the preset from Airwave's menu.
-4. Grant **System Audio Recording** permission when macOS asks. This is system-audio capture; Airwave does not request microphone access.
+4. Grant **System Audio Capture** permission when macOS asks. This is system-audio capture; Airwave does not request microphone access.
 
 Processing starts automatically when a preset, permission, and supported output are ready. There is no audio-engine toggle. Output changes are made only in macOS; Airwave follows the current default output automatically.
 

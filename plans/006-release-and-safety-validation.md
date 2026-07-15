@@ -67,7 +67,7 @@ that route and volume remain native through crashes and failures.
 ### Step 1: Rewrite documentation and packaging
 
 Rewrite README features, requirements, installation, setup, use, troubleshooting,
-and credits for process taps, System Audio Recording, HRIR selection, automatic
+and credits for process taps, System Audio Capture, HRIR selection, automatic
 output following, native volume authority, and native passthrough failure. Remove
 legacy screenshots and unsupported setup instructions. Update Cask minimum to
 Sequoia/macOS 15 and remove caveats about virtual devices/aggregates.
@@ -175,4 +175,3 @@ safety failure; package opens and processes on macOS 15.
 
 Keep the matrix for every audio-backend release. New output classes are not
 "supported" until their safety rows pass, even if Core Audio enumerates them.
-

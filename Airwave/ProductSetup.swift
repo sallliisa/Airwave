@@ -84,7 +84,7 @@ enum OnboardingStepV2: String, CaseIterable, Codable {
     var title: String {
         switch self {
         case .welcome: "Welcome"
-        case .systemAudio: "System Audio Recording"
+        case .systemAudio: "System Audio Capture"
         case .hrirPreset: "HRIR Preset"
         case .liveHealth: "Finish"
         }
@@ -377,7 +377,7 @@ struct RuntimeMenuPresentation: Equatable {
             detail = "Airwave is getting ready."
         case .needsPermission:
             statusIcon = "exclamationmark.waveform"
-            detail = "System Audio Recording permission is required."
+            detail = "System Audio Capture permission is required."
         case .inactive:
             statusIcon = "waveform.circle"
             detail = "No HRIR preset selected; native audio remains unchanged."
@@ -430,7 +430,7 @@ struct OnboardingReadinessPresentation: Equatable {
         if permission != .granted {
             return Self(
                 title: "A little more setup is needed",
-                detail: "System Audio Recording still needs your attention.",
+                detail: "System Audio Capture still needs your attention.",
                 actionStep: .systemAudio,
                 canRetry: false
             )

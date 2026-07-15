@@ -23,6 +23,9 @@ final class ApplicationLifecycleCoordinator: NSObject {
     private var systemTerminationRequested = false
     private var observesWindows = false
     private var appliedActivationPolicy: NSApplication.ActivationPolicy?
+    private var pendingFocusedSpaceDeparture = false
+    private var restoreFocusOnSpaceReturn = false
+    private var focusDepartureGeneration = 0
 
     init(
         application: ApplicationLifecycleApplication,
@@ -33,16 +36,20 @@ final class ApplicationLifecycleCoordinator: NSObject {
         guard observeWindows else { return }
         observesWindows = true
         let center = NotificationCenter.default
-        center.addObserver(self, selector: #selector(windowStateChanged), name: NSWindow.didBecomeKeyNotification, object: nil)
-        center.addObserver(self, selector: #selector(windowStateChanged), name: NSWindow.didResignKeyNotification, object: nil)
-        center.addObserver(self, selector: #selector(windowStateChanged), name: NSWindow.didChangeOcclusionStateNotification, object: nil)
-        center.addObserver(self, selector: #selector(windowStateChanged), name: NSWindow.didMiniaturizeNotification, object: nil)
-        center.addObserver(self, selector: #selector(windowStateChanged), name: NSWindow.didDeminiaturizeNotification, object: nil)
         center.addObserver(self, selector: #selector(windowStateChanged), name: NSWindow.willCloseNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(activeSpaceDidChange),
+            name: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil
+        )
     }
 
     deinit {
-        if observesWindows { NotificationCenter.default.removeObserver(self) }
+        if observesWindows {
+            NotificationCenter.default.removeObserver(self)
+            NSWorkspace.shared.notificationCenter.removeObserver(self)
+        }
     }
 
     static func activationPolicy(hasVisibleUserWindow: Bool) -> NSApplication.ActivationPolicy {
@@ -76,6 +83,21 @@ final class ApplicationLifecycleCoordinator: NSObject {
 
     func beginSystemTermination() {
         systemTerminationRequested = true
+    }
+
+    func applicationWillResignActive() {
+        guard let window = settingsWindow, window.isKeyWindow, !window.isMiniaturized else {
+            pendingFocusedSpaceDeparture = false
+            return
+        }
+        pendingFocusedSpaceDeparture = true
+        focusDepartureGeneration += 1
+        let generation = focusDepartureGeneration
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard generation == focusDepartureGeneration, !restoreFocusOnSpaceReturn else { return }
+            pendingFocusedSpaceDeparture = false
+        }
     }
 
     func terminationReply() -> NSApplication.TerminateReply {
@@ -113,6 +135,31 @@ final class ApplicationLifecycleCoordinator: NSObject {
         return className.contains("menubar") || className.contains("popover")
     }
 
+    private var settingsWindow: NSWindow? {
+        application.windows.first { $0.identifier == SettingsWindowPresenter.windowIdentifier }
+    }
+
+    @objc private func activeSpaceDidChange() {
+        guard let window = settingsWindow, !window.isMiniaturized else {
+            pendingFocusedSpaceDeparture = false
+            restoreFocusOnSpaceReturn = false
+            return
+        }
+
+        if pendingFocusedSpaceDeparture, !window.isOnActiveSpace {
+            pendingFocusedSpaceDeparture = false
+            restoreFocusOnSpaceReturn = true
+            return
+        }
+
+        guard restoreFocusOnSpaceReturn, window.isOnActiveSpace else { return }
+        restoreFocusOnSpaceReturn = false
+        prepareToPresentUserWindow()
+        NSApp.activate(ignoringOtherApps: true)
+        window.orderFrontRegardless()
+        window.makeKeyAndOrderFront(nil)
+    }
+
     @objc private func windowStateChanged() {
         Task { @MainActor in
             await Task.yield()
@@ -145,6 +192,7 @@ enum SettingsWindowPresenter {
     static let windowIdentifier = NSUserInterfaceItemIdentifier("com.southneuhof.Airwave.settings")
     static let contentSize = NSSize(width: 900, height: 600)
     private static var settingsWindow: NSWindow?
+    private static var settingsWindowController: NSWindowController?
     private static let contentState = SettingsWindowContentState()
 
     static func register(_ window: NSWindow) {
@@ -192,8 +240,12 @@ enum SettingsWindowPresenter {
             window.title = "Settings"
             window.isReleasedWhenClosed = false
             window.contentViewController = controller
-            window.center()
+            window.setFrameAutosaveName("com.southneuhof.Airwave.settings.frame")
+            let windowController = NSWindowController(window: window)
+            windowController.shouldCascadeWindows = true
+            settingsWindowController = windowController
             register(window)
+            windowController.showWindow(nil)
         }
         presentExistingWindow()
     }
@@ -288,6 +340,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         AudioRuntimeController.shared.terminate()
         Logger.log("[AppDelegate] Airwave safe shell terminating")
+    }
+
+    func applicationWillResignActive(_ notification: Notification) {
+        ApplicationLifecycleCoordinator.shared.applicationWillResignActive()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
