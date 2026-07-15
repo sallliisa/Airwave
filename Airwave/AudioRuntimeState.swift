@@ -5,7 +5,7 @@ import Combine
 final class AudioRuntimeState: ObservableObject {
     enum Status: Equatable {
         case unavailable(String)
-        case needsSetup
+        case inactive
         case needsPermission
         case nativePassthrough(reason: String)
         case starting
@@ -15,7 +15,7 @@ final class AudioRuntimeState: ObservableObject {
         var title: String {
             switch self {
             case .unavailable: "Unavailable"
-            case .needsSetup: "Setup required"
+            case .inactive: "Inactive"
             case .needsPermission: "Permission required"
             case .nativePassthrough: "Native passthrough"
             case .starting: "Starting"
@@ -28,8 +28,8 @@ final class AudioRuntimeState: ObservableObject {
             switch self {
             case .unavailable(let reason), .nativePassthrough(let reason), .recovering(let reason):
                 reason
-            case .needsSetup:
-                "Airwave needs additional setup before audio processing can begin."
+            case .inactive:
+                "No HRIR preset selected; native audio remains unchanged."
             case .needsPermission:
                 "Allow System Audio Recording in macOS Settings to enable processing."
             case .starting:

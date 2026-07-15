@@ -173,10 +173,10 @@ struct OnboardingView: View {
 
             if hrirManager.presets.isEmpty {
                 statusCard(
-                    icon: "waveform.badge.exclamationmark",
-                    color: .orange,
-                    title: "No presets found",
-                    detail: "You can continue with None, or add a compatible WAV file to the preset folder."
+                    icon: "waveform",
+                    color: .secondary,
+                    title: "No presets installed",
+                    detail: "None is a valid choice. You can also add a compatible WAV file to the preset folder."
                 )
             }
 
@@ -187,6 +187,8 @@ struct OnboardingView: View {
                     onSelect: menuViewModel.selectPreset
                 )
                 .frame(height: 220)
+
+                AirwavePresetDropHint()
 
                 Divider()
 

@@ -208,6 +208,8 @@ struct SettingsView: View {
             VStack(spacing: 0) {
                 AirwavePresetList(presets: hrirManager.presets, selectedID: hrirManager.activePreset?.id, onSelect: viewModel.selectPreset)
 
+                AirwavePresetDropHint()
+
                 Divider()
 
                 AirwavePresetFilesRow(action: viewModel.openPresetsDirectory)

@@ -160,11 +160,11 @@ final class ProductSurfaceTests: XCTestCase {
     }
 
     func testPermissionPresentationCoversUnknownRequestingSuccessDeniedSettingsRetryAndRevocation() {
-        let runtime = AudioRuntimeState(status: .needsSetup)
+        let runtime = AudioRuntimeState(status: .inactive)
         let actions = RuntimeActionsFake()
         let persistence = OnboardingPersistenceFake()
         let viewModel = OnboardingViewModel(
-            runtime: runtime, actions: actions, persistence: persistence, hasActivePreset: { false }
+            runtime: runtime, actions: actions, persistence: persistence
         )
         XCTAssertEqual(viewModel.permissionPresentation, .unknown)
 
@@ -173,7 +173,7 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertEqual(viewModel.permissionPresentation, .unknown)
         runtime.publish(.starting, output: output())
         XCTAssertEqual(viewModel.permissionPresentation, .requesting)
-        runtime.publish(.needsSetup, output: output())
+        runtime.publish(.inactive, output: output())
         XCTAssertEqual(viewModel.permissionPresentation, .granted)
         runtime.publish(.needsPermission, output: output())
         XCTAssertEqual(viewModel.permissionPresentation, .denied)
@@ -211,8 +211,7 @@ final class ProductSurfaceTests: XCTestCase {
         let viewModel = OnboardingViewModel(
             runtime: runtime,
             actions: RuntimeActionsFake(),
-            persistence: OnboardingPersistenceFake(),
-            hasActivePreset: { true }
+            persistence: OnboardingPersistenceFake()
         )
         XCTAssertFalse(viewModel.canComplete)
     }
@@ -223,22 +222,20 @@ final class ProductSurfaceTests: XCTestCase {
         let viewModel = OnboardingViewModel(
             runtime: runtime,
             actions: RuntimeActionsFake(),
-            persistence: persistence,
-            hasActivePreset: { false }
+            persistence: persistence
         )
         XCTAssertTrue(viewModel.complete())
         XCTAssertTrue(persistence.isComplete)
 
-        let probedRuntime = AudioRuntimeState(status: .needsSetup, currentOutput: output())
+        let probedRuntime = AudioRuntimeState(status: .inactive, currentOutput: output())
         let probed = OnboardingViewModel(
             runtime: probedRuntime,
             actions: RuntimeActionsFake(),
-            persistence: OnboardingPersistenceFake(),
-            hasActivePreset: { false }
+            persistence: OnboardingPersistenceFake()
         )
         probed.requestPermission()
         probedRuntime.publish(.starting, output: output())
-        probedRuntime.publish(.needsSetup, output: output())
+        probedRuntime.publish(.inactive, output: output())
         XCTAssertTrue(probed.canComplete)
     }
 
@@ -246,7 +243,7 @@ final class ProductSurfaceTests: XCTestCase {
         let persistence = OnboardingPersistenceFake()
         let first = OnboardingViewModel(
             runtime: AudioRuntimeState(), actions: RuntimeActionsFake(),
-            persistence: persistence, hasActivePreset: { false }
+            persistence: persistence
         )
         XCTAssertTrue(first.shouldPresentAutomatically)
         first.advance()
@@ -255,7 +252,7 @@ final class ProductSurfaceTests: XCTestCase {
 
         let relaunched = OnboardingViewModel(
             runtime: AudioRuntimeState(), actions: RuntimeActionsFake(),
-            persistence: persistence, hasActivePreset: { false }
+            persistence: persistence
         )
         XCTAssertFalse(relaunched.shouldPresentAutomatically)
         XCTAssertEqual(relaunched.currentStep, .systemAudio)
@@ -267,7 +264,7 @@ final class ProductSurfaceTests: XCTestCase {
         let persistence = OnboardingPersistenceFake()
         let viewModel = OnboardingViewModel(
             runtime: AudioRuntimeState(), actions: RuntimeActionsFake(),
-            persistence: persistence, hasActivePreset: { false }
+            persistence: persistence
         )
 
         viewModel.selectStep(.liveHealth)
@@ -283,7 +280,7 @@ final class ProductSurfaceTests: XCTestCase {
         persistence.checkpoint = .liveHealth
         let viewModel = OnboardingViewModel(
             runtime: AudioRuntimeState(status: .processing, currentOutput: output()),
-            actions: RuntimeActionsFake(), persistence: persistence, hasActivePreset: { false }
+            actions: RuntimeActionsFake(), persistence: persistence
         )
 
         viewModel.prepareForPresentation(.automaticFirstSetup)
@@ -298,7 +295,7 @@ final class ProductSurfaceTests: XCTestCase {
         completedPersistence.isComplete = true
         let healthy = OnboardingViewModel(
             runtime: AudioRuntimeState(status: .processing, currentOutput: output()),
-            actions: RuntimeActionsFake(), persistence: completedPersistence, hasActivePreset: { false }
+            actions: RuntimeActionsFake(), persistence: completedPersistence
         )
         healthy.prepareForPresentation(.voluntary)
         XCTAssertEqual(healthy.currentStep, .welcome)
@@ -306,18 +303,26 @@ final class ProductSurfaceTests: XCTestCase {
 
         let missingPermission = OnboardingViewModel(
             runtime: AudioRuntimeState(status: .needsPermission, currentOutput: output()),
-            actions: RuntimeActionsFake(), persistence: OnboardingPersistenceFake(), hasActivePreset: { true }
+            actions: RuntimeActionsFake(), persistence: OnboardingPersistenceFake()
         )
         missingPermission.prepareForPresentation(.voluntary)
         XCTAssertEqual(missingPermission.currentStep, .systemAudio)
         XCTAssertTrue(missingPermission.needsSetupAttention)
+
+        let inactiveAtBoot = OnboardingViewModel(
+            runtime: AudioRuntimeState(status: .inactive),
+            actions: RuntimeActionsFake(), persistence: OnboardingPersistenceFake()
+        )
+        inactiveAtBoot.prepareForPresentation(.voluntary)
+        XCTAssertEqual(inactiveAtBoot.currentStep, .welcome)
+        XCTAssertFalse(inactiveAtBoot.needsSetupAttention)
 
         let unsupportedOutput = OnboardingViewModel(
             runtime: AudioRuntimeState(
                 status: .nativePassthrough(reason: "Unsupported output"),
                 currentOutput: output(virtual: true)
             ),
-            actions: RuntimeActionsFake(), persistence: OnboardingPersistenceFake(), hasActivePreset: { true }
+            actions: RuntimeActionsFake(), persistence: OnboardingPersistenceFake()
         )
         unsupportedOutput.prepareForPresentation(.voluntary)
         XCTAssertEqual(unsupportedOutput.currentStep, .liveHealth)
@@ -326,8 +331,8 @@ final class ProductSurfaceTests: XCTestCase {
 
     func testNoPresetDoesNotCreateSetupAttentionWhenRuntimeIsHealthy() {
         let viewModel = OnboardingViewModel(
-            runtime: AudioRuntimeState(status: .needsSetup, currentOutput: output()),
-            actions: RuntimeActionsFake(), persistence: OnboardingPersistenceFake(), hasActivePreset: { false }
+            runtime: AudioRuntimeState(status: .inactive),
+            actions: RuntimeActionsFake(), persistence: OnboardingPersistenceFake()
         )
 
         XCTAssertFalse(viewModel.needsSetupAttention)
@@ -337,7 +342,7 @@ final class ProductSurfaceTests: XCTestCase {
     func testMenuPresentationMapsEveryRuntimeStateAndOnlyRetryableStatesExposeRetry() {
         let cases: [(AudioRuntimeState.Status, String, Bool)] = [
             (.unavailable("private reason"), "exclamationmark.waveform", false),
-            (.needsSetup, "exclamationmark.waveform", false),
+            (.inactive, "waveform.circle", false),
             (.needsPermission, "exclamationmark.waveform", true),
             (.nativePassthrough(reason: "private reason"), "exclamationmark.waveform", false),
             (.starting, "waveform.badge.plus", false),
@@ -370,7 +375,7 @@ final class ProductSurfaceTests: XCTestCase {
 
         let preset = OnboardingReadinessPresentation.make(
             permission: .granted, hasPreset: false,
-            runtimeStatus: .needsSetup, isReady: true
+            runtimeStatus: .inactive, isReady: true
         )
         XCTAssertNil(preset.actionStep)
         XCTAssertTrue(preset.detail.contains("Choose an HRIR preset whenever"))

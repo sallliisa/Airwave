@@ -114,6 +114,25 @@ struct AirwavePresetFilesRow: View {
     }
 }
 
+struct AirwavePresetDropHint: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "square.and.arrow.down")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .frame(width: 20)
+            Text("Drag and drop your HRIR files here")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, AirwaveLayout.rowHorizontalPadding)
+        .padding(.vertical, AirwaveLayout.rowVerticalPadding)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("You can drag and drop HRIR WAV files anywhere in this selector")
+    }
+}
+
 struct AirwaveScrollEdgeFades: View {
     var bottomHeight: CGFloat = 110
 

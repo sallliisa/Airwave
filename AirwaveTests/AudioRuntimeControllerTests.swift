@@ -6,13 +6,13 @@ final class AudioRuntimeControllerTests: XCTestCase {
     func testSystemAudioPermissionRequestUsesShortSafeProbeWithoutPreset() {
         let harness = Harness()
         harness.controller.launch(presetReady: false)
-        XCTAssertEqual(harness.state.status, .needsSetup)
+        XCTAssertEqual(harness.state.status, .inactive)
 
         harness.controller.requestSystemAudioAccess()
 
         XCTAssertEqual(harness.pipelines.startedOutputs.count, 1)
         XCTAssertEqual(harness.pipelines.liveCount, 0)
-        XCTAssertEqual(harness.state.status, .needsSetup)
+        XCTAssertEqual(harness.state.status, .inactive)
     }
 
     func testTransientPermissionProbeFailureRecoversAndReleasesProbeResources() {
@@ -27,7 +27,7 @@ final class AudioRuntimeControllerTests: XCTestCase {
         }
         XCTAssertEqual(harness.scheduler.pendingDelays, [1])
         harness.scheduler.runNext()
-        XCTAssertEqual(harness.state.status, .needsSetup)
+        XCTAssertEqual(harness.state.status, .inactive)
         XCTAssertEqual(harness.pipelines.startedOutputs.count, 2)
         XCTAssertEqual(harness.pipelines.liveCount, 0)
     }
@@ -59,16 +59,27 @@ final class AudioRuntimeControllerTests: XCTestCase {
         XCTAssertEqual(harness.pipelines.liveCount, 1)
     }
 
-    func testMissingPresetAndPermissionNeverAcquireResources() {
+    func testInactivePresetAndPermissionDenialNeverAcquireResources() {
         let missing = Harness()
         missing.controller.launch(presetReady: false)
-        XCTAssertEqual(missing.state.status, .needsSetup)
+        XCTAssertEqual(missing.state.status, .inactive)
         XCTAssertEqual(missing.pipelines.liveCount, 0)
 
         let denied = Harness()
-        denied.controller.launch(presetReady: true, permissionGranted: false)
+        denied.controller.launch(presetReady: false, permissionGranted: false)
         XCTAssertEqual(denied.state.status, .needsPermission)
         XCTAssertEqual(denied.pipelines.liveCount, 0)
+    }
+
+    func testSelectingNoneStopsProcessingAndBecomesHealthyInactive() {
+        let harness = Harness()
+        harness.controller.launch(presetReady: true)
+        XCTAssertEqual(harness.state.status, .processing)
+
+        harness.controller.presetDidChange(isReady: false)
+
+        XCTAssertEqual(harness.state.status, .inactive)
+        XCTAssertEqual(harness.pipelines.liveCount, 0)
     }
 
     func testPermissionErrorStopsCandidateAndDoesNotSpin() {

@@ -167,12 +167,12 @@ final class AudioRuntimeController {
 
     private func reconcile() {
         guard launched, !sleeping, !terminated else { return }
-        guard presetReady || permissionProbeRequested else {
-            state.publish(.needsSetup)
-            return
-        }
         guard permissionGranted else {
             state.publish(.needsPermission)
+            return
+        }
+        guard presetReady || permissionProbeRequested else {
+            state.publish(.inactive)
             return
         }
         do {
@@ -202,7 +202,7 @@ final class AudioRuntimeController {
             if completedPermissionProbe && !presetReady {
                 do {
                     try candidate.stop()
-                    state.publish(.needsSetup, output: output)
+                    state.publish(.inactive, output: output)
                 } catch {
                     pipeline = candidate
                     scheduleCleanupRetry(error)

@@ -170,8 +170,7 @@ final class OnboardingViewModel: ObservableObject {
     static let shared = OnboardingViewModel(
         runtime: .shared,
         actions: AudioRuntimeController.shared,
-        persistence: UserDefaultsOnboardingPersistenceV2(),
-        hasActivePreset: { HRIRManager.shared.activePreset != nil }
+        persistence: UserDefaultsOnboardingPersistenceV2()
     )
 
     @Published private(set) var currentStep: OnboardingStepV2
@@ -181,19 +180,16 @@ final class OnboardingViewModel: ObservableObject {
     let runtime: AudioRuntimeState
     private let actions: AudioRuntimeUserActions
     private let persistence: OnboardingPersisting
-    private let hasActivePreset: () -> Bool
     private var cancellables: Set<AnyCancellable> = []
 
     init(
         runtime: AudioRuntimeState,
         actions: AudioRuntimeUserActions,
-        persistence: OnboardingPersisting,
-        hasActivePreset: @escaping () -> Bool
+        persistence: OnboardingPersisting
     ) {
         self.runtime = runtime
         self.actions = actions
         self.persistence = persistence
-        self.hasActivePreset = hasActivePreset
         currentStep = persistence.checkpoint
         runtime.$status
             .sink { [weak self] status in
@@ -213,6 +209,11 @@ final class OnboardingViewModel: ObservableObject {
     var recommendedVoluntaryEntryStep: OnboardingStepV2 {
         if healthChecksPass { return .welcome }
         if runtime.status == .needsPermission { return .systemAudio }
+        if let output = runtime.currentOutput,
+           output.outputChannelCount != 2 || output.isVirtual || output.isAggregate {
+            return .liveHealth
+        }
+        if permissionPresentation != .granted { return .systemAudio }
         return .liveHealth
     }
 
@@ -221,20 +222,21 @@ final class OnboardingViewModel: ObservableObject {
         case .needsPermission: .denied
         case .starting, .recovering: .requesting
         case .processing: .granted
-        case .needsSetup where observedPermissionRequest: .granted
+        case .inactive where observedPermissionRequest: .granted
         default: .unknown
         }
     }
 
     var canComplete: Bool {
         guard permissionPresentation == .granted,
-              runtime.status == .processing || runtime.status == .needsSetup,
+              runtime.status == .processing || runtime.status == .inactive,
               let output = runtime.currentOutput else { return false }
         return output.outputChannelCount == 2 && !output.isVirtual && !output.isAggregate
     }
 
     private var healthChecksPass: Bool {
-        guard runtime.status == .processing || runtime.status == .needsSetup,
+        if runtime.status == .inactive { return true }
+        guard runtime.status == .processing,
               let output = runtime.currentOutput else { return false }
         return output.outputChannelCount == 2 && !output.isVirtual && !output.isAggregate
     }
@@ -318,9 +320,9 @@ struct RuntimeMenuPresentation: Equatable {
         case .needsPermission:
             statusIcon = "exclamationmark.waveform"
             detail = "System Audio Recording permission is required."
-        case .needsSetup:
-            statusIcon = "exclamationmark.waveform"
-            detail = "Complete setup to start using Airwave."
+        case .inactive:
+            statusIcon = "waveform.circle"
+            detail = "No HRIR preset selected; native audio remains unchanged."
         case .nativePassthrough:
             statusIcon = "exclamationmark.waveform"
             detail = "Airwave is waiting until it can resume processing."
