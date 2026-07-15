@@ -13,25 +13,22 @@ extension NSApplication: ApplicationLifecycleApplication {}
 @MainActor
 final class ApplicationLifecycleCoordinator: NSObject {
     static let shared = ApplicationLifecycleCoordinator(
-        application: NSApplication.shared,
-        isMenuBarVisible: { MenuBarVisibilityManager.shared.isVisible }
+        application: NSApplication.shared
     )
 
     static let aboutWindowIdentifier = NSUserInterfaceItemIdentifier("com.southneuhof.Airwave.about")
 
     private let application: ApplicationLifecycleApplication
-    private let isMenuBarVisible: () -> Bool
     private var explicitQuitRequested = false
     private var systemTerminationRequested = false
     private var observesWindows = false
+    private var appliedActivationPolicy: NSApplication.ActivationPolicy?
 
     init(
         application: ApplicationLifecycleApplication,
-        isMenuBarVisible: @escaping () -> Bool,
         observeWindows: Bool = true
     ) {
         self.application = application
-        self.isMenuBarVisible = isMenuBarVisible
         super.init()
         guard observeWindows else { return }
         observesWindows = true
@@ -48,12 +45,11 @@ final class ApplicationLifecycleCoordinator: NSObject {
         if observesWindows { NotificationCenter.default.removeObserver(self) }
     }
 
-    static func activationPolicy(menuBarVisible: Bool, hasVisibleUserWindow: Bool) -> NSApplication.ActivationPolicy {
-        menuBarVisible || !hasVisibleUserWindow ? .accessory : .regular
+    static func activationPolicy(hasVisibleUserWindow: Bool) -> NSApplication.ActivationPolicy {
+        hasVisibleUserWindow ? .regular : .accessory
     }
 
     func prepareToPresentUserWindow() {
-        guard !isMenuBarVisible() else { return }
         apply(.regular)
     }
 
@@ -63,10 +59,7 @@ final class ApplicationLifecycleCoordinator: NSObject {
     }
 
     func updateActivationPolicy(hasVisibleUserWindow: Bool) {
-        apply(Self.activationPolicy(
-            menuBarVisible: isMenuBarVisible(),
-            hasVisibleUserWindow: hasVisibleUserWindow
-        ))
+        apply(Self.activationPolicy(hasVisibleUserWindow: hasVisibleUserWindow))
     }
 
     func closeAllUserWindows() {
@@ -95,14 +88,16 @@ final class ApplicationLifecycleCoordinator: NSObject {
     }
 
     private func apply(_ policy: NSApplication.ActivationPolicy) {
+        guard appliedActivationPolicy != policy else { return }
         guard application.setActivationPolicy(policy) else {
             Logger.log("[Application] Could not apply \(policy == .regular ? "regular" : "accessory") activation policy")
             return
         }
+        appliedActivationPolicy = policy
         Logger.log("[Application] Activation policy is \(policy == .regular ? "regular" : "accessory")")
     }
 
-    private static func isUserFacingWindow(_ window: NSWindow) -> Bool {
+    static func isUserFacingWindow(_ window: NSWindow) -> Bool {
         guard window.isVisible || window.isMiniaturized else { return false }
         if window.identifier == SettingsWindowPresenter.windowIdentifier
             || window.identifier == aboutWindowIdentifier {
