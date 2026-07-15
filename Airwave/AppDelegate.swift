@@ -105,11 +105,9 @@ final class ApplicationLifecycleCoordinator: NSObject {
     private static func isUserFacingWindow(_ window: NSWindow) -> Bool {
         guard window.isVisible || window.isMiniaturized else { return false }
         if window.identifier == SettingsWindowPresenter.windowIdentifier
-            || window.identifier == OnboardingWindowPresenter.windowIdentifier
             || window.identifier == aboutWindowIdentifier {
             return true
         }
-        let className = window.className.lowercased()
         guard !isMenuBarPopover(window) else { return false }
         return window.canBecomeMain && window.styleMask.contains(.titled) && !window.title.isEmpty
     }
@@ -129,21 +127,48 @@ final class ApplicationLifecycleCoordinator: NSObject {
 }
 
 @MainActor
+final class SettingsWindowContentState: ObservableObject {
+    enum Mode: Equatable {
+        case setup
+        case settings
+    }
+
+    @Published private(set) var mode: Mode = .settings
+    @Published private(set) var canReturnToSettings = false
+
+    func show(_ mode: Mode, canReturnToSettings: Bool = false) {
+        self.mode = mode
+        self.canReturnToSettings = mode == .setup && canReturnToSettings
+    }
+}
+
+@MainActor
 enum SettingsWindowPresenter {
     static let windowIdentifier = NSUserInterfaceItemIdentifier("com.southneuhof.Airwave.settings")
+    static let contentSize = NSSize(width: 900, height: 600)
     private static var settingsWindow: NSWindow?
-    private static var openOnboardingAction: (() -> Void)?
+    private static let contentState = SettingsWindowContentState()
 
     static func register(_ window: NSWindow) {
         settingsWindow = window
         window.identifier = windowIdentifier
         window.collectionBehavior.insert(.moveToActiveSpace)
+        configureCustomChrome(window)
         window.styleMask.remove(.resizable)
-        let fixedSize = NSSize(width: 1080, height: 760)
+        let fixedSize = contentSize
         window.contentMinSize = fixedSize
         window.contentMaxSize = fixedSize
         window.standardWindowButton(.zoomButton)?.isEnabled = false
         ApplicationLifecycleCoordinator.shared.prepareToPresentUserWindow()
+    }
+
+    private static func configureCustomChrome(_ window: NSWindow) {
+        window.styleMask.insert(.fullSizeContentView)
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
+        window.isMovableByWindowBackground = true
+        window.backgroundColor = NSColor(red: 17 / 255, green: 17 / 255, blue: 17 / 255, alpha: 1)
     }
 
     static func presentExistingWindow() {
@@ -151,44 +176,28 @@ enum SettingsWindowPresenter {
         WindowFronting.present(identifier: windowIdentifier, title: "Settings")
     }
 
-    static func present(openOnboarding: (() -> Void)? = nil) {
-        if let openOnboarding { openOnboardingAction = openOnboarding }
+    static func present(_ mode: SettingsWindowContentState.Mode = .settings) {
+        contentState.show(
+            mode,
+            canReturnToSettings: mode == .setup && OnboardingViewModel.shared.isComplete
+        )
         if settingsWindow == nil {
-            let content = SettingsView(openOnboardingAction: { openOnboardingAction?() })
+            let content = SettingsWindowContent(state: contentState)
                 .environmentObject(MenuBarViewModel.shared)
             let controller = NSHostingController(rootView: content)
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 1080, height: 760),
+                contentRect: NSRect(origin: .zero, size: contentSize),
                 styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
                 backing: .buffered,
                 defer: false
             )
             window.title = "Settings"
-            window.titleVisibility = .hidden
-            window.titlebarAppearsTransparent = true
-            window.isMovableByWindowBackground = true
             window.isReleasedWhenClosed = false
             window.contentViewController = controller
             window.center()
             register(window)
         }
         presentExistingWindow()
-    }
-}
-
-@MainActor
-enum OnboardingWindowPresenter {
-    static let windowIdentifier = NSUserInterfaceItemIdentifier("com.southneuhof.Airwave.onboarding")
-
-    static func register(_ window: NSWindow) {
-        window.identifier = windowIdentifier
-        window.collectionBehavior.insert(.moveToActiveSpace)
-        ApplicationLifecycleCoordinator.shared.prepareToPresentUserWindow()
-    }
-
-    static func presentExistingWindow() {
-        ApplicationLifecycleCoordinator.shared.prepareToPresentUserWindow()
-        WindowFronting.present(identifier: windowIdentifier, title: "Set Up Airwave")
     }
 }
 
@@ -269,6 +278,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self, selector: #selector(willPowerOff),
             name: NSWorkspace.willPowerOffNotification, object: nil
         )
+
+        DispatchQueue.main.async {
+            if OnboardingViewModel.shared.shouldPresentAutomatically {
+                SettingsWindowPresenter.present(.setup)
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

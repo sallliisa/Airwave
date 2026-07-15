@@ -26,29 +26,115 @@ private struct SettingsWindowAccessor: NSViewRepresentable {
     }
 }
 
-struct OnboardingWindowAccessor: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        DispatchQueue.main.async {
-            guard let window = view.window else { return }
-            OnboardingWindowPresenter.register(window)
+struct SettingsWindowContent: View {
+    @ObservedObject var state: SettingsWindowContentState
+    @ObservedObject private var onboarding = OnboardingViewModel.shared
+    @ObservedObject private var hrirManager = HRIRManager.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var onboardingNavigationDirection: OnboardingNavigationDirection = .forward
+
+    var body: some View {
+        ZStack {
+            pageContent
+                .animation(.easeOut(duration: reduceMotion ? 0.12 : 0.2), value: state.mode)
+
+            VStack(spacing: 0) {
+                AirwaveTopBar {
+                    topBarCenter
+                } trailing: {
+                    topBarTrailing
+                }
+                Spacer(minLength: 0)
+            }
         }
-        return view
+        .frame(width: SettingsWindowPresenter.contentSize.width, height: SettingsWindowPresenter.contentSize.height)
+        .background(SettingsWindowAccessor())
+        .clipped()
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {}
+    @ViewBuilder
+    private var pageContent: some View {
+        switch state.mode {
+        case .setup:
+            OnboardingView(
+                viewModel: OnboardingViewModel.shared,
+                navigationDirection: $onboardingNavigationDirection,
+                canReturnToSettings: state.canReturnToSettings,
+                onComplete: { state.show(.settings) },
+                onReturnToSettings: { state.show(.settings) }
+            )
+            .transition(.opacity)
+        case .settings:
+            SettingsView(showSetup: {
+                OnboardingViewModel.shared.resume()
+                state.show(.setup, canReturnToSettings: true)
+            })
+            .transition(.opacity)
+        }
+    }
+
+    @ViewBuilder
+    private var topBarCenter: some View {
+        switch state.mode {
+        case .setup:
+            OnboardingProgressIndicator(
+                currentStep: onboarding.currentStep,
+                permission: onboarding.permissionPresentation,
+                hasPreset: hrirManager.activePreset != nil,
+                isReady: onboarding.canComplete,
+                onSelect: { step in
+                    onboardingNavigationDirection = onboardingIndex(of: step) > onboardingIndex(of: onboarding.currentStep)
+                        ? .forward
+                        : .backward
+                    withAnimation(onboardingPageAnimation) {
+                        onboarding.selectStep(step)
+                    }
+                }
+            )
+        case .settings:
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private var topBarTrailing: some View {
+        switch state.mode {
+        case .setup:
+            Text("Page \(onboardingPageNumber) of \(OnboardingStepV2.allCases.count)")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+        case .settings:
+            Button("Quit Airwave and Stop Processing") {
+                ApplicationLifecycleCoordinator.shared.requestExplicitQuit()
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(.red)
+            .help("Quit Airwave and stop audio processing")
+        }
+    }
+
+    private var onboardingPageNumber: Int {
+        (OnboardingStepV2.allCases.firstIndex(of: onboarding.currentStep) ?? 0) + 1
+    }
+
+    private var onboardingPageAnimation: Animation {
+        reduceMotion ? .easeOut(duration: 0.16) : .smooth(duration: 0.26)
+    }
+
+    private func onboardingIndex(of step: OnboardingStepV2) -> Int {
+        OnboardingStepV2.allCases.firstIndex(of: step) ?? 0
+    }
 }
 
 struct SettingsView: View {
-    var openOnboardingAction: (() -> Void)? = nil
+    var showSetup: () -> Void
     @ObservedObject private var runtime = AudioRuntimeState.shared
     @ObservedObject private var hrirManager = HRIRManager.shared
     @ObservedObject private var launchAtLogin = LaunchAtLoginManager.shared
     @ObservedObject private var menuVisibility = MenuBarVisibilityManager.shared
     @ObservedObject private var updateManager = UpdateManager.shared
-    @ObservedObject private var onboarding = OnboardingViewModel.shared
     @EnvironmentObject private var viewModel: MenuBarViewModel
-    @Environment(\.openWindow) private var openWindow
     @State private var rightColumnHeight: CGFloat = 0
 
     var body: some View {
@@ -87,38 +173,9 @@ struct SettingsView: View {
             .frame(maxWidth: 1000, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .top)
 
-            VStack(spacing: 0) {
-                topChrome
-                Spacer(minLength: 0)
-            }
         }
         .frame(width: 900, height: 600)
-        .background(SettingsWindowAccessor())
         .preferredColorScheme(.dark)
-    }
-
-    private var topChrome: some View {
-        HStack(spacing: 12) {
-            Image("AirwaveMark")
-                .renderingMode(.template)
-                .resizable()
-                .scaledToFit()
-                .foregroundStyle(.primary)
-                .frame(width: 24, height: 24)
-                .accessibilityLabel("Airwave")
-            Text("Airwave").font(.headline)
-            Spacer()
-            Button("Quit Airwave and Stop Processing") {
-                ApplicationLifecycleCoordinator.shared.requestExplicitQuit()
-            }
-            .buttonStyle(.plain)
-            .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(.red)
-            .help("Quit Airwave and stop audio processing")
-        }
-        .padding(.horizontal, 24)
-        .padding(.top, 14)
-        .padding(.bottom, 24)
     }
 
     private var pageHeader: some View {
@@ -235,13 +292,7 @@ struct SettingsView: View {
                     subtitle: "Review Airwave setup",
                     buttonTitle: "Setup…"
                 ) {
-                    onboarding.resume()
-                    if let openOnboardingAction {
-                        openOnboardingAction()
-                    } else {
-                        openWindow(id: "onboarding")
-                        OnboardingWindowPresenter.presentExistingWindow()
-                    }
+                    showSetup()
                 }
                 Divider().padding(.leading, 30)
                 settingsActionRow(

@@ -4,6 +4,23 @@ import XCTest
 
 @MainActor
 final class ProductSurfaceTests: XCTestCase {
+    func testSettingsWindowContentStateSwitchesModesAndLimitsSetupExit() {
+        let state = SettingsWindowContentState()
+        XCTAssertEqual(state.mode, .settings)
+        XCTAssertFalse(state.canReturnToSettings)
+
+        state.show(.setup)
+        XCTAssertEqual(state.mode, .setup)
+        XCTAssertFalse(state.canReturnToSettings)
+
+        state.show(.setup, canReturnToSettings: true)
+        XCTAssertTrue(state.canReturnToSettings)
+
+        state.show(.settings, canReturnToSettings: true)
+        XCTAssertEqual(state.mode, .settings)
+        XCTAssertFalse(state.canReturnToSettings)
+    }
+
     func testMenuBarVisibilityDefaultsOffAndPersists() throws {
         let suite = "MenuVisibility.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
