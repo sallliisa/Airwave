@@ -314,8 +314,9 @@ final class ProductSurfaceTests: XCTestCase {
             actions: RuntimeActionsFake(), persistence: OnboardingPersistenceFake()
         )
         inactiveAtBoot.prepareForPresentation(.voluntary)
-        XCTAssertEqual(inactiveAtBoot.currentStep, .systemAudio)
-        XCTAssertTrue(inactiveAtBoot.needsSetupAttention)
+        XCTAssertEqual(inactiveAtBoot.currentStep, .welcome)
+        XCTAssertTrue(inactiveAtBoot.isConfigurationHealthy)
+        XCTAssertFalse(inactiveAtBoot.needsSetupAttention)
 
         let unsupportedOutput = OnboardingViewModel(
             runtime: AudioRuntimeState(
@@ -329,15 +330,27 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertTrue(unsupportedOutput.needsSetupAttention)
     }
 
-    func testInactiveLaunchUsesOnboardingReadinessForSettingsAttention() {
-        let viewModel = OnboardingViewModel(
+    func testInactiveLaunchIsHealthyButStillRequiresFirstSetupPermissionProbe() {
+        let freshViewModel = OnboardingViewModel(
             runtime: AudioRuntimeState(status: .inactive),
             actions: RuntimeActionsFake(), persistence: OnboardingPersistenceFake()
         )
 
-        XCTAssertFalse(viewModel.canComplete)
-        XCTAssertTrue(viewModel.needsSetupAttention)
-        XCTAssertEqual(viewModel.recommendedVoluntaryEntryStep, .systemAudio)
+        XCTAssertFalse(freshViewModel.canComplete)
+        XCTAssertTrue(freshViewModel.isConfigurationHealthy)
+        XCTAssertFalse(freshViewModel.needsSetupAttention)
+        XCTAssertEqual(freshViewModel.recommendedVoluntaryEntryStep, .welcome)
+
+        let completedPersistence = OnboardingPersistenceFake()
+        completedPersistence.isComplete = true
+        let completedViewModel = OnboardingViewModel(
+            runtime: AudioRuntimeState(status: .inactive),
+            actions: RuntimeActionsFake(), persistence: completedPersistence
+        )
+
+        XCTAssertEqual(completedViewModel.permissionPresentation, .granted)
+        XCTAssertTrue(completedViewModel.canComplete)
+        XCTAssertFalse(completedViewModel.needsSetupAttention)
     }
 
     func testMenuPresentationMapsEveryRuntimeStateAndOnlyRetryableStatesExposeRetry() {
