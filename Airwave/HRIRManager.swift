@@ -57,7 +57,7 @@ final class ActivationCancellationToken {
 }
 
 /// Renders a single virtual speaker to binaural output
-struct VirtualSpeakerRenderer {
+nonisolated struct VirtualSpeakerRenderer {
     let speaker: VirtualSpeaker
     let convolverLeftEar: ConvolutionEngine
     let convolverRightEar: ConvolutionEngine
@@ -95,7 +95,7 @@ class HRIRManager: ObservableObject {
     // Multi-channel rendering: one renderer per input channel
     // Protected by a concurrent queue for thread-safe access
     // Immutable state container for lock-free access
-    class RendererState {
+    nonisolated class RendererState {
         let renderers: [VirtualSpeakerRenderer]
         let processor: RealtimeAudioProcessor
         
@@ -106,8 +106,8 @@ class HRIRManager: ObservableObject {
     }
     
     // Writers publish immutable state under one lock. Render thread makes one non-blocking snapshot attempt.
-    private let stateLock = OSAllocatedUnfairLock<RendererState?>(initialState: nil)
-    private var audioThreadState: RendererState?
+    nonisolated private let stateLock = OSAllocatedUnfairLock<RendererState?>(initialState: nil)
+    nonisolated(unsafe) private var audioThreadState: RendererState?
 
     private var activationTask: DispatchWorkItem?
     private var activationGeneration = 0
@@ -367,7 +367,7 @@ class HRIRManager: ObservableObject {
     }
 
     /// Process selected stereo input through convolution without render-thread allocation.
-    func processAudio(
+    nonisolated func processAudio(
         inputLeft: UnsafePointer<Float>,
         inputRight: UnsafePointer<Float>?,
         leftOutput: UnsafeMutablePointer<Float>,

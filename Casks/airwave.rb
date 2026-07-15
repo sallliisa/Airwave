@@ -1,6 +1,6 @@
 cask "airwave" do
-  version "1.1.1"
-  sha256 "01988d10149b334b77a43bfc6948417335f4acc9af610d1eb7b8e78e44e7bedb"
+  version "2.0.0"
+  sha256 "REPLACE_WITH_2_0_0_SHA256"
 
   url "https://github.com/sallliisa/Airwave/releases/download/v#{version}/Airwave_v#{version}.zip",
       verified: "github.com/sallliisa/Airwave/"
@@ -13,13 +13,13 @@ cask "airwave" do
     strategy :github_latest
   end
 
-  depends_on macos: :sonoma
+  depends_on macos: :sequoia
 
   app "Airwave.app"
 
   caveats <<~EOS
-    Airwave requires a virtual audio device such as BlackHole 2ch.
-    After installation, open Airwave and complete the aggregate-device setup.
+    Airwave requires System Audio Recording permission and a stereo HRIR preset.
+    Output selection and volume remain controlled by macOS.
   EOS
 
   zap trash: [
