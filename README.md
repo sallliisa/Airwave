@@ -6,7 +6,7 @@ Airwave applies system-wide stereo HRIR convolution on macOS without changing th
 
 - macOS 15 Sequoia or later
 - A physical stereo output supported by macOS
-- A stereo HRIR WAV preset (HeSuVi-compatible presets are supported)
+- A HeSuVi-compatible 7- or 14-channel HRIR WAV preset
 - System Audio Capture permission
 
 BlackHole, public aggregate devices, and other virtual routing software are neither required nor supported. If macOS currently uses one as its output, Airwave stays in native passthrough and asks you to choose a physical stereo output in System Settings.

@@ -7,6 +7,12 @@
       "layers" : [
         {
           "blend-mode" : "normal",
+          "fill-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : "none"
+            }
+          ],
           "hidden" : false,
           "image-name" : "airwave_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.svg",
           "name" : "airwave_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24",
@@ -19,13 +25,14 @@
           }
         },
         {
+          "glass" : true,
           "image-name" : "deb6a63ef374b8454fd2c7e44209e02a59863b79.png",
           "name" : "deb6a63ef374b8454fd2c7e44209e02a59863b79",
           "position" : {
-            "scale" : 0.5,
+            "scale" : 0.7,
             "translation-in-points" : [
-              352.36346714370984,
-              0
+              -67.8096354250847,
+              -244
             ]
           }
         }
