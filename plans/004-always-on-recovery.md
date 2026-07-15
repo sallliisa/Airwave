@@ -4,7 +4,9 @@
 > Do not add a user engine toggle. Update the index after all gates pass.
 >
 > **Drift check**: `git diff --stat f020179..HEAD -- Airwave AirwaveTests`
-> Confirm plan 003 is DONE and its manual tap teardown check passed.
+> Confirm plan 003 is DONE and its automated lifecycle/teardown checks pass.
+> Signed hardware and force-termination validation remains a release gate in
+> plan 006 and is not a prerequisite for fake-driven runtime policy work.
 
 ## Status
 
@@ -147,10 +149,10 @@ and one current pipeline after wake recovery.
 - Any transition can leave the tap actively read while output is unavailable.
 - Output observation requires changing the output property.
 - Retry needs a second independent state machine in UI code.
-- A force-termination manual check from plan 003 did not restore native audio.
+- Automated teardown checks from plan 003 regress or show native audio can stay
+  muted after the I/O reader stops.
 
 ## Maintenance notes
 
 Review generation ownership and cleanup before UI polish. A state that says
 `processing` while resources are incomplete is a release-blocking defect.
-
