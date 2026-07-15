@@ -1,0 +1,4 @@
+numpy==2.0.2
+pytest==8.4.2
+sofar==1.2.3
+soundfile==0.13.1
