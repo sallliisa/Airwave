@@ -160,6 +160,11 @@ enum SystemAudioPermissionPresentation: Equatable {
     case denied
 }
 
+enum OnboardingPresentationContext {
+    case automaticFirstSetup
+    case voluntary
+}
+
 @MainActor
 final class OnboardingViewModel: ObservableObject {
     static let shared = OnboardingViewModel(
@@ -203,6 +208,14 @@ final class OnboardingViewModel: ObservableObject {
     var shouldShowSetupMenuItem: Bool { !persistence.isComplete }
     var isComplete: Bool { persistence.isComplete }
 
+    var needsSetupAttention: Bool { !healthChecksPass }
+
+    var recommendedVoluntaryEntryStep: OnboardingStepV2 {
+        if healthChecksPass { return .welcome }
+        if runtime.status == .needsPermission { return .systemAudio }
+        return .liveHealth
+    }
+
     var permissionPresentation: SystemAudioPermissionPresentation {
         switch runtime.status {
         case .needsPermission: .denied
@@ -216,6 +229,12 @@ final class OnboardingViewModel: ObservableObject {
     var canComplete: Bool {
         guard permissionPresentation == .granted,
               runtime.status == .processing || runtime.status == .needsSetup,
+              let output = runtime.currentOutput else { return false }
+        return output.outputChannelCount == 2 && !output.isVirtual && !output.isAggregate
+    }
+
+    private var healthChecksPass: Bool {
+        guard runtime.status == .processing || runtime.status == .needsSetup,
               let output = runtime.currentOutput else { return false }
         return output.outputChannelCount == 2 && !output.isVirtual && !output.isAggregate
     }
@@ -256,6 +275,18 @@ final class OnboardingViewModel: ObservableObject {
     func resume() {
         persistence.isDeferred = false
         currentStep = persistence.checkpoint
+    }
+
+
+    func prepareForPresentation(_ context: OnboardingPresentationContext) {
+        persistence.isDeferred = false
+        switch context {
+        case .automaticFirstSetup:
+            currentStep = .welcome
+        case .voluntary:
+            currentStep = recommendedVoluntaryEntryStep
+        }
+        persistence.checkpoint = currentStep
     }
 
     @discardableResult

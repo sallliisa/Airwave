@@ -68,7 +68,7 @@ struct SettingsWindowContent: View {
             .transition(.opacity)
         case .settings:
             SettingsView(showSetup: {
-                OnboardingViewModel.shared.resume()
+                OnboardingViewModel.shared.prepareForPresentation(.voluntary)
                 state.show(.setup, canReturnToSettings: true)
             })
             .transition(.opacity)
@@ -106,8 +106,10 @@ struct SettingsWindowContent: View {
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
         case .settings:
-            Button("Quit Airwave and Stop Processing") {
+            Button {
                 ApplicationLifecycleCoordinator.shared.requestExplicitQuit()
+            } label: {
+                Label("Quit Airwave and Stop Processing", systemImage: "power")
             }
             .buttonStyle(.plain)
             .font(.system(size: 12, weight: .medium))
@@ -169,9 +171,9 @@ struct SettingsView: View {
                 debugSection
                 #endif
             }
-            .padding(.horizontal, 30)
-            .padding(.top, 94)
-            .padding(.bottom, 36)
+            .padding(.horizontal, 24)
+            .padding(.top, 80)
+            .padding(.bottom, 16)
             .frame(maxWidth: 1000, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .top)
 
@@ -182,7 +184,14 @@ struct SettingsView: View {
 
     private var pageHeader: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text("Settings").font(.largeTitle.weight(.semibold))
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text("Settings").font(.largeTitle.weight(.semibold))
+                if onboardingNeedsAttention {
+                    Label("Reopen setup", systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.orange)
+                }
+            }
             Text("Choose your spatial profile and application preferences.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -292,7 +301,8 @@ struct SettingsView: View {
                     icon: "checklist",
                     title: "Set Up Airwave Again",
                     subtitle: "Review Airwave setup",
-                    buttonTitle: "Setup…"
+                    buttonTitle: "Setup…",
+                    showsWarning: onboardingNeedsAttention
                 ) {
                     showSetup()
                 }
@@ -404,12 +414,13 @@ struct SettingsView: View {
         title: String,
         subtitle: String,
         buttonTitle: String,
+        showsWarning: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         HStack(spacing: 10) {
             Image(systemName: icon)
                 .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(showsWarning ? Color.orange : Color.secondary)
                 .frame(width: 20)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).font(.system(size: 12))
@@ -424,6 +435,11 @@ struct SettingsView: View {
         }
         .padding(.horizontal, AirwaveLayout.rowHorizontalPadding)
         .padding(.vertical, AirwaveLayout.rowVerticalPadding)
+        .background(showsWarning ? Color.orange.opacity(0.10) : Color.clear)
+    }
+
+    private var onboardingNeedsAttention: Bool {
+        OnboardingViewModel.shared.needsSetupAttention
     }
 
     private var sampleRate: String {

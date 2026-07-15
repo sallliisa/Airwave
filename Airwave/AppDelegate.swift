@@ -284,6 +284,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         DispatchQueue.main.async {
             if OnboardingViewModel.shared.shouldPresentAutomatically {
+                OnboardingViewModel.shared.prepareForPresentation(.automaticFirstSetup)
                 SettingsWindowPresenter.present(.setup)
             }
         }

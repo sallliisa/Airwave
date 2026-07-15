@@ -27,8 +27,8 @@ struct OnboardingView: View {
                 Spacer(minLength: 0)
                 footer
                     .padding(.horizontal, 24)
-                    .padding(.top, 26)
-                    .padding(.bottom, 14)
+                    .padding(.top, 24)
+                    .padding(.bottom, 16)
             }
         }
         .frame(

@@ -278,6 +278,62 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertEqual(persistence.checkpoint, .systemAudio)
     }
 
+    func testAutomaticPresentationAlwaysStartsAtWelcome() {
+        let persistence = OnboardingPersistenceFake()
+        persistence.checkpoint = .liveHealth
+        let viewModel = OnboardingViewModel(
+            runtime: AudioRuntimeState(status: .processing, currentOutput: output()),
+            actions: RuntimeActionsFake(), persistence: persistence, hasActivePreset: { false }
+        )
+
+        viewModel.prepareForPresentation(.automaticFirstSetup)
+
+        XCTAssertEqual(viewModel.currentStep, .welcome)
+        XCTAssertEqual(persistence.checkpoint, .welcome)
+    }
+
+    func testVoluntaryPresentationRoutesToFirstRelevantHealthStep() {
+        let completedPersistence = OnboardingPersistenceFake()
+        completedPersistence.checkpoint = .liveHealth
+        completedPersistence.isComplete = true
+        let healthy = OnboardingViewModel(
+            runtime: AudioRuntimeState(status: .processing, currentOutput: output()),
+            actions: RuntimeActionsFake(), persistence: completedPersistence, hasActivePreset: { false }
+        )
+        healthy.prepareForPresentation(.voluntary)
+        XCTAssertEqual(healthy.currentStep, .welcome)
+        XCTAssertFalse(healthy.needsSetupAttention)
+
+        let missingPermission = OnboardingViewModel(
+            runtime: AudioRuntimeState(status: .needsPermission, currentOutput: output()),
+            actions: RuntimeActionsFake(), persistence: OnboardingPersistenceFake(), hasActivePreset: { true }
+        )
+        missingPermission.prepareForPresentation(.voluntary)
+        XCTAssertEqual(missingPermission.currentStep, .systemAudio)
+        XCTAssertTrue(missingPermission.needsSetupAttention)
+
+        let unsupportedOutput = OnboardingViewModel(
+            runtime: AudioRuntimeState(
+                status: .nativePassthrough(reason: "Unsupported output"),
+                currentOutput: output(virtual: true)
+            ),
+            actions: RuntimeActionsFake(), persistence: OnboardingPersistenceFake(), hasActivePreset: { true }
+        )
+        unsupportedOutput.prepareForPresentation(.voluntary)
+        XCTAssertEqual(unsupportedOutput.currentStep, .liveHealth)
+        XCTAssertTrue(unsupportedOutput.needsSetupAttention)
+    }
+
+    func testNoPresetDoesNotCreateSetupAttentionWhenRuntimeIsHealthy() {
+        let viewModel = OnboardingViewModel(
+            runtime: AudioRuntimeState(status: .needsSetup, currentOutput: output()),
+            actions: RuntimeActionsFake(), persistence: OnboardingPersistenceFake(), hasActivePreset: { false }
+        )
+
+        XCTAssertFalse(viewModel.needsSetupAttention)
+        XCTAssertEqual(viewModel.recommendedVoluntaryEntryStep, .welcome)
+    }
+
     func testMenuPresentationMapsEveryRuntimeStateAndOnlyRetryableStatesExposeRetry() {
         let cases: [(AudioRuntimeState.Status, String, Bool)] = [
             (.unavailable("private reason"), "exclamationmark.waveform", false),

@@ -111,13 +111,19 @@ private struct MenuSelectionRow: View {
 
 private struct MenuActionRow: View {
     let title: String
+    var systemImage: String? = nil
     var shortcut: String? = nil
     var showWarning = false
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HStack {
+            HStack(spacing: 8) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 14)
+                }
                 Text(title)
                 Spacer()
                 if showWarning { Text("⚠️") }
@@ -171,7 +177,7 @@ struct AirwaveMenuView: View {
                 if onboarding.shouldShowSetupMenuItem {
                     MenuActionRow(title: "Complete Set Up…", showWarning: true) {
                         viewModel.closeMenuBarPopover()
-                        onboarding.resume()
+                        onboarding.prepareForPresentation(.voluntary)
                         SettingsWindowPresenter.present(.setup)
                     }
                 }
@@ -184,7 +190,7 @@ struct AirwaveMenuView: View {
 
             Divider().padding(.horizontal, AirwaveLayout.menuDividerInset)
 
-            MenuActionRow(title: "Quit Airwave and Stop Processing") { viewModel.quitApp() }
+            MenuActionRow(title: "Quit Airwave and Stop Processing", systemImage: "power") { viewModel.quitApp() }
                 .padding(.vertical, AirwaveLayout.menuGroupPadding)
         }
         .frame(width: 280)
