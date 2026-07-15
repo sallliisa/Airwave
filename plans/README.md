@@ -27,13 +27,13 @@ status row.
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
-| 001 | Remove hazardous legacy routing and leave a safe shell | P0 | L | — | TODO |
-| 002 | Establish testable audio-runtime contracts | P0 | M | 001 | TODO |
-| 003 | Implement the stereo process-tap backend | P0 | L | 002 | TODO |
-| 004 | Add always-on output following and recovery | P0 | L | 003 | TODO |
-| 005 | Rebuild settings, menu, onboarding, and persistence | P1 | L | 004 | TODO |
-| 006 | Complete Airwave 2.0 docs and safety validation | P0 | L | 005 | TODO |
-| 007 | Prove multichannel feasibility before committing | P2 | M | 006 | TODO |
+| 001 | Remove hazardous legacy routing and leave a safe shell | P0 | L | — | DONE (`575ab1e`) |
+| 002 | Establish testable audio-runtime contracts | P0 | M | 001 | DONE (`33351fb`) |
+| 003 | Implement the stereo process-tap backend | P0 | L | 002 | DONE (`fda02f8`; signed harness pending plan 006) |
+| 004 | Add always-on output following and recovery | P0 | L | 003 | DONE (`f8e4fd2`) |
+| 005 | Rebuild settings, menu, onboarding, and persistence | P1 | L | 004 | DONE (`3ad3dfd`) |
+| 006 | Complete Airwave 2.0 docs and safety validation | P0 | L | 005 | BLOCKED (active signed force-termination/TCC and physical-device matrix NOT TESTED; automated work at `8023858`) |
+| 007 | Prove multichannel feasibility before committing | P2 | M | 006 | BLOCKED (plan 006 release gate not DONE) |
 
 Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED (<reason>)`, or
 `REJECTED (<reason>)`.
@@ -65,4 +65,3 @@ Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED (<reason>)`, or
   record measurements, but only safety and functional failures block 2.0.
 - Implement per-application capture in 2.0: rejected; 2.0 captures all system
   audio except Airwave itself.
-
