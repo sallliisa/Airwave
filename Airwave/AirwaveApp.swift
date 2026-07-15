@@ -4,7 +4,6 @@ import SwiftUI
 struct AirwaveApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var viewModel = MenuBarViewModel.shared
-    @StateObject private var onboardingViewModel = OnboardingViewModel.shared
     @StateObject private var menuVisibility = MenuBarVisibilityManager.shared
 
     init() {
@@ -27,13 +26,6 @@ struct AirwaveApp: App {
             MenuBarLabel()
         }
         .menuBarExtraStyle(.window)
-
-        Window("Set Up Airwave", id: "onboarding") {
-            OnboardingView(viewModel: onboardingViewModel)
-                .environmentObject(viewModel)
-        }
-        .windowResizability(.contentSize)
-        .defaultSize(width: 820, height: 590)
     }
 
     private var menuBarInsertionBinding: Binding<Bool> {

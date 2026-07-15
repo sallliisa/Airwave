@@ -1,19 +1,10 @@
 import SwiftUI
 
 struct MenuBarLabel: View {
-    @ObservedObject private var onboarding = OnboardingViewModel.shared
-    @Environment(\.openWindow) private var openWindow
-
     var body: some View {
         Image("AirwaveMark")
             .renderingMode(.template)
             .accessibilityLabel("Airwave")
-            .task {
-                if onboarding.shouldPresentAutomatically {
-                    openWindow(id: "onboarding")
-                    OnboardingWindowPresenter.presentExistingWindow()
-                }
-            }
     }
 }
 
@@ -147,7 +138,6 @@ struct AirwaveMenuView: View {
     @EnvironmentObject private var viewModel: MenuBarViewModel
     @ObservedObject private var hrirManager = HRIRManager.shared
     @ObservedObject private var onboarding = OnboardingViewModel.shared
-    @Environment(\.openWindow) private var openWindow
     @State private var isPresetExpanded = false
 
     var body: some View {
@@ -182,16 +172,12 @@ struct AirwaveMenuView: View {
                     MenuActionRow(title: "Complete Set Up…", showWarning: true) {
                         viewModel.closeMenuBarPopover()
                         onboarding.resume()
-                        openWindow(id: "onboarding")
-                        OnboardingWindowPresenter.presentExistingWindow()
+                        SettingsWindowPresenter.present(.setup)
                     }
                 }
                 MenuActionRow(title: "Settings") {
                     viewModel.closeMenuBarPopover()
-                    SettingsWindowPresenter.present {
-                        openWindow(id: "onboarding")
-                        OnboardingWindowPresenter.presentExistingWindow()
-                    }
+                    SettingsWindowPresenter.present(.settings)
                 }
             }
             .padding(.vertical, AirwaveLayout.menuGroupPadding)

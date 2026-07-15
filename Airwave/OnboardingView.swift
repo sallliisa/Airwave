@@ -1,21 +1,22 @@
 import SwiftUI
 
+enum OnboardingNavigationDirection {
+    case forward
+    case backward
+}
+
 struct OnboardingView: View {
     @ObservedObject var viewModel: OnboardingViewModel
+    @Binding var navigationDirection: OnboardingNavigationDirection
+    var canReturnToSettings = false
+    var onComplete: () -> Void = {}
+    var onReturnToSettings: () -> Void = {}
     @ObservedObject private var runtime = AudioRuntimeState.shared
     @ObservedObject private var hrirManager = HRIRManager.shared
     @ObservedObject private var launchAtLogin = LaunchAtLoginManager.shared
     @ObservedObject private var menuVisibility = MenuBarVisibilityManager.shared
     @EnvironmentObject private var menuViewModel: MenuBarViewModel
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var navigationDirection: NavigationDirection = .forward
-
-    private enum NavigationDirection {
-        case forward
-        case backward
-    }
-
     var body: some View {
         ZStack {
             AirwavePalette.canvas.ignoresSafeArea()
@@ -23,7 +24,6 @@ struct OnboardingView: View {
             AirwaveScrollEdgeFades()
 
             VStack(spacing: 0) {
-                topChrome
                 Spacer(minLength: 0)
                 footer
                     .padding(.horizontal, 24)
@@ -31,38 +31,11 @@ struct OnboardingView: View {
                     .padding(.bottom, 14)
             }
         }
-        .frame(minWidth: 760, idealWidth: 820, minHeight: 540, idealHeight: 590)
-        .background(OnboardingWindowAccessor())
+        .frame(
+            width: SettingsWindowPresenter.contentSize.width,
+            height: SettingsWindowPresenter.contentSize.height
+        )
         .preferredColorScheme(.dark)
-    }
-
-    private var topChrome: some View {
-        ZStack {
-            HStack {
-                Image("AirwaveMark")
-                    .renderingMode(.template)
-                    .resizable()
-                    .scaledToFit()
-                    .foregroundStyle(.primary)
-                    .frame(width: 24, height: 24)
-                    .accessibilityLabel("Airwave")
-                Spacer()
-                Text("Page \(currentPageNumber) of \(OnboardingStepV2.allCases.count)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-
-            OnboardingProgressIndicator(
-                currentStep: viewModel.currentStep,
-                permission: viewModel.permissionPresentation,
-                hasPreset: hrirManager.activePreset != nil,
-                isReady: viewModel.canComplete,
-                onSelect: navigate(to:)
-            )
-        }
-        .padding(.horizontal, 24)
-        .padding(.top, 14)
-        .padding(.bottom, 24)
     }
 
     private var content: some View {
@@ -292,6 +265,13 @@ struct OnboardingView: View {
             : (viewModel.currentStep == .welcome ? "Begin Setup" : "Continue")
 
         return HStack {
+            if canReturnToSettings {
+                Button("Back to Settings", action: onReturnToSettings)
+                    .buttonStyle(.plain)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
             Spacer()
 
             AirwaveIconButton(
@@ -311,7 +291,7 @@ struct OnboardingView: View {
                 isEnabled: isCompletion ? viewModel.canComplete : true
             ) {
                 if isCompletion {
-                    if viewModel.complete() { dismiss() }
+                    if viewModel.complete() { onComplete() }
                 } else {
                     navigateForward()
                 }
@@ -370,7 +350,7 @@ struct OnboardingView: View {
 
 }
 
-private struct OnboardingProgressIndicator: View {
+struct OnboardingProgressIndicator: View {
     let currentStep: OnboardingStepV2
     let permission: SystemAudioPermissionPresentation
     let hasPreset: Bool

@@ -21,6 +21,34 @@ enum AirwaveLayout {
     static let menuDividerInset: CGFloat = 10
 }
 
+struct AirwaveTopBar<Center: View, Trailing: View>: View {
+    @ViewBuilder let center: () -> Center
+    @ViewBuilder let trailing: () -> Trailing
+
+    var body: some View {
+        ZStack {
+            HStack(spacing: 12) {
+                Image("AirwaveMark")
+                    .renderingMode(.template)
+                    .resizable()
+                    .scaledToFit()
+                    .foregroundStyle(.primary)
+                    .frame(width: 24, height: 24)
+                    .accessibilityLabel("Airwave")
+                Text("Airwave").font(.headline)
+                Spacer(minLength: 12)
+                trailing()
+            }
+
+            center()
+        }
+        .frame(height: 32)
+        .padding(.horizontal, 24)
+        .padding(.top, 14)
+        .padding(.bottom, 24)
+    }
+}
+
 struct AirwavePresetList: View {
     let presets: [HRIRPreset]
     let selectedID: UUID?
