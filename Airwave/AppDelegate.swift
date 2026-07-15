@@ -223,6 +223,7 @@ enum SettingsWindowPresenter {
     }
 
     static func present(_ mode: SettingsWindowContentState.Mode = .settings) {
+        AudioRuntimeController.shared.revalidateSystemAudioAccess()
         contentState.show(
             mode,
             canReturnToSettings: mode == .setup && OnboardingViewModel.shared.isComplete

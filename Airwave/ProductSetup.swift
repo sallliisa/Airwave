@@ -261,10 +261,9 @@ final class OnboardingViewModel: ObservableObject {
     var shouldShowSetupMenuItem: Bool { !persistence.isComplete }
     var isComplete: Bool { persistence.isComplete }
 
-    /// Configuration health is distinct from first-time onboarding completion.
-    /// An intentionally inactive runtime is healthy because HRIR "None" leaves
-    /// native audio unchanged, even when this launch has not probed permission.
-    var isConfigurationHealthy: Bool { runtime.status == .inactive || canComplete }
+    /// Both Settings and onboarding derive health from the current runtime
+    /// probe. Persisted onboarding completion is deliberately not permission.
+    var isConfigurationHealthy: Bool { canComplete }
     var needsSetupAttention: Bool { !isConfigurationHealthy }
 
     var recommendedVoluntaryEntryStep: OnboardingStepV2 {
@@ -283,13 +282,12 @@ final class OnboardingViewModel: ObservableObject {
         case .needsPermission: .denied
         case .starting, .recovering: .requesting
         case .processing: .granted
-        case .inactive where observedPermissionRequest || persistence.isComplete: .granted
+        case .inactive where runtime.currentOutput != nil: .granted
         default: .unknown
         }
     }
 
     var canComplete: Bool {
-        if runtime.status == .inactive && persistence.isComplete { return true }
         guard permissionPresentation == .granted,
               runtime.status == .processing || runtime.status == .inactive,
               let output = runtime.currentOutput else { return false }

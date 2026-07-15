@@ -83,6 +83,10 @@ final class AudioRuntimeController {
         launched = true
         self.presetReady = presetReady
         self.permissionGranted = permissionGranted
+        // With no preset there would otherwise be no pipeline creation to
+        // establish the current TCC state. Use the same short-lived safe probe
+        // as onboarding so permission is never inferred from saved setup data.
+        permissionProbeRequested = !presetReady && permissionGranted
         do {
             try platform.observeDefaultOutput { [weak self] output in
                 // AudioPlatformClient installs this observer on the main queue.
@@ -132,6 +136,18 @@ final class AudioRuntimeController {
         retryNow()
     }
 
+    /// Refreshes permission from Core Audio when a user-facing status surface
+    /// opens. This catches permission revoked while Airwave was inactive.
+    func revalidateSystemAudioAccess() {
+        guard launched else { return }
+        if presetReady {
+            if state.status == .needsPermission { retryNow() }
+            return
+        }
+        permissionProbeRequested = true
+        retryNow()
+    }
+
     func openSystemAudioRecordingSettings() {
         platform.openAudioCapturePermissionSettings()
     }
@@ -172,7 +188,11 @@ final class AudioRuntimeController {
             return
         }
         guard presetReady || permissionProbeRequested else {
-            state.publish(.inactive)
+            // Selecting None intentionally stops processing, but it does not
+            // invalidate the permission result or the supported output that
+            // the running pipeline just proved. Keep that live runtime context
+            // so product surfaces do not fall back to an unverified state.
+            state.publish(.inactive, output: state.currentOutput)
             return
         }
         do {
