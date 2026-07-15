@@ -8,7 +8,7 @@
 import Accelerate
 
 /// Fixed-storage frame adapter for the audio render thread.
-final class RealtimeAudioProcessor {
+nonisolated final class RealtimeAudioProcessor {
     let blockSize: Int
     let maxFramesPerCallback: Int
 

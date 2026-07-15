@@ -44,7 +44,10 @@ jobs:
           fi
 
       - name: Test release validation
-        run: scripts/test-release-version.sh
+        run: |
+          scripts/test-release-version.sh
+          scripts/test-audio-safety-invariants.sh
+          scripts/verify-2.0-metadata.sh
 
       - name: Show Xcode version
         run: xcodebuild -version
@@ -100,6 +103,7 @@ jobs:
           test "$(defaults read "$app/Contents/Info.plist" CFBundleVersion)" = "$BUILD_NUMBER"
           test "$(defaults read "$app/Contents/Info.plist" SUPublicEDKey)" = 't7ScyDMhT5qnuQx9OROZBaprpFgmZKXS7hbsm9FVvRY='
           test "$(defaults read "$app/Contents/Info.plist" SUAutomaticallyUpdate)" = 0
+          test "$(defaults read "$app/Contents/Info.plist" LSMinimumSystemVersion)" = 15.0
           lipo "$app/Contents/MacOS/Airwave" -verify_arch arm64 x86_64
           codesign --verify --strict --verbose=2 "$app"
           test -f "$app/Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle"
@@ -136,6 +140,8 @@ jobs:
             --embed-release-notes \
             --maximum-deltas 0 \
             build/update
+          grep -Eq '<sparkle:minimumSystemVersion>15\.0(\.0)?</sparkle:minimumSystemVersion>' \
+            build/update/appcast.xml || { echo 'appcast does not require macOS 15' >&2; exit 1; }
           shasum -a 256 "build/update/Airwave_v$VERSION.zip" \
             > "build/update/Airwave_v$VERSION.zip.sha256"
           rm -f "$RUNNER_TEMP/sparkle-private-key"

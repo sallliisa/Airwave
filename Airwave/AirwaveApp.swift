@@ -1,35 +1,27 @@
-//
-//  AirwaveApp.swift
-//  Airwave
-//
-//  Created by gamer on 19/11/25.
-//
-
 import SwiftUI
 
 @main
 struct AirwaveApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    
-    @StateObject private var viewModel: MenuBarViewModel
-    @StateObject private var onboardingViewModel: OnboardingViewModel
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @StateObject private var viewModel = MenuBarViewModel.shared
+    @StateObject private var onboardingViewModel = OnboardingViewModel.shared
 
     init() {
-        _viewModel = StateObject(
-            wrappedValue: RuntimeEnvironment.isTestHost
-                ? MenuBarViewModel.testingInstance()
-                : MenuBarViewModel.shared
-        )
-        _onboardingViewModel = StateObject(wrappedValue: OnboardingViewModel.shared)
-        // Start silent update discovery with app lifecycle, not Settings lifecycle.
+        do {
+            try SettingsSchemaV2Migrator(
+                defaults: .standard,
+                launchAtLogin: LaunchAtLoginManager.shared
+            ).migrateIfNeeded()
+        } catch {
+            Logger.log("[Migration] Could not disable launch at login: \(error)")
+        }
         _ = UpdateManager.shared
     }
-    
+
     var body: some Scene {
         MenuBarExtra {
             AirwaveMenuView()
                 .environmentObject(viewModel)
-                .environmentObject(onboardingViewModel)
         } label: {
             MenuBarLabel()
         }
@@ -37,14 +29,15 @@ struct AirwaveApp: App {
 
         Window("Settings", id: "settings") {
             SettingsView()
+                .environmentObject(viewModel)
         }
         .windowResizability(.contentSize)
-        .defaultSize(width: 820, height: 650)
+        .defaultSize(width: 560, height: 420)
 
-        Window("Set up Airwave", id: "onboarding") {
+        Window("Set Up Airwave", id: "onboarding") {
             OnboardingView(viewModel: onboardingViewModel)
         }
         .windowResizability(.contentSize)
-        .defaultSize(width: 820, height: 590)
+        .defaultSize(width: 720, height: 480)
     }
 }
