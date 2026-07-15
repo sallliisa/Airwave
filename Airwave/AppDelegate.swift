@@ -137,8 +137,11 @@ final class SettingsWindowContentState: ObservableObject {
     @Published private(set) var canReturnToSettings = false
 
     func show(_ mode: Mode, canReturnToSettings: Bool = false) {
-        self.mode = mode
-        self.canReturnToSettings = mode == .setup && canReturnToSettings
+        let duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.12 : 0.2
+        withAnimation(.easeOut(duration: duration)) {
+            self.mode = mode
+            self.canReturnToSettings = mode == .setup && canReturnToSettings
+        }
     }
 }
 

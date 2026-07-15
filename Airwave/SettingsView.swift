@@ -36,13 +36,15 @@ struct SettingsWindowContent: View {
     var body: some View {
         ZStack {
             pageContent
-                .animation(.easeOut(duration: reduceMotion ? 0.12 : 0.2), value: state.mode)
 
             VStack(spacing: 0) {
                 AirwaveTopBar {
                     topBarCenter
                 } trailing: {
                     topBarTrailing
+                }
+                .transaction { transaction in
+                    transaction.animation = nil
                 }
                 Spacer(minLength: 0)
             }
