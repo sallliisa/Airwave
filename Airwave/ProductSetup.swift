@@ -1,5 +1,50 @@
-import Foundation
+import AppKit
 import Combine
+import Foundation
+
+@MainActor
+protocol ApplicationActivationPolicyApplying: AnyObject {
+    @discardableResult
+    func setActivationPolicy(_ activationPolicy: NSApplication.ActivationPolicy) -> Bool
+}
+
+extension NSApplication: ApplicationActivationPolicyApplying {}
+
+@MainActor
+final class MenuBarVisibilityManager: ObservableObject {
+    static let shared = MenuBarVisibilityManager()
+    static let defaultsKey = "Airwave.Application.ShowInMenuBar"
+
+    @Published var isVisible: Bool {
+        didSet {
+            defaults.set(isVisible, forKey: Self.defaultsKey)
+            visibilityDidChange()
+        }
+    }
+
+    private let defaults: UserDefaults
+    private let visibilityDidChange: () -> Void
+
+    init(
+        defaults: UserDefaults = .standard,
+        visibilityDidChange: (() -> Void)? = nil
+    ) {
+        self.defaults = defaults
+        self.visibilityDidChange = visibilityDidChange ?? {
+            ApplicationLifecycleCoordinator.shared.updateActivationPolicy()
+        }
+        isVisible = defaults.object(forKey: Self.defaultsKey) == nil ? false : defaults.bool(forKey: Self.defaultsKey)
+    }
+
+    func setVisible(_ value: Bool) {
+        guard value != isVisible else { return }
+        isVisible = value
+    }
+
+    func applyActivationPolicy() {
+        ApplicationLifecycleCoordinator.shared.updateActivationPolicy()
+    }
+}
 
 protocol LaunchAtLoginResetting: AnyObject {
     func disableForSchemaReset() throws
@@ -38,10 +83,19 @@ enum OnboardingStepV2: String, CaseIterable, Codable {
 
     var title: String {
         switch self {
-        case .welcome: "Welcome & Safety"
+        case .welcome: "Welcome"
         case .systemAudio: "System Audio Recording"
         case .hrirPreset: "HRIR Preset"
-        case .liveHealth: "Live Health"
+        case .liveHealth: "Finish"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .welcome: "sparkles"
+        case .systemAudio: "waveform.badge.mic"
+        case .hrirPreset: "waveform.circle"
+        case .liveHealth: "checkmark.seal"
         }
     }
 }
@@ -146,6 +200,7 @@ final class OnboardingViewModel: ObservableObject {
     }
 
     var shouldPresentAutomatically: Bool { !persistence.isComplete && !persistence.isDeferred }
+    var shouldShowSetupMenuItem: Bool { !persistence.isComplete }
     var isComplete: Bool { persistence.isComplete }
 
     var permissionPresentation: SystemAudioPermissionPresentation {
@@ -158,13 +213,9 @@ final class OnboardingViewModel: ObservableObject {
         }
     }
 
-    var virtualOutputGuidance: String? {
-        guard let output = runtime.currentOutput, output.isVirtual || output.isAggregate else { return nil }
-        return "Airwave needs a physical stereo output. Choose one in macOS Sound settings; BlackHole and aggregate devices are unsupported."
-    }
-
     var canComplete: Bool {
-        guard hasActivePreset(), runtime.status == .processing,
+        guard permissionPresentation == .granted,
+              runtime.status == .processing || runtime.status == .needsSetup,
               let output = runtime.currentOutput else { return false }
         return output.outputChannelCount == 2 && !output.isVirtual && !output.isAggregate
     }
@@ -180,6 +231,12 @@ final class OnboardingViewModel: ObservableObject {
         guard let index = OnboardingStepV2.allCases.firstIndex(of: currentStep), index > 0 else { return }
         currentStep = OnboardingStepV2.allCases[index - 1]
         persistence.checkpoint = currentStep
+    }
+
+    func selectStep(_ step: OnboardingStepV2) {
+        guard step != currentStep, OnboardingStepV2.allCases.contains(step) else { return }
+        currentStep = step
+        persistence.checkpoint = step
     }
 
     func requestPermission() {
@@ -212,24 +269,89 @@ final class OnboardingViewModel: ObservableObject {
 }
 
 struct RuntimeMenuPresentation: Equatable {
-    let iconName: String
+    let statusIconName: String
     let healthTitle: String
     let healthDetail: String
     let canRetry: Bool
 
     static func make(from status: AudioRuntimeState.Status) -> Self {
-        let icon: String
+        let statusIcon: String
+        let detail: String
         switch status {
-        case .processing: icon = "waveform.circle.fill"
-        case .recovering, .needsPermission, .nativePassthrough: icon = "exclamationmark.waveform"
-        case .starting: icon = "waveform.badge.plus"
-        case .unavailable, .needsSetup: icon = "waveform.circle"
+        case .processing:
+            statusIcon = "waveform.circle.fill"
+            detail = "Airwave is active."
+        case .starting:
+            statusIcon = "waveform.badge.plus"
+            detail = "Airwave is getting ready."
+        case .needsPermission:
+            statusIcon = "exclamationmark.waveform"
+            detail = "System Audio Recording permission is required."
+        case .needsSetup:
+            statusIcon = "exclamationmark.waveform"
+            detail = "Complete setup to start using Airwave."
+        case .nativePassthrough:
+            statusIcon = "exclamationmark.waveform"
+            detail = "Airwave is waiting until it can resume processing."
+        case .recovering:
+            statusIcon = "exclamationmark.waveform"
+            detail = "Airwave is getting ready again."
+        case .unavailable:
+            statusIcon = "exclamationmark.waveform"
+            detail = "Airwave isn’t available right now."
         }
         let retryable: Bool
         switch status {
         case .needsPermission, .recovering: retryable = true
         default: retryable = false
         }
-        return Self(iconName: icon, healthTitle: status.title, healthDetail: status.detail, canRetry: retryable)
+        return Self(
+            statusIconName: statusIcon,
+            healthTitle: status.title,
+            healthDetail: detail,
+            canRetry: retryable
+        )
+    }
+}
+
+struct OnboardingReadinessPresentation: Equatable {
+    let title: String
+    let detail: String
+    let actionStep: OnboardingStepV2?
+    let canRetry: Bool
+
+    static func make(
+        permission: SystemAudioPermissionPresentation,
+        hasPreset: Bool,
+        runtimeStatus: AudioRuntimeState.Status,
+        isReady: Bool
+    ) -> Self {
+        if isReady {
+            return Self(
+                title: "You’re ready to go",
+                detail: hasPreset
+                    ? "Airwave is set up and ready to apply your spatial profile."
+                    : "Airwave setup is complete. Choose an HRIR preset whenever you’re ready to enable spatial processing.",
+                actionStep: nil,
+                canRetry: false
+            )
+        }
+        if permission != .granted {
+            return Self(
+                title: "A little more setup is needed",
+                detail: "System Audio Recording still needs your attention.",
+                actionStep: .systemAudio,
+                canRetry: false
+            )
+        }
+        let menuPresentation = RuntimeMenuPresentation.make(from: runtimeStatus)
+        return Self(
+            title: "A little more setup is needed",
+            detail: runtimeStatus == .starting
+                ? "Airwave is getting everything ready. This should only take a moment."
+                : "Airwave isn’t ready yet. Review the earlier steps or try again.",
+            actionStep: nil,
+            canRetry: menuPresentation.canRetry
+        )
     }
 }
