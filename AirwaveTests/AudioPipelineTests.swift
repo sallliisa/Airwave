@@ -30,6 +30,30 @@ final class AudioPipelineTests: XCTestCase {
         XCTAssertTrue(platform.hasNoLiveResources)
     }
 
+    func testInterleavedTapIsAcceptedWhenAUHALCanConvertIt() throws {
+        let platform = RecordingAudioPlatformClient()
+        platform.tapStreamFormat = AudioStreamFormat(
+            sampleRate: 48_000,
+            channelCount: 2,
+            sampleType: .float32,
+            isInterleaved: true
+        )
+        let pipeline = AudioPipeline(platform: platform, processor: PassthroughProcessor())
+
+        XCTAssertNoThrow(try pipeline.start())
+        XCTAssertNoThrow(try pipeline.stop())
+        XCTAssertTrue(platform.hasNoLiveResources)
+    }
+
+    func testTapSampleRateMismatchStillFailsAndCleansUp() {
+        let platform = RecordingAudioPlatformClient()
+        platform.tapStreamFormat = .stereo(sampleRate: 44_100)
+        let pipeline = AudioPipeline(platform: platform, processor: PassthroughProcessor())
+
+        XCTAssertThrowsError(try pipeline.start())
+        XCTAssertTrue(platform.hasNoLiveResources)
+    }
+
     func testFailureAfterTapUnwindsTap() {
         assertFailure(.tapFormat, cleanup: ["destroyTap"])
     }
@@ -197,6 +221,8 @@ private final class RecordingAudioPlatformClient: AudioPlatformClient {
     var teardownFailuresRemaining: [String: Int] = [:]
     var events: [String] = []
     var tapRequests: [GlobalStereoTapRequest] = []
+    var tapStreamFormat = AudioStreamFormat.stereo(sampleRate: 48_000)
+    var aggregateStreamFormat = AudioStreamFormat.stereo(sampleRate: 48_000)
     private(set) var liveResources: Set<Resource> = []
     private var ioIsStarted = false
 
@@ -231,12 +257,12 @@ private final class RecordingAudioPlatformClient: AudioPlatformClient {
     func streamFormat(for tap: AudioTapHandle) throws -> AudioStreamFormat {
         events.append("tapFormat")
         if failurePoint == .tapFormat { throw AudioRuntimeError.deviceLost }
-        return .stereo(sampleRate: 48_000)
+        return tapStreamFormat
     }
     func streamFormat(for aggregate: PrivateAggregateHandle) throws -> AudioStreamFormat {
         events.append("aggregateFormat")
         if failurePoint == .aggregateFormat { throw AudioRuntimeError.deviceLost }
-        return .stereo(sampleRate: 48_000)
+        return aggregateStreamFormat
     }
     func createIO(aggregate: PrivateAggregateHandle, callback: @escaping AudioIOCallback) throws -> AudioIOHandle {
         events.append("createIO")

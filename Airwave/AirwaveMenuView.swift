@@ -12,6 +12,7 @@ struct MenuBarLabel: View {
             .task {
                 if onboarding.shouldPresentAutomatically {
                     openWindow(id: "onboarding")
+                    OnboardingWindowPresenter.presentExistingWindow()
                 }
             }
     }
@@ -47,8 +48,7 @@ struct AirwaveMenuView: View {
             Picker("HRIR preset", selection: Binding(
                 get: { hrirManager.activePreset?.id },
                 set: { id in
-                    guard let preset = hrirManager.presets.first(where: { $0.id == id }) else { return }
-                    viewModel.selectPreset(preset)
+                    viewModel.selectPreset(hrirManager.presets.first(where: { $0.id == id }))
                 }
             )) {
                 Text("None").tag(UUID?.none)
@@ -63,7 +63,10 @@ struct AirwaveMenuView: View {
             Divider()
 
             HStack {
-                Button("Settings") { openWindow(id: "settings") }
+                Button("Settings") {
+                    openWindow(id: "settings")
+                    SettingsWindowPresenter.presentExistingWindow()
+                }
                 Spacer()
                 Button("Quit") { viewModel.quitApp() }
             }

@@ -34,6 +34,16 @@ nonisolated struct AudioStreamFormat: Equatable, Sendable {
     static func stereo(sampleRate: Double) -> Self {
         Self(sampleRate: sampleRate, channelCount: 2, sampleType: .float32, isInterleaved: false)
     }
+
+    /// AUHAL converts interleaved tap/aggregate streams into the canonical
+    /// non-interleaved callback format configured by CoreAudioPlatformClient.
+    func isStereoFloat32Compatible(with expected: Self) -> Bool {
+        channelCount == 2
+            && sampleType == .float32
+            && expected.channelCount == 2
+            && expected.sampleType == .float32
+            && abs(sampleRate - expected.sampleRate) < 0.5
+    }
 }
 
 nonisolated struct AudioProcessHandle: Hashable, Sendable { let value: UInt64 }
