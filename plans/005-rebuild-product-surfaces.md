@@ -85,7 +85,7 @@ once, HRIR fixture files unchanged, and second launch is a no-op.
 ### Step 2: Replace permission UX
 
 Remove microphone authorization/status terminology and actions. New onboarding
-explains System Audio Recording and triggers permission by attempting the safe
+explains System Audio Capture and triggers permission by attempting the safe
 pipeline setup defined by plans 003/004; map its result to controller state.
 Provide an action to open the correct macOS Privacy & Security pane and a Retry
 action. Do not claim a preflight authorization status if Core Audio offers none.
@@ -143,7 +143,7 @@ diagnostic polling.
 - [ ] No engine toggle or route/device selector is visible or callable.
 - [ ] 1.x state resets exactly once; login item is disabled; HRIR files survive.
 - [ ] 2.0 onboarding cannot be skipped by legacy completion state.
-- [ ] Permission language says System Audio Recording, never microphone.
+- [ ] Permission language says System Audio Capture, never microphone.
 - [ ] Menu and Settings consume one runtime state source.
 - [ ] BlackHole/virtual output receives warning-only guidance.
 
@@ -160,4 +160,3 @@ diagnostic polling.
 Permission copy must stay aligned with `NSAudioCaptureUsageDescription`.
 Reviewers should search for stale route vocabulary in strings and accessibility
 labels, not only Swift symbol names.
-

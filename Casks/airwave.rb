@@ -18,7 +18,7 @@ cask "airwave" do
   app "Airwave.app"
 
   caveats <<~EOS
-    Airwave requires System Audio Recording permission and a stereo HRIR preset.
+    Airwave requires System Audio Capture permission and a stereo HRIR preset.
     Output selection and volume remain controlled by macOS.
   EOS
 

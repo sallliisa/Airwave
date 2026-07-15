@@ -133,7 +133,7 @@ struct OnboardingView: View {
                 infoCard(
                     "One macOS permission",
                     systemImage: "waveform.badge.mic",
-                    text: "Allow System Audio Recording so Airwave can apply spatial processing to sound from your Mac."
+                    text: "Allow System Audio Capture so Airwave can apply spatial processing to sound from your Mac."
                 )
                 infoCard(
                     "Choose a spatial profile",
@@ -159,7 +159,7 @@ struct OnboardingView: View {
                     ProgressView().controlSize(.small)
                     Text("Waiting for macOS…").font(.callout).foregroundStyle(.secondary)
                 case .unknown, .granted:
-                    Button("Allow System Audio Recording") { viewModel.requestPermission() }
+                    Button("Allow System Audio Capture") { viewModel.requestPermission() }
                         .buttonStyle(.borderedProminent)
                         .disabled(viewModel.permissionPresentation == .granted)
                 }
@@ -305,11 +305,11 @@ struct OnboardingView: View {
     private var permissionStatusCard: some View {
         switch viewModel.permissionPresentation {
         case .unknown:
-            statusCard(icon: "circle", color: .secondary, title: "Ready to request", detail: "macOS will ask for System Audio Recording access.")
+            statusCard(icon: "circle", color: .secondary, title: "Ready to request", detail: "macOS will ask for System Audio Capture access.")
         case .requesting:
             statusCard(icon: "hourglass", color: .secondary, title: "Requesting access…", detail: "Respond to the macOS permission prompt, then return to Airwave.")
         case .granted:
-            statusCard(icon: "checkmark.seal.fill", color: .green, title: "Permission ready", detail: "System Audio Recording is available to Airwave.")
+            statusCard(icon: "checkmark.seal.fill", color: .green, title: "Permission ready", detail: "System Audio Capture is available to Airwave.")
         case .denied:
             statusCard(icon: "exclamationmark.triangle.fill", color: .orange, title: "Permission required", detail: "Enable Airwave in Privacy & Security, then retry.")
         }
