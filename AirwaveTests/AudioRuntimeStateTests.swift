@@ -16,7 +16,7 @@ final class AudioRuntimeStateTests: XCTestCase {
 
     func testStatusDisplayMappingIsFiniteAndTruthful() {
         let values: [(AudioRuntimeState.Status, String, String)] = [
-            (.needsSetup, "Setup required", "Airwave needs additional setup before audio processing can begin."),
+            (.inactive, "Inactive", "No HRIR preset selected; native audio remains unchanged."),
             (.nativePassthrough(reason: "Safe mode"), "Native passthrough", "Safe mode"),
             (.starting, "Starting", "Airwave is preparing native audio processing."),
             (.processing, "Processing", "Airwave is processing audio without changing macOS output or volume."),
