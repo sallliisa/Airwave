@@ -5,6 +5,7 @@ struct AirwaveApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var viewModel = MenuBarViewModel.shared
     @StateObject private var onboardingViewModel = OnboardingViewModel.shared
+    @StateObject private var menuVisibility = MenuBarVisibilityManager.shared
 
     init() {
         do {
@@ -19,7 +20,7 @@ struct AirwaveApp: App {
     }
 
     var body: some Scene {
-        MenuBarExtra {
+        MenuBarExtra(isInserted: menuBarInsertionBinding) {
             AirwaveMenuView()
                 .environmentObject(viewModel)
         } label: {
@@ -27,17 +28,21 @@ struct AirwaveApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        Window("Settings", id: "settings") {
-            SettingsView()
+        Window("Set Up Airwave", id: "onboarding") {
+            OnboardingView(viewModel: onboardingViewModel)
                 .environmentObject(viewModel)
         }
         .windowResizability(.contentSize)
-        .defaultSize(width: 560, height: 420)
+        .defaultSize(width: 820, height: 590)
+    }
 
-        Window("Set Up Airwave", id: "onboarding") {
-            OnboardingView(viewModel: onboardingViewModel)
-        }
-        .windowResizability(.contentSize)
-        .defaultSize(width: 720, height: 480)
+    private var menuBarInsertionBinding: Binding<Bool> {
+        Binding(
+            get: { menuVisibility.isVisible },
+            set: { value in
+                guard value != menuVisibility.isVisible else { return }
+                DispatchQueue.main.async { menuVisibility.setVisible(value) }
+            }
+        )
     }
 }

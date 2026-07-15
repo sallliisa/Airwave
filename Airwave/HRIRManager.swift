@@ -25,6 +25,25 @@ struct HRIRPreset: Identifiable, Codable, Equatable, Hashable {
     }
 }
 
+enum HRIRImportCollisionPolicy { case reject, replace }
+
+struct HRIRImportFailure: Equatable {
+    let filename: String
+    let reason: String
+}
+
+struct HRIRImportPreflight {
+    let acceptable: [URL]
+    let conflicts: [URL]
+    let rejected: [HRIRImportFailure]
+}
+
+struct HRIRImportResult {
+    let imported: [HRIRPreset]
+    let skipped: [String]
+    let failures: [HRIRImportFailure]
+}
+
 struct PresetActivationKey: Hashable {
     let presetID: UUID
     let fileURL: URL
@@ -123,24 +142,25 @@ class HRIRManager: ObservableObject {
     private let processingBlockSize: Int = 512  // Balance between latency (~10.7ms @ 48kHz) and CPU efficiency
 
     private let presetsDirectory: URL
+    private let fileManager: FileManager
     private var eventStream: FSEventStreamRef?
     private var directoryDebounceTask: DispatchWorkItem?
 
     // MARK: - Initialization
 
-    init() {
-        // Set up presets directory
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        presetsDirectory = appSupport.appendingPathComponent("Airwave/presets", isDirectory: true)
+    init(presetsDirectory: URL? = nil, fileManager: FileManager = .default, startWatcher: Bool = true) {
+        self.fileManager = fileManager
+        let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        self.presetsDirectory = presetsDirectory ?? appSupport.appendingPathComponent("Airwave/presets", isDirectory: true)
 
         // Create directory if it doesn't exist
-        try? FileManager.default.createDirectory(at: presetsDirectory, withIntermediateDirectories: true)
+        try? fileManager.createDirectory(at: self.presetsDirectory, withIntermediateDirectories: true)
 
         // Load existing presets and sync with directory
         loadAndSyncPresets()
         
         // Start watching for changes
-        startDirectoryWatcher()
+        if startWatcher { startDirectoryWatcher() }
     }
     
     deinit {
@@ -154,11 +174,89 @@ class HRIRManager: ObservableObject {
         NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: presetsDirectory.path)
     }
 
+    func preflightImport(_ urls: [URL]) -> HRIRImportPreflight {
+        var acceptable: [URL] = []
+        var conflicts: [URL] = []
+        var rejected: [HRIRImportFailure] = []
+        for url in urls {
+            let accessed = url.startAccessingSecurityScopedResource()
+            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+                rejected.append(.init(filename: url.lastPathComponent, reason: "Choose a WAV file, not a folder.")); continue
+            }
+            guard url.pathExtension.lowercased() == "wav" else {
+                rejected.append(.init(filename: url.lastPathComponent, reason: "Only WAV files can be imported.")); continue
+            }
+            guard fileManager.isReadableFile(atPath: url.path) else {
+                rejected.append(.init(filename: url.lastPathComponent, reason: "The file could not be read.")); continue
+            }
+            do {
+                let wav = try WAVLoader.load(from: url)
+                guard wav.channelCount >= 2 else { throw HRIRError.invalidChannelCount(wav.channelCount) }
+                let destination = presetsDirectory.appendingPathComponent(url.lastPathComponent)
+                if fileManager.fileExists(atPath: destination.path) { conflicts.append(url) }
+                else { acceptable.append(url) }
+            } catch {
+                rejected.append(.init(filename: url.lastPathComponent, reason: error.localizedDescription))
+            }
+        }
+        return .init(acceptable: acceptable, conflicts: conflicts, rejected: rejected)
+    }
+
+    @discardableResult
+    func importPresets(_ urls: [URL], collisionPolicy: HRIRImportCollisionPolicy) -> HRIRImportResult {
+        var imported: [HRIRPreset] = []
+        var skipped: [String] = []
+        var failures: [HRIRImportFailure] = []
+        for url in urls {
+            let accessed = url.startAccessingSecurityScopedResource()
+            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+            do {
+                guard url.pathExtension.lowercased() == "wav" else { throw HRIRError.batchImportFailed("Only WAV files can be imported.") }
+                let wav = try WAVLoader.load(from: url)
+                guard wav.channelCount >= 2 else { throw HRIRError.invalidChannelCount(wav.channelCount) }
+                let destination = presetsDirectory.appendingPathComponent(url.lastPathComponent).standardizedFileURL
+                guard destination.deletingLastPathComponent() == presetsDirectory.standardizedFileURL else {
+                    throw HRIRError.batchImportFailed("Invalid filename.")
+                }
+                let existing = presets.first { $0.fileURL.lastPathComponent == destination.lastPathComponent }
+                if fileManager.fileExists(atPath: destination.path), collisionPolicy == .reject {
+                    skipped.append(url.lastPathComponent); continue
+                }
+                let temporary = presetsDirectory.appendingPathComponent(".\(UUID().uuidString).wav")
+                try fileManager.copyItem(at: url, to: temporary)
+                do {
+                    if fileManager.fileExists(atPath: destination.path) {
+                        _ = try fileManager.replaceItemAt(destination, withItemAt: temporary)
+                    } else {
+                        try fileManager.moveItem(at: temporary, to: destination)
+                    }
+                } catch {
+                    try? fileManager.removeItem(at: temporary)
+                    throw error
+                }
+                let preset = HRIRPreset(
+                    id: existing?.id ?? UUID(), name: destination.deletingPathExtension().lastPathComponent,
+                    fileURL: destination, channelCount: wav.channelCount, sampleRate: wav.sampleRate
+                )
+                if let index = presets.firstIndex(where: { $0.id == preset.id }) { presets[index] = preset }
+                else { presets.append(preset) }
+                if activePreset?.id == preset.id { activePreset = preset }
+                imported.append(preset)
+            } catch {
+                failures.append(.init(filename: url.lastPathComponent, reason: error.localizedDescription))
+            }
+        }
+        savePresets()
+        return .init(imported: imported, skipped: skipped, failures: failures)
+    }
+
     /// Remove a preset
     /// - Parameter preset: The preset to remove
     func removePreset(_ preset: HRIRPreset) {
         // Remove file
-        try? FileManager.default.removeItem(at: preset.fileURL)
+        try? fileManager.removeItem(at: preset.fileURL)
         // The directory watcher will handle the update, but we can update immediately for responsiveness
         // However, to avoid race conditions with the watcher, it's often safer to let the watcher handle it,
         // or update local state and let the watcher confirm.
@@ -485,7 +583,7 @@ class HRIRManager: ObservableObject {
         }
         
         // 2. Scan directory for WAV files
-        guard let fileURLs = try? FileManager.default.contentsOfDirectory(
+        guard let fileURLs = try? fileManager.contentsOfDirectory(
             at: presetsDirectory,
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]

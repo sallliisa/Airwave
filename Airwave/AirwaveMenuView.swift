@@ -1,14 +1,13 @@
 import SwiftUI
 
 struct MenuBarLabel: View {
-    @ObservedObject private var runtime = AudioRuntimeState.shared
     @ObservedObject private var onboarding = OnboardingViewModel.shared
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        let presentation = RuntimeMenuPresentation.make(from: runtime.status)
-        Image(systemName: presentation.iconName)
-            .accessibilityLabel("Airwave: \(presentation.healthTitle)")
+        Image("AirwaveMark")
+            .renderingMode(.template)
+            .accessibilityLabel("Airwave")
             .task {
                 if onboarding.shouldPresentAutomatically {
                     openWindow(id: "onboarding")
@@ -18,60 +17,192 @@ struct MenuBarLabel: View {
     }
 }
 
-struct AirwaveMenuView: View {
-    @EnvironmentObject private var viewModel: MenuBarViewModel
-    @ObservedObject private var runtime = AudioRuntimeState.shared
-    @ObservedObject private var hrirManager = HRIRManager.shared
-    @Environment(\.openWindow) private var openWindow
+private struct MenuHeaderSection: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            Image("AirwaveMark")
+                .renderingMode(.template)
+                .resizable()
+                .scaledToFit()
+                .foregroundStyle(.primary)
+                .frame(width: 16, height: 16)
+
+            Text("Airwave")
+                .font(.system(size: 13, weight: .semibold))
+
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+    }
+}
+
+private struct MenuHoverBackground: ViewModifier {
+    @State private var isHovered = false
+
+    func body(content: Content) -> some View {
+        content
+            .background(isHovered ? Color.primary.opacity(0.08) : .clear)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .contentShape(Rectangle())
+            .onHover { isHovered = $0 }
+    }
+}
+
+private struct MenuAccordion<Content: View>: View {
+    let title: String
+    let value: String
+    let isExpanded: Bool
+    let onToggle: () -> Void
+    @ViewBuilder let content: () -> Content
 
     var body: some View {
-        let presentation = RuntimeMenuPresentation.make(from: runtime.status)
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: presentation.iconName)
-                    .foregroundStyle(runtime.status.isProcessing ? .green : .secondary)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(presentation.healthTitle).font(.headline)
-                    Text(presentation.healthDetail)
-                        .font(.caption)
+        VStack(spacing: 0) {
+            Button(action: onToggle) {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    Text(title).font(.system(size: 12)).foregroundStyle(.primary)
+                    Spacer(minLength: 4)
+                    if !isExpanded {
+                        Text(value)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .frame(maxWidth: 140, alignment: .trailing)
+                    }
                 }
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, AirwaveLayout.menuRowHorizontalPadding)
+                .padding(.vertical, AirwaveLayout.menuRowVerticalPadding)
+                .modifier(MenuHoverBackground())
             }
+            .buttonStyle(.plain)
 
-            if presentation.canRetry {
-                Button("Retry") { viewModel.retryAudio() }
-            }
-
-            Divider()
-
-            Picker("HRIR preset", selection: Binding(
-                get: { hrirManager.activePreset?.id },
-                set: { id in
-                    viewModel.selectPreset(hrirManager.presets.first(where: { $0.id == id }))
-                }
-            )) {
-                Text("None").tag(UUID?.none)
-                ForEach(hrirManager.presets) { preset in
-                    Text(preset.name).tag(Optional(preset.id))
-                }
-            }
-
-            LabeledContent("Current output", value: runtime.currentOutput?.name ?? "Not available")
-                .font(.caption)
-
-            Divider()
-
-            HStack {
-                Button("Settings") {
-                    openWindow(id: "settings")
-                    SettingsWindowPresenter.presentExistingWindow()
-                }
-                Spacer()
-                Button("Quit") { viewModel.quitApp() }
+            if isExpanded {
+                VStack(spacing: 0) { content() }
+                    .padding(.leading, 10)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .padding(16)
-        .frame(width: 350)
+    }
+}
+
+private struct MenuSelectionRow: View {
+    let name: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Text(name)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.tint)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, AirwaveLayout.menuRowHorizontalPadding)
+            .padding(.vertical, AirwaveLayout.menuRowVerticalPadding)
+            .modifier(MenuHoverBackground())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct MenuActionRow: View {
+    let title: String
+    var shortcut: String? = nil
+    var showWarning = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack {
+                Text(title)
+                Spacer()
+                if showWarning { Text("⚠️") }
+                if let shortcut {
+                    Text(shortcut).font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, AirwaveLayout.menuRowHorizontalPadding)
+            .padding(.vertical, AirwaveLayout.menuRowVerticalPadding)
+            .modifier(MenuHoverBackground())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct AirwaveMenuView: View {
+    @EnvironmentObject private var viewModel: MenuBarViewModel
+    @ObservedObject private var hrirManager = HRIRManager.shared
+    @ObservedObject private var onboarding = OnboardingViewModel.shared
+    @Environment(\.openWindow) private var openWindow
+    @State private var isPresetExpanded = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            MenuHeaderSection()
+
+            Divider().padding(.horizontal, AirwaveLayout.menuDividerInset)
+
+            MenuAccordion(
+                title: "HRIR Preset",
+                value: hrirManager.activePreset?.name ?? "None",
+                isExpanded: isPresetExpanded,
+                onToggle: {
+                    withAnimation(.easeInOut(duration: 0.2)) { isPresetExpanded.toggle() }
+                }
+            ) {
+                MenuSelectionRow(name: "None", isSelected: hrirManager.activePreset == nil) {
+                    viewModel.selectPreset(nil)
+                }
+                ForEach(MenuBarViewModel.sortedPresets(hrirManager.presets)) { preset in
+                    MenuSelectionRow(name: preset.name, isSelected: preset.id == hrirManager.activePreset?.id) {
+                        viewModel.selectPreset(preset)
+                    }
+                }
+            }
+            .padding(.vertical, AirwaveLayout.menuGroupPadding)
+
+            Divider().padding(.horizontal, AirwaveLayout.menuDividerInset)
+
+            VStack(spacing: 2) {
+                if onboarding.shouldShowSetupMenuItem {
+                    MenuActionRow(title: "Complete Set Up…", showWarning: true) {
+                        viewModel.closeMenuBarPopover()
+                        onboarding.resume()
+                        openWindow(id: "onboarding")
+                        OnboardingWindowPresenter.presentExistingWindow()
+                    }
+                }
+                MenuActionRow(title: "Settings") {
+                    viewModel.closeMenuBarPopover()
+                    SettingsWindowPresenter.present {
+                        openWindow(id: "onboarding")
+                        OnboardingWindowPresenter.presentExistingWindow()
+                    }
+                }
+            }
+            .padding(.vertical, AirwaveLayout.menuGroupPadding)
+
+            Divider().padding(.horizontal, AirwaveLayout.menuDividerInset)
+
+            MenuActionRow(title: "Quit Airwave and Stop Processing") { viewModel.quitApp() }
+                .padding(.vertical, AirwaveLayout.menuGroupPadding)
+        }
+        .frame(width: 280)
+        .padding(.horizontal, AirwaveLayout.menuOuterPadding)
+        .padding(.vertical, AirwaveLayout.menuGroupPadding)
     }
 }

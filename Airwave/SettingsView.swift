@@ -1,4 +1,12 @@
+import AppKit
 import SwiftUI
+
+private struct SettingsRightColumnHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
 
 private struct SettingsWindowAccessor: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
@@ -9,7 +17,13 @@ private struct SettingsWindowAccessor: NSViewRepresentable {
         }
         return view
     }
-    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            guard let window = nsView.window else { return }
+            SettingsWindowPresenter.register(window)
+        }
+    }
 }
 
 struct OnboardingWindowAccessor: NSViewRepresentable {
@@ -21,69 +35,387 @@ struct OnboardingWindowAccessor: NSViewRepresentable {
         }
         return view
     }
+
     func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
 struct SettingsView: View {
+    var openOnboardingAction: (() -> Void)? = nil
     @ObservedObject private var runtime = AudioRuntimeState.shared
     @ObservedObject private var hrirManager = HRIRManager.shared
     @ObservedObject private var launchAtLogin = LaunchAtLoginManager.shared
+    @ObservedObject private var menuVisibility = MenuBarVisibilityManager.shared
     @ObservedObject private var updateManager = UpdateManager.shared
+    @ObservedObject private var onboarding = OnboardingViewModel.shared
     @EnvironmentObject private var viewModel: MenuBarViewModel
     @Environment(\.openWindow) private var openWindow
+    @State private var rightColumnHeight: CGFloat = 0
 
     var body: some View {
-        Form {
-            Section("Health") {
-                LabeledContent("Status", value: runtime.status.title)
-                Text(runtime.status.detail).foregroundStyle(.secondary)
-                LabeledContent("Current output", value: runtime.currentOutput?.name ?? "Not available")
-                LabeledContent("Sample rate", value: sampleRate)
-                LabeledContent("Process tap", value: runtime.status.isProcessing ? "Active" : "Inactive")
-                if RuntimeMenuPresentation.make(from: runtime.status).canRetry {
-                    Button("Retry Audio Setup") { viewModel.retryAudio() }
-                }
-                if runtime.status == .needsPermission {
-                    Button("Open System Audio Recording Settings") {
-                        viewModel.openSystemAudioRecordingSettings()
+        ZStack {
+            AirwavePalette.canvas.ignoresSafeArea()
+
+            VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
+                pageHeader
+                HStack(alignment: .top, spacing: AirwaveLayout.cardSpacing) {
+                    spatialProfileSection
+                        .frame(maxWidth: .infinity, alignment: .top)
+                        .frame(height: rightColumnHeight > 0 ? rightColumnHeight : nil, alignment: .top)
+                    VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
+                        hrirResourcesSection
+                        applicationSection
+                    }
+                    .frame(maxWidth: .infinity, alignment: .top)
+                    .background {
+                        GeometryReader { proxy in
+                            Color.clear.preference(key: SettingsRightColumnHeightKey.self, value: proxy.size.height)
+                        }
                     }
                 }
-            }
-
-            Section("HRIR presets") {
-                LabeledContent("Available", value: "\(hrirManager.presets.count)")
-                LabeledContent("Selected", value: hrirManager.activePreset?.name ?? "None")
-                Button("Manage Preset Files") { viewModel.openPresetsDirectory() }
-                Button("Run Setup") {
-                    openWindow(id: "onboarding")
-                    OnboardingWindowPresenter.presentExistingWindow()
+                .onPreferenceChange(SettingsRightColumnHeightKey.self) { height in
+                    guard abs(height - rightColumnHeight) > 0.5 else { return }
+                    rightColumnHeight = height
                 }
-            }
 
-            Section("Application") {
-                Toggle("Launch at login", isOn: $launchAtLogin.isEnabled)
-                Text("Launch at login is off by default after upgrading to Airwave 2.")
-                    .font(.caption).foregroundStyle(.secondary)
-                LabeledContent("Version", value: updateManager.installedVersion)
-                Button("Check for Updates") { updateManager.checkForUpdates() }
-                    .disabled(!updateManager.canCheckForUpdates)
+                #if DEBUG
+                debugSection
+                #endif
             }
+            .padding(.horizontal, 30)
+            .padding(.top, 94)
+            .padding(.bottom, 36)
+            .frame(maxWidth: 1000, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .top)
 
-            Section("About & Support") {
-                Text("Airwave uses native macOS System Audio Recording and never changes your output device or its volume.")
-                    .foregroundStyle(.secondary)
-                Button("About Airwave") { viewModel.showAbout() }
-                Button("Support") { viewModel.openSupport() }
+            VStack(spacing: 0) {
+                topChrome
+                Spacer(minLength: 0)
             }
         }
-        .formStyle(.grouped)
-        .padding(20)
-        .frame(width: 600, height: 620)
+        .frame(width: 900, height: 600)
         .background(SettingsWindowAccessor())
+        .preferredColorScheme(.dark)
+    }
+
+    private var topChrome: some View {
+        HStack(spacing: 12) {
+            Image("AirwaveMark")
+                .renderingMode(.template)
+                .resizable()
+                .scaledToFit()
+                .foregroundStyle(.primary)
+                .frame(width: 24, height: 24)
+                .accessibilityLabel("Airwave")
+            Text("Airwave").font(.headline)
+            Spacer()
+            Button("Quit Airwave and Stop Processing") {
+                ApplicationLifecycleCoordinator.shared.requestExplicitQuit()
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(.red)
+            .help("Quit Airwave and stop audio processing")
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 14)
+        .padding(.bottom, 24)
+    }
+
+    private var pageHeader: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("Settings").font(.largeTitle.weight(.semibold))
+            Text("Choose your spatial profile and application preferences.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var spatialProfileSection: some View {
+        VStack(alignment: .leading, spacing: AirwaveLayout.sectionContentSpacing) {
+            AirwaveSectionHeader(
+                title: "Spatial Profile",
+                subtitle: "Choose the HRIR preset Airwave uses for spatial audio."
+            )
+
+            VStack(spacing: 0) {
+                AirwavePresetList(presets: hrirManager.presets, selectedID: hrirManager.activePreset?.id, onSelect: viewModel.selectPreset)
+
+                Divider()
+
+                AirwavePresetFilesRow(action: viewModel.openPresetsDirectory)
+            }
+            .frame(minHeight: 300, maxHeight: .infinity)
+            .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: AirwaveLayout.cardCornerRadius))
+            .airwaveHRIRDropTarget(manager: hrirManager, onSelect: viewModel.selectPreset)
+
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    private var applicationSection: some View {
+        VStack(alignment: .leading, spacing: AirwaveLayout.sectionContentSpacing) {
+            AirwaveSectionHeader(
+                title: "Application",
+                subtitle: "Startup, updates, setup, and app information."
+            )
+
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    Image(systemName: "play.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 20)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Launch at Login").font(.system(size: 12))
+                        Text("Open Airwave automatically when you log in")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    Toggle("", isOn: $launchAtLogin.isEnabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
+                .padding(.horizontal, AirwaveLayout.rowHorizontalPadding)
+                .padding(.vertical, AirwaveLayout.rowVerticalPadding)
+
+                Divider().padding(.leading, 30)
+
+                HStack(spacing: 10) {
+                    Image(systemName: "menubar.rectangle").font(.system(size: 13)).foregroundStyle(.secondary).frame(width: 20)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Show in Menu Bar").font(.system(size: 12))
+                        Text("Keep Airwave in the macOS menu bar.").font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    Spacer()
+                    Toggle("", isOn: menuBarVisibilityBinding).labelsHidden().toggleStyle(.switch)
+                }
+                .padding(.horizontal, AirwaveLayout.rowHorizontalPadding)
+                .padding(.vertical, AirwaveLayout.rowVerticalPadding)
+
+                Divider().padding(.leading, 30)
+
+                HStack(spacing: 10) {
+                    Image(systemName: updateIconName)
+                        .font(.system(size: 13))
+                        .foregroundStyle(updateIconColor)
+                        .frame(width: 20)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Software Update").font(.system(size: 12))
+                        Text(updateStatusText)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    Spacer()
+                    if case .checking = updateManager.state {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Button(updateButtonTitle) {
+                            if case .available = updateManager.state {
+                                updateManager.presentAvailableUpdate()
+                            } else {
+                                updateManager.checkForUpdates()
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .disabled(!updateManager.canCheckForUpdates)
+                    }
+                }
+                .padding(.horizontal, AirwaveLayout.rowHorizontalPadding)
+                .padding(.vertical, AirwaveLayout.rowVerticalPadding)
+
+                Divider().padding(.leading, 30)
+
+                settingsActionRow(
+                    icon: "checklist",
+                    title: "Set Up Airwave Again",
+                    subtitle: "Review Airwave setup",
+                    buttonTitle: "Setup…"
+                ) {
+                    onboarding.resume()
+                    if let openOnboardingAction {
+                        openOnboardingAction()
+                    } else {
+                        openWindow(id: "onboarding")
+                        OnboardingWindowPresenter.presentExistingWindow()
+                    }
+                }
+                Divider().padding(.leading, 30)
+                settingsActionRow(
+                    icon: "info.circle.fill",
+                    title: "About Airwave",
+                    subtitle: "Version and app information",
+                    buttonTitle: "About…",
+                    action: viewModel.showAbout
+                )
+            }
+            .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: AirwaveLayout.cardCornerRadius))
+        }
+    }
+
+    private var hrirResourcesSection: some View {
+        VStack(alignment: .leading, spacing: AirwaveLayout.sectionContentSpacing) {
+            AirwaveSectionHeader(
+                title: "HRIR Resources",
+                subtitle: "Find more compatible spatial profiles."
+            )
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Get HRIR Presets").font(.system(size: 12, weight: .semibold))
+                    Spacer()
+                    Link(destination: URL(string: "https://airtable.com/embed/appac4r1cu9UpBNAN/shrpUAbtyZxhDDMjg/tblopH2GznvFipWjq/viwnouWPGDuYEd8Go")!) {
+                        Label("Open HRTF Database", systemImage: "link")
+                    }
+                    .font(.system(size: 11))
+                }
+                Text("Airwave works with HRIR presets compatible with HeSuVi. Free presets are available from the HRTF database.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            .padding(AirwaveLayout.cardPadding)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: AirwaveLayout.cardCornerRadius))
+        }
+    }
+
+    #if DEBUG
+    private var debugSection: some View {
+        VStack(alignment: .leading, spacing: AirwaveLayout.sectionContentSpacing) {
+            AirwaveSectionHeader(
+                title: "Debug Health",
+                subtitle: "Inspect the native process-tap runtime."
+            )
+
+            VStack(spacing: 0) {
+                debugRow("Status", value: runtime.status.title)
+                Divider().padding(.leading, 30)
+                debugRow("Detail", value: runtime.status.detail)
+                Divider().padding(.leading, 30)
+                debugRow("Current Output", value: runtime.currentOutput?.name ?? "Not available")
+                Divider().padding(.leading, 30)
+                debugRow("Sample Rate", value: sampleRate)
+                Divider().padding(.leading, 30)
+                debugRow("Process Tap", value: runtime.status.isProcessing ? "Active" : "Inactive")
+
+                if RuntimeMenuPresentation.make(from: runtime.status).canRetry {
+                    Divider().padding(.leading, 30)
+                    settingsActionRow(
+                        icon: "arrow.clockwise",
+                        title: "Retry Audio Setup",
+                        subtitle: "Ask the runtime to retry immediately",
+                        buttonTitle: "Retry",
+                        action: viewModel.retryAudio
+                    )
+                }
+                if runtime.status == .needsPermission {
+                    Divider().padding(.leading, 30)
+                    settingsActionRow(
+                        icon: "lock.open.fill",
+                        title: "System Audio Recording",
+                        subtitle: "Open the macOS privacy setting for Airwave",
+                        buttonTitle: "Open Settings",
+                        action: viewModel.openSystemAudioRecordingSettings
+                    )
+                }
+            }
+            .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: AirwaveLayout.cardCornerRadius))
+        }
+    }
+
+    private func debugRow(_ title: String, value: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "ladybug.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .frame(width: 20)
+            Text(title).font(.system(size: 12))
+            Spacer()
+            Text(value)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.trailing)
+                .frame(maxWidth: 360, alignment: .trailing)
+        }
+        .padding(.horizontal, AirwaveLayout.rowHorizontalPadding)
+        .padding(.vertical, AirwaveLayout.rowVerticalPadding)
+    }
+    #endif
+
+    private func settingsActionRow(
+        icon: String,
+        title: String,
+        subtitle: String,
+        buttonTitle: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.system(size: 12))
+                Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer()
+            Button(buttonTitle, action: action)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .fixedSize()
+                .frame(width: 180, alignment: .trailing)
+        }
+        .padding(.horizontal, AirwaveLayout.rowHorizontalPadding)
+        .padding(.vertical, AirwaveLayout.rowVerticalPadding)
     }
 
     private var sampleRate: String {
         guard let rate = runtime.currentOutput?.nominalSampleRate else { return "—" }
         return "\(Int(rate.rounded())) Hz"
+    }
+
+    private var menuBarVisibilityBinding: Binding<Bool> {
+        Binding(
+            get: { menuVisibility.isVisible },
+            set: { value in
+                guard value != menuVisibility.isVisible else { return }
+                DispatchQueue.main.async { menuVisibility.setVisible(value) }
+            }
+        )
+    }
+
+    private var updateStatusText: String {
+        switch updateManager.state {
+        case .idle: "Airwave \(updateManager.installedVersion)"
+        case .checking: "Checking for updates…"
+        case .current: "Airwave \(updateManager.installedVersion) is up to date"
+        case .available(let version): "Airwave \(version) is available"
+        case .error(let message): "Update check failed: \(message)"
+        }
+    }
+
+    private var updateButtonTitle: String {
+        if case .available = updateManager.state { return "Update…" }
+        return "Check for Updates…"
+    }
+
+    private var updateIconName: String {
+        switch updateManager.state {
+        case .available: "arrow.down.circle.fill"
+        case .error: "exclamationmark.triangle.fill"
+        default: "arrow.triangle.2.circlepath.circle.fill"
+        }
+    }
+
+    private var updateIconColor: Color {
+        switch updateManager.state {
+        case .available: .blue
+        case .error: .orange
+        default: .secondary
+        }
     }
 }

@@ -39,6 +39,10 @@ final class MenuBarViewModel: ObservableObject {
         )
     }
 
+    static func sortedPresets(_ presets: [HRIRPreset]) -> [HRIRPreset] {
+        presets.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
     static func presetTargetSampleRate(for output: OutputDeviceDescriptor?) -> Double {
         output?.nominalSampleRate ?? 48_000
     }
@@ -60,16 +64,29 @@ final class MenuBarViewModel: ObservableObject {
     }
 
     func openSupport() {
-        guard let url = URL(string: "https://github.com/dertian/Airwave/issues") else { return }
+        guard let url = URL(string: "https://github.com/sallliisa/Airwave/issues") else { return }
         NSWorkspace.shared.open(url)
     }
 
     func showAbout() {
+        closeMenuBarPopover()
+        ApplicationLifecycleCoordinator.shared.prepareToPresentUserWindow()
         NSApp.orderFrontStandardAboutPanel(nil)
+        if let window = NSApp.windows.first(where: { $0.title.localizedCaseInsensitiveContains("About") }) {
+            window.identifier = ApplicationLifecycleCoordinator.aboutWindowIdentifier
+        }
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    func closeMenuBarPopover() {
+        if let window = NSApp.windows.first(where: {
+            $0.className.contains("MenuBar") || $0.className.contains("Popover")
+        }) {
+            window.close()
+        }
+    }
+
     func quitApp() {
-        NSApp.terminate(nil)
+        ApplicationLifecycleCoordinator.shared.requestExplicitQuit()
     }
 }
