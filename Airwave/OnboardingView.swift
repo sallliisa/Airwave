@@ -44,6 +44,7 @@ struct OnboardingView: View {
         }
         .padding(24)
         .frame(width: 720, height: 480)
+        .background(OnboardingWindowAccessor())
     }
 
     @ViewBuilder
@@ -79,12 +80,11 @@ struct OnboardingView: View {
                     Picker("Preset", selection: Binding(
                         get: { hrirManager.activePreset?.id },
                         set: { id in
-                            guard let preset = hrirManager.presets.first(where: { $0.id == id }) else { return }
-                            hrirManager.activatePreset(
-                                preset,
-                                targetSampleRate: runtime.currentOutput?.nominalSampleRate ?? 48_000,
-                                inputLayout: .stereo
-                            )
+                            guard let preset = hrirManager.presets.first(where: { $0.id == id }) else {
+                                hrirManager.deactivatePreset()
+                                return
+                            }
+                            hrirManager.activatePreset(preset, targetSampleRate: runtime.currentOutput?.nominalSampleRate ?? 48_000, inputLayout: .stereo)
                         }
                     )) {
                         Text("None").tag(UUID?.none)

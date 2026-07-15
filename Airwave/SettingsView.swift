@@ -12,6 +12,18 @@ private struct SettingsWindowAccessor: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
+struct OnboardingWindowAccessor: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            guard let window = view.window else { return }
+            OnboardingWindowPresenter.register(window)
+        }
+        return view
+    }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
 struct SettingsView: View {
     @ObservedObject private var runtime = AudioRuntimeState.shared
     @ObservedObject private var hrirManager = HRIRManager.shared
@@ -42,7 +54,10 @@ struct SettingsView: View {
                 LabeledContent("Available", value: "\(hrirManager.presets.count)")
                 LabeledContent("Selected", value: hrirManager.activePreset?.name ?? "None")
                 Button("Manage Preset Files") { viewModel.openPresetsDirectory() }
-                Button("Run Setup") { openWindow(id: "onboarding") }
+                Button("Run Setup") {
+                    openWindow(id: "onboarding")
+                    OnboardingWindowPresenter.presentExistingWindow()
+                }
             }
 
             Section("Application") {

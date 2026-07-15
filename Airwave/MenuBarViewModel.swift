@@ -27,7 +27,11 @@ final class MenuBarViewModel: ObservableObject {
         self.runtimeActions = runtimeActions
     }
 
-    func selectPreset(_ preset: HRIRPreset) {
+    func selectPreset(_ preset: HRIRPreset?) {
+        guard let preset else {
+            hrirManager.deactivatePreset()
+            return
+        }
         hrirManager.activatePreset(
             preset,
             targetSampleRate: Self.presetTargetSampleRate(for: runtime.currentOutput),

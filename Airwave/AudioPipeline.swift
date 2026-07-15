@@ -93,7 +93,7 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
 
             let tapFormat = try platform.streamFormat(for: createdTap)
             let expectedFormat = AudioStreamFormat.stereo(sampleRate: output.nominalSampleRate)
-            guard tapFormat == expectedFormat else {
+            guard tapFormat.isStereoFloat32Compatible(with: expectedFormat) else {
                 throw AudioRuntimeError.formatMismatch(expected: expectedFormat, actual: tapFormat)
             }
 
@@ -101,7 +101,7 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
             aggregate = createdAggregate
 
             let aggregateFormat = try platform.streamFormat(for: createdAggregate)
-            guard aggregateFormat == tapFormat else {
+            guard aggregateFormat.isStereoFloat32Compatible(with: expectedFormat) else {
                 throw AudioRuntimeError.formatMismatch(expected: tapFormat, actual: aggregateFormat)
             }
 
