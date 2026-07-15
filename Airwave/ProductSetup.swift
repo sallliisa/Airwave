@@ -204,10 +204,13 @@ final class OnboardingViewModel: ObservableObject {
     var shouldShowSetupMenuItem: Bool { !persistence.isComplete }
     var isComplete: Bool { persistence.isComplete }
 
-    var needsSetupAttention: Bool { !healthChecksPass }
+    /// Settings and onboarding must use the same readiness decision. In
+    /// particular, an inactive runtime at launch has not established that the
+    /// System Audio Recording permission is available.
+    var needsSetupAttention: Bool { !canComplete }
 
     var recommendedVoluntaryEntryStep: OnboardingStepV2 {
-        if healthChecksPass { return .welcome }
+        if canComplete { return .welcome }
         if runtime.status == .needsPermission { return .systemAudio }
         if let output = runtime.currentOutput,
            output.outputChannelCount != 2 || output.isVirtual || output.isAggregate {
@@ -230,13 +233,6 @@ final class OnboardingViewModel: ObservableObject {
     var canComplete: Bool {
         guard permissionPresentation == .granted,
               runtime.status == .processing || runtime.status == .inactive,
-              let output = runtime.currentOutput else { return false }
-        return output.outputChannelCount == 2 && !output.isVirtual && !output.isAggregate
-    }
-
-    private var healthChecksPass: Bool {
-        if runtime.status == .inactive { return true }
-        guard runtime.status == .processing,
               let output = runtime.currentOutput else { return false }
         return output.outputChannelCount == 2 && !output.isVirtual && !output.isAggregate
     }

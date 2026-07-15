@@ -314,8 +314,8 @@ final class ProductSurfaceTests: XCTestCase {
             actions: RuntimeActionsFake(), persistence: OnboardingPersistenceFake()
         )
         inactiveAtBoot.prepareForPresentation(.voluntary)
-        XCTAssertEqual(inactiveAtBoot.currentStep, .welcome)
-        XCTAssertFalse(inactiveAtBoot.needsSetupAttention)
+        XCTAssertEqual(inactiveAtBoot.currentStep, .systemAudio)
+        XCTAssertTrue(inactiveAtBoot.needsSetupAttention)
 
         let unsupportedOutput = OnboardingViewModel(
             runtime: AudioRuntimeState(
@@ -329,14 +329,15 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertTrue(unsupportedOutput.needsSetupAttention)
     }
 
-    func testNoPresetDoesNotCreateSetupAttentionWhenRuntimeIsHealthy() {
+    func testInactiveLaunchUsesOnboardingReadinessForSettingsAttention() {
         let viewModel = OnboardingViewModel(
             runtime: AudioRuntimeState(status: .inactive),
             actions: RuntimeActionsFake(), persistence: OnboardingPersistenceFake()
         )
 
-        XCTAssertFalse(viewModel.needsSetupAttention)
-        XCTAssertEqual(viewModel.recommendedVoluntaryEntryStep, .welcome)
+        XCTAssertFalse(viewModel.canComplete)
+        XCTAssertTrue(viewModel.needsSetupAttention)
+        XCTAssertEqual(viewModel.recommendedVoluntaryEntryStep, .systemAudio)
     }
 
     func testMenuPresentationMapsEveryRuntimeStateAndOnlyRetryableStatesExposeRetry() {

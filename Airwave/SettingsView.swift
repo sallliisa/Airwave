@@ -133,6 +133,7 @@ struct SettingsWindowContent: View {
 
 struct SettingsView: View {
     var showSetup: () -> Void
+    @ObservedObject private var onboarding = OnboardingViewModel.shared
     @ObservedObject private var runtime = AudioRuntimeState.shared
     @ObservedObject private var hrirManager = HRIRManager.shared
     @ObservedObject private var launchAtLogin = LaunchAtLoginManager.shared
@@ -441,7 +442,7 @@ struct SettingsView: View {
     }
 
     private var onboardingNeedsAttention: Bool {
-        OnboardingViewModel.shared.needsSetupAttention
+        onboarding.needsSetupAttention
     }
 
     private var sampleRate: String {
