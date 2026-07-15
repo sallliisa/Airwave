@@ -28,7 +28,7 @@ struct OnboardingView: View {
                 footer
                     .padding(.horizontal, 24)
                     .padding(.top, 24)
-                    .padding(.bottom, 16)
+                    .padding(.bottom, 24)
             }
         }
         .frame(

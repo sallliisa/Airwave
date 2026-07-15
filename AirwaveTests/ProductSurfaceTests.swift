@@ -300,6 +300,8 @@ final class ProductSurfaceTests: XCTestCase {
         probedRuntime.publish(.starting, output: output())
         probedRuntime.publish(.inactive, output: output())
         XCTAssertTrue(probed.canComplete)
+        XCTAssertTrue(probed.isConfigurationHealthy)
+        XCTAssertFalse(probed.needsSetupAttention)
     }
 
     func testFinishLaterSuppressesRelaunchPromptUntilExplicitResume() {
@@ -377,9 +379,9 @@ final class ProductSurfaceTests: XCTestCase {
             actions: RuntimeActionsFake(), persistence: OnboardingPersistenceFake()
         )
         inactiveAtBoot.prepareForPresentation(.voluntary)
-        XCTAssertEqual(inactiveAtBoot.currentStep, .welcome)
-        XCTAssertTrue(inactiveAtBoot.isConfigurationHealthy)
-        XCTAssertFalse(inactiveAtBoot.needsSetupAttention)
+        XCTAssertEqual(inactiveAtBoot.currentStep, .systemAudio)
+        XCTAssertFalse(inactiveAtBoot.isConfigurationHealthy)
+        XCTAssertTrue(inactiveAtBoot.needsSetupAttention)
 
         let unsupportedOutput = OnboardingViewModel(
             runtime: AudioRuntimeState(
@@ -393,16 +395,16 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertTrue(unsupportedOutput.needsSetupAttention)
     }
 
-    func testInactiveLaunchIsHealthyButStillRequiresFirstSetupPermissionProbe() {
+    func testInactiveWithoutLiveProbeNeedsSetupRegardlessOfPersistedCompletion() {
         let freshViewModel = OnboardingViewModel(
             runtime: AudioRuntimeState(status: .inactive),
             actions: RuntimeActionsFake(), persistence: OnboardingPersistenceFake()
         )
 
         XCTAssertFalse(freshViewModel.canComplete)
-        XCTAssertTrue(freshViewModel.isConfigurationHealthy)
-        XCTAssertFalse(freshViewModel.needsSetupAttention)
-        XCTAssertEqual(freshViewModel.recommendedVoluntaryEntryStep, .welcome)
+        XCTAssertFalse(freshViewModel.isConfigurationHealthy)
+        XCTAssertTrue(freshViewModel.needsSetupAttention)
+        XCTAssertEqual(freshViewModel.recommendedVoluntaryEntryStep, .systemAudio)
 
         let completedPersistence = OnboardingPersistenceFake()
         completedPersistence.isComplete = true
@@ -411,9 +413,9 @@ final class ProductSurfaceTests: XCTestCase {
             actions: RuntimeActionsFake(), persistence: completedPersistence
         )
 
-        XCTAssertEqual(completedViewModel.permissionPresentation, .granted)
-        XCTAssertTrue(completedViewModel.canComplete)
-        XCTAssertFalse(completedViewModel.needsSetupAttention)
+        XCTAssertEqual(completedViewModel.permissionPresentation, .unknown)
+        XCTAssertFalse(completedViewModel.canComplete)
+        XCTAssertTrue(completedViewModel.needsSetupAttention)
     }
 
     func testMenuPresentationMapsEveryRuntimeStateAndOnlyRetryableStatesExposeRetry() {

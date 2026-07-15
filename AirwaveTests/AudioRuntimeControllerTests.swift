@@ -3,12 +3,9 @@ import XCTest
 
 @MainActor
 final class AudioRuntimeControllerTests: XCTestCase {
-    func testSystemAudioPermissionRequestUsesShortSafeProbeWithoutPreset() {
+    func testLaunchUsesShortSafePermissionProbeWithoutPreset() {
         let harness = Harness()
         harness.controller.launch(presetReady: false)
-        XCTAssertEqual(harness.state.status, .inactive)
-
-        harness.controller.requestSystemAudioAccess()
 
         XCTAssertEqual(harness.pipelines.startedOutputs.count, 1)
         XCTAssertEqual(harness.pipelines.liveCount, 0)
@@ -19,8 +16,6 @@ final class AudioRuntimeControllerTests: XCTestCase {
         let harness = Harness()
         harness.pipelines.startErrors = [.deviceLost, nil]
         harness.controller.launch(presetReady: false)
-
-        harness.controller.requestSystemAudioAccess()
 
         guard case .recovering = harness.state.status else {
             return XCTFail("Expected recovering permission probe")
@@ -36,7 +31,6 @@ final class AudioRuntimeControllerTests: XCTestCase {
         let harness = Harness()
         harness.pipelines.defaultError = .deviceLost
         harness.controller.launch(presetReady: false)
-        harness.controller.requestSystemAudioAccess()
 
         var observed: [TimeInterval] = []
         for _ in 0..<7 {
@@ -59,11 +53,12 @@ final class AudioRuntimeControllerTests: XCTestCase {
         XCTAssertEqual(harness.pipelines.liveCount, 1)
     }
 
-    func testInactivePresetAndPermissionDenialNeverAcquireResources() {
+    func testInactivePresetProbesAndKnownPermissionDenialDoesNotAcquireResources() {
         let missing = Harness()
         missing.controller.launch(presetReady: false)
         XCTAssertEqual(missing.state.status, .inactive)
         XCTAssertEqual(missing.pipelines.liveCount, 0)
+        XCTAssertEqual(missing.pipelines.startedOutputs.count, 1)
 
         let denied = Harness()
         denied.controller.launch(presetReady: false, permissionGranted: false)
@@ -79,6 +74,7 @@ final class AudioRuntimeControllerTests: XCTestCase {
         harness.controller.presetDidChange(isReady: false)
 
         XCTAssertEqual(harness.state.status, .inactive)
+        XCTAssertEqual(harness.state.currentOutput, harness.platform.output)
         XCTAssertEqual(harness.pipelines.liveCount, 0)
     }
 

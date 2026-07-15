@@ -174,7 +174,7 @@ struct SettingsView: View {
             }
             .padding(.horizontal, 24)
             .padding(.top, 80)
-            .padding(.bottom, 16)
+            .padding(.bottom, 24)
             .frame(maxWidth: 1000, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .top)
 
@@ -338,7 +338,7 @@ struct SettingsView: View {
                     }
                     .font(.system(size: 11))
                 }
-                Text("Airwave works with HRIR presets compatible with HeSuVi. Free presets are available from the HRTF database.")
+                Text("Airwave works with HRIR presets compatible with HeSuVi.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
