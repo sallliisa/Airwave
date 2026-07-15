@@ -36,30 +36,43 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertFalse(MenuBarVisibilityManager(defaults: defaults, visibilityDidChange: {}).isVisible)
     }
 
-    func testLifecyclePolicyUsesDockOnlyForHiddenMenuWithVisibleWindow() {
+    func testLifecyclePolicyUsesDockWheneverUserWindowIsVisible() {
         XCTAssertEqual(
-            ApplicationLifecycleCoordinator.activationPolicy(menuBarVisible: true, hasVisibleUserWindow: false),
+            ApplicationLifecycleCoordinator.activationPolicy(hasVisibleUserWindow: false),
             .accessory
         )
         XCTAssertEqual(
-            ApplicationLifecycleCoordinator.activationPolicy(menuBarVisible: true, hasVisibleUserWindow: true),
-            .accessory
-        )
-        XCTAssertEqual(
-            ApplicationLifecycleCoordinator.activationPolicy(menuBarVisible: false, hasVisibleUserWindow: false),
-            .accessory
-        )
-        XCTAssertEqual(
-            ApplicationLifecycleCoordinator.activationPolicy(menuBarVisible: false, hasVisibleUserWindow: true),
+            ApplicationLifecycleCoordinator.activationPolicy(hasVisibleUserWindow: true),
             .regular
         )
+    }
+
+    func testLifecycleDoesNotReapplyUnchangedPolicy() {
+        let application = LifecycleApplicationFake()
+        let lifecycle = ApplicationLifecycleCoordinator(application: application, observeWindows: false)
+
+        lifecycle.updateActivationPolicy(hasVisibleUserWindow: true)
+        lifecycle.updateActivationPolicy(hasVisibleUserWindow: true)
+        lifecycle.prepareToPresentUserWindow()
+        XCTAssertEqual(application.policies, [.regular])
+
+        lifecycle.updateActivationPolicy(hasVisibleUserWindow: false)
+        lifecycle.updateActivationPolicy(hasVisibleUserWindow: false)
+        XCTAssertEqual(application.policies, [.regular, .accessory])
+    }
+
+    func testMiniaturizedSettingsWindowRemainsUserFacing() {
+        let window = MiniaturizedWindowFake()
+        window.identifier = SettingsWindowPresenter.windowIdentifier
+
+        XCTAssertTrue(window.isMiniaturized)
+        XCTAssertTrue(ApplicationLifecycleCoordinator.isUserFacingWindow(window))
     }
 
     func testOrdinaryQuitCancelsTerminationWhileExplicitAndSystemQuitProceed() {
         let ordinaryApplication = LifecycleApplicationFake()
         let ordinary = ApplicationLifecycleCoordinator(
             application: ordinaryApplication,
-            isMenuBarVisible: { false },
             observeWindows: false
         )
         XCTAssertEqual(ordinary.terminationReply(), .terminateCancel)
@@ -68,7 +81,6 @@ final class ProductSurfaceTests: XCTestCase {
         let explicitApplication = LifecycleApplicationFake()
         let explicit = ApplicationLifecycleCoordinator(
             application: explicitApplication,
-            isMenuBarVisible: { false },
             observeWindows: false
         )
         explicit.requestExplicitQuit()
@@ -77,7 +89,6 @@ final class ProductSurfaceTests: XCTestCase {
 
         let system = ApplicationLifecycleCoordinator(
             application: LifecycleApplicationFake(),
-            isMenuBarVisible: { false },
             observeWindows: false
         )
         system.beginSystemTermination()
@@ -182,6 +193,58 @@ final class ProductSurfaceTests: XCTestCase {
         viewModel.retry()
         XCTAssertEqual(actions.settingsCount, 1)
         XCTAssertEqual(actions.retryCount, 1)
+    }
+
+    func testPermissionFocusRestoresOnceAfterSuccessAndDenial() {
+        for resolvedStatus in [AudioRuntimeState.Status.processing, .needsPermission] {
+            let runtime = AudioRuntimeState(status: .inactive)
+            let focus = PermissionFocusRestorerFake()
+            let viewModel = OnboardingViewModel(
+                runtime: runtime,
+                actions: RuntimeActionsFake(),
+                persistence: OnboardingPersistenceFake(),
+                focusRestorer: focus
+            )
+
+            viewModel.requestPermission()
+            XCTAssertEqual(focus.beginCount, 1)
+            runtime.publish(.starting, output: output())
+            runtime.publish(resolvedStatus, output: output())
+            runtime.publish(resolvedStatus, output: output())
+            XCTAssertEqual(focus.resolveCount, 1)
+        }
+    }
+
+    func testNewPermissionRequestSupersedesPendingFocusRestoration() {
+        let runtime = AudioRuntimeState(status: .inactive)
+        let focus = PermissionFocusRestorerFake()
+        let viewModel = OnboardingViewModel(
+            runtime: runtime,
+            actions: RuntimeActionsFake(),
+            persistence: OnboardingPersistenceFake(),
+            focusRestorer: focus
+        )
+
+        viewModel.requestPermission()
+        viewModel.requestPermission()
+        runtime.publish(.starting, output: output())
+        runtime.publish(.needsPermission, output: output())
+        XCTAssertEqual(focus.beginCount, 2)
+        XCTAssertEqual(focus.resolveCount, 1)
+    }
+
+    func testPermissionFocusRestorerIgnoresClosedWindow() {
+        let window = NSWindow()
+        var restoreCount = 0
+        let restorer = PermissionWindowFocusRestorer(
+            captureWindow: { window },
+            restoreWindow: { _ in restoreCount += 1 }
+        )
+
+        restorer.beginPermissionRequest()
+        restorer.permissionRequestResolved()
+        restorer.permissionRequestResolved()
+        XCTAssertEqual(restoreCount, 0)
     }
 
     func testFreshAndV1UpgradeBothStartAtUnskippableWelcomeCheckpoint() throws {
@@ -462,6 +525,19 @@ private final class LifecycleApplicationFake: ApplicationLifecycleApplication {
     func terminate(_ sender: Any?) {
         terminateCount += 1
     }
+}
+
+@MainActor
+private final class MiniaturizedWindowFake: NSWindow {
+    override var isMiniaturized: Bool { true }
+}
+
+@MainActor
+private final class PermissionFocusRestorerFake: PermissionFocusRestoring {
+    var beginCount = 0
+    var resolveCount = 0
+    func beginPermissionRequest() { beginCount += 1 }
+    func permissionRequestResolved() { resolveCount += 1 }
 }
 
 @MainActor

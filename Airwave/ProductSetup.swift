@@ -153,6 +153,49 @@ protocol AudioRuntimeUserActions: AnyObject {
     func openSystemAudioRecordingSettings()
 }
 
+@MainActor
+protocol PermissionFocusRestoring: AnyObject {
+    func beginPermissionRequest()
+    func permissionRequestResolved()
+}
+
+@MainActor
+final class PermissionWindowFocusRestorer: PermissionFocusRestoring {
+    static let shared = PermissionWindowFocusRestorer()
+
+    private let captureWindow: @MainActor () -> NSWindow?
+    private let restoreWindow: @MainActor (NSWindow) -> Void
+    private weak var requestingWindow: NSWindow?
+
+    init(
+        captureWindow: @escaping @MainActor () -> NSWindow? = {
+            NSApp.keyWindow ?? NSApp.windows.first {
+                $0.identifier == SettingsWindowPresenter.windowIdentifier && $0.isVisible
+            }
+        },
+        restoreWindow: @escaping @MainActor (NSWindow) -> Void = { window in
+            ApplicationLifecycleCoordinator.shared.prepareToPresentUserWindow()
+            NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps, .activateAllWindows])
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+        }
+    ) {
+        self.captureWindow = captureWindow
+        self.restoreWindow = restoreWindow
+    }
+
+    func beginPermissionRequest() {
+        requestingWindow = captureWindow()
+    }
+
+    func permissionRequestResolved() {
+        guard let window = requestingWindow else { return }
+        requestingWindow = nil
+        guard window.isVisible else { return }
+        restoreWindow(window)
+    }
+}
+
 enum SystemAudioPermissionPresentation: Equatable {
     case unknown
     case requesting
@@ -170,7 +213,8 @@ final class OnboardingViewModel: ObservableObject {
     static let shared = OnboardingViewModel(
         runtime: .shared,
         actions: AudioRuntimeController.shared,
-        persistence: UserDefaultsOnboardingPersistenceV2()
+        persistence: UserDefaultsOnboardingPersistenceV2(),
+        focusRestorer: PermissionWindowFocusRestorer.shared
     )
 
     @Published private(set) var currentStep: OnboardingStepV2
@@ -180,22 +224,35 @@ final class OnboardingViewModel: ObservableObject {
     let runtime: AudioRuntimeState
     private let actions: AudioRuntimeUserActions
     private let persistence: OnboardingPersisting
+    private let focusRestorer: PermissionFocusRestoring
+    private var permissionFocusRestorationPending = false
     private var cancellables: Set<AnyCancellable> = []
 
     init(
         runtime: AudioRuntimeState,
         actions: AudioRuntimeUserActions,
-        persistence: OnboardingPersisting
+        persistence: OnboardingPersisting,
+        focusRestorer: PermissionFocusRestoring? = nil
     ) {
         self.runtime = runtime
         self.actions = actions
         self.persistence = persistence
+        self.focusRestorer = focusRestorer ?? PermissionWindowFocusRestorer.shared
         currentStep = persistence.checkpoint
         runtime.$status
             .sink { [weak self] status in
                 guard let self, self.didRequestPermission else { return }
                 if case .starting = status { self.observedPermissionRequest = true }
                 if case .recovering = status { self.observedPermissionRequest = true }
+                if self.observedPermissionRequest && self.permissionFocusRestorationPending {
+                    switch status {
+                    case .processing, .needsPermission, .inactive:
+                        self.permissionFocusRestorationPending = false
+                        self.focusRestorer.permissionRequestResolved()
+                    default:
+                        break
+                    }
+                }
             }
             .store(in: &cancellables)
     }
@@ -260,6 +317,9 @@ final class OnboardingViewModel: ObservableObject {
 
     func requestPermission() {
         didRequestPermission = true
+        observedPermissionRequest = false
+        permissionFocusRestorationPending = true
+        focusRestorer.beginPermissionRequest()
         actions.requestSystemAudioAccess()
         objectWillChange.send()
     }
