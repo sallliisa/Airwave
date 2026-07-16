@@ -59,6 +59,50 @@ final class CoreAudioPlatformClientTests: XCTestCase {
         XCTAssertEqual(right, [0, 0, 2])
     }
 
+    func testInputPreparationMapsNoninterleavedStereoWithoutMutatingInput() {
+        var left: [Float] = [1, 2, 3]
+        var right: [Float] = [4, 5, 6]
+        withBufferList(left: &left, right: &right, frameCapacity: 3) { list in
+            let preparation = StereoCallbackBridge.prepareInput(
+                inputData: UnsafePointer(list),
+                requestedFrames: 3
+            )
+            XCTAssertEqual(preparation.status, noErr)
+            guard let input = preparation.input else {
+                return XCTFail("Expected stereo input")
+            }
+            XCTAssertEqual(input.frameCount, 3)
+            XCTAssertEqual(input.left[1], 2)
+            XCTAssertEqual(input.right[2], 6)
+        }
+        XCTAssertEqual(left, [1, 2, 3])
+        XCTAssertEqual(right, [4, 5, 6])
+    }
+
+    func testSystemAudioCaptureUsesAggregateDeviceStartForPermissionPrompt() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Airwave/CoreAudioPlatformClient.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("AudioDeviceCreateIOProcIDWithBlock"))
+        XCTAssertTrue(source.contains("AudioDeviceStart"))
+        XCTAssertTrue(source.contains("AudioDeviceStop"))
+        XCTAssertTrue(source.contains("AudioDeviceDestroyIOProcID"))
+        XCTAssertFalse(source.contains("AudioOutputUnitStart"))
+    }
+
+    func testSandboxDeclaresCoreAudioAggregateInputEntitlement() throws {
+        let entitlementsURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Airwave/Airwave.entitlements")
+        let source = try String(contentsOf: entitlementsURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("com.apple.security.device.audio-input"))
+    }
+
     func testOversizedCallbackSilencesOnlyAdvertisedBoundsAndPreservesCanaries() {
         let count = StereoCallbackBridge.maximumFrames
         let canary: Float = 99

@@ -278,12 +278,22 @@ final class OnboardingViewModel: ObservableObject {
     }
 
     var permissionPresentation: SystemAudioPermissionPresentation {
-        switch runtime.status {
-        case .needsPermission: .denied
-        case .starting, .recovering: .requesting
-        case .processing: .granted
-        case .inactive where runtime.currentOutput != nil: .granted
-        default: .unknown
+        switch runtime.permissionStatus {
+        case .granted:
+            return .granted
+        case .denied:
+            return .denied
+        case .requesting:
+            return .requesting
+        case .unknown:
+            guard didRequestPermission else { return .unknown }
+            switch runtime.status {
+            case .starting, .recovering: return .requesting
+            case .processing: return .granted
+            case .inactive where runtime.currentOutput != nil: return .granted
+            case .needsPermission: return .denied
+            default: return .unknown
+            }
         }
     }
 

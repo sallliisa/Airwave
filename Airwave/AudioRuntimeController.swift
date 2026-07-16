@@ -229,6 +229,7 @@ final class AudioRuntimeController {
         cancelRetry()
         // Explicit user action is permission's resume condition. Probe once; another
         // denial returns to needsPermission without scheduling an automatic loop.
+        state.setPermissionStatus(.requesting)
         permissionGranted = true
         reconcile()
     }
@@ -237,6 +238,7 @@ final class AudioRuntimeController {
     /// short native-passthrough probe before an HRIR preset has been selected.
     func requestSystemAudioAccess() {
         permissionProbeRequested = true
+        state.setPermissionStatus(.requesting)
         retryNow()
     }
 
@@ -244,12 +246,13 @@ final class AudioRuntimeController {
     /// opens. This catches permission revoked while Airwave was inactive.
     func revalidateSystemAudioAccess() {
         guard launched else { return }
-        if effectReadiness.hasSelectedEffect {
-            if state.status == .needsPermission { retryNow() }
+        switch state.permissionStatus {
+        case .granted, .requesting:
             return
+        case .unknown, .denied:
+            permissionProbeRequested = true
+            retryNow()
         }
-        permissionProbeRequested = true
-        retryNow()
     }
 
     func openSystemAudioRecordingSettings() {
@@ -288,7 +291,7 @@ final class AudioRuntimeController {
     private func reconcile() {
         guard launched, !sleeping, !terminated else { return }
         guard permissionGranted else {
-            state.publish(.needsPermission)
+            state.publish(.needsPermission, permission: .denied)
             return
         }
         guard effectReadiness.hasSelectedEffect || permissionProbeRequested else {
@@ -347,7 +350,7 @@ final class AudioRuntimeController {
             if completedPermissionProbe && !effectReadiness.hasSelectedEffect {
                 do {
                     try candidate.stop()
-                    state.publish(.inactive, output: output)
+                    state.publish(.inactive, output: output, permission: .granted)
                 } catch {
                     pipeline = candidate
                     scheduleCleanupRetry(error)
@@ -358,7 +361,8 @@ final class AudioRuntimeController {
             state.publish(
                 .processing,
                 output: output,
-                warning: preparation?.equalizerWarning?.errorDescription ?? effectReadiness.spatialError
+                warning: preparation?.equalizerWarning?.errorDescription ?? effectReadiness.spatialError,
+                permission: .granted
             )
             scheduleStabilityReset(for: currentGeneration)
         } catch {
@@ -392,7 +396,7 @@ final class AudioRuntimeController {
         guard stopForInvalidation() else { return }
         if case AudioRuntimeError.permissionDenied = error {
             permissionGranted = false
-            state.publish(.needsPermission, output: output)
+            state.publish(.needsPermission, output: output, permission: .denied)
             return
         }
         if case AudioRuntimeError.unsupportedOutput = error {
@@ -409,7 +413,14 @@ final class AudioRuntimeController {
         let delay = retryDelays[min(retryAttempt, retryDelays.count - 1)]
         retryAttempt += 1
         let scheduledGeneration = generation
-        state.publish(.recovering(reason: "\(reason) Retrying in \(Int(delay))s."), output: output)
+        let permission: AudioRuntimeState.PermissionStatus? = state.permissionStatus == .granted
+            ? nil
+            : .unknown
+        state.publish(
+            .recovering(reason: "\(reason) Retrying in \(Int(delay))s."),
+            output: output,
+            permission: permission
+        )
         retryToken = scheduler.schedule(after: delay) { [weak self] in
             guard let self, scheduledGeneration == self.generation else { return }
             self.retryToken = nil

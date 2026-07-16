@@ -41,6 +41,7 @@ status row.
 | 011 | Implement the realtime parametric EQ processor | P1 | L | 010 | DONE |
 | 012 | Compose EQ with the fail-open audio runtime | P1 | L | 011 | DONE |
 | 013 | Add the Equalizer Settings section and product validation | P1 | L | 012 | DONE |
+| 014 | Make setup sticky and permission recovery truthful | P0 | M | 004, 005 | TODO |
 
 Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED (<reason>)`, or
 `REJECTED (<reason>)`.
@@ -73,6 +74,10 @@ Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED (<reason>)`, or
   effect” without widening the Core Audio platform or volume/route authority.
 - 013 depends on the completed library and runtime so SwiftUI remains a thin
   import/select/inspect surface rather than a second state machine.
+- 014 is a focused correctness repair on completed plans 004 and 005. It keeps
+  persisted onboarding separate from transient runtime health and must pass a
+  signed device-connect/relaunch matrix before retaining the uncommitted Core
+  Audio I/O-proc rewrite.
 
 ## Findings considered and rejected
 
