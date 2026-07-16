@@ -262,21 +262,29 @@ class HRIRManager: ObservableObject {
     /// Remove a preset
     /// - Parameter preset: The preset to remove
     func removePreset(_ preset: HRIRPreset) {
-        // Remove file
-        try? fileManager.removeItem(at: preset.fileURL)
-        // The directory watcher will handle the update, but we can update immediately for responsiveness
-        // However, to avoid race conditions with the watcher, it's often safer to let the watcher handle it,
-        // or update local state and let the watcher confirm.
-        // For simplicity and responsiveness, we'll update local state and let sync handle any discrepancies.
-        
-        presets.removeAll { $0.id == preset.id }
+        _ = deletePreset(preset)
+    }
 
-        // Clear active preset if it was removed
-        if activePreset?.id == preset.id {
-            deactivatePreset()
+    @discardableResult
+    func deletePreset(_ preset: HRIRPreset) -> Bool {
+        guard let stored = presets.first(where: { $0.id == preset.id }),
+              stored.fileURL.standardizedFileURL == preset.fileURL.standardizedFileURL else {
+            return false
         }
 
+        do {
+            try fileManager.removeItem(at: stored.fileURL)
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+
+        presets.removeAll { $0.id == stored.id }
+        if activePreset?.id == stored.id {
+            deactivatePreset()
+        }
         savePresets()
+        return true
     }
 
     /// Select and load a preset for convolution with specified input layout

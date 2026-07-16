@@ -5,9 +5,16 @@ import Combine
 final class AudioRuntimeState: ObservableObject {
     enum PermissionStatus: Equatable {
         case unknown
-        case requesting
+        case checking
         case granted
         case denied
+    }
+
+    enum TapHealth: Equatable {
+        case idle
+        case checking
+        case ready
+        case failed(reason: String)
     }
 
     enum Status: Equatable {
@@ -55,6 +62,7 @@ final class AudioRuntimeState: ObservableObject {
 
     @Published private(set) var status: Status
     @Published private(set) var permissionStatus: PermissionStatus
+    @Published private(set) var tapHealth: TapHealth
     @Published private(set) var currentOutput: OutputDeviceDescriptor?
     @Published private(set) var warningMessage: String?
 
@@ -62,13 +70,12 @@ final class AudioRuntimeState: ObservableObject {
         status: Status = .unavailable("Airwave 2.0 audio backend is not installed yet"),
         currentOutput: OutputDeviceDescriptor? = nil,
         warningMessage: String? = nil,
-        permissionStatus: PermissionStatus? = nil
+        permissionStatus: PermissionStatus = .unknown,
+        tapHealth: TapHealth = .idle
     ) {
         self.status = status
-        self.permissionStatus = permissionStatus ?? Self.inferredPermissionStatus(
-            for: status,
-            output: currentOutput
-        )
+        self.permissionStatus = permissionStatus
+        self.tapHealth = tapHealth
         self.currentOutput = currentOutput
         self.warningMessage = warningMessage
     }
@@ -77,31 +84,29 @@ final class AudioRuntimeState: ObservableObject {
         self.permissionStatus = permissionStatus
     }
 
+    func setTapHealth(_ tapHealth: TapHealth) {
+        self.tapHealth = tapHealth
+    }
+
+    var isSetupHealthy: Bool {
+        guard permissionStatus == .granted,
+              tapHealth == .ready,
+              let currentOutput else { return false }
+        return currentOutput.isSupportedProfileOutput
+    }
+
     func publish(
         _ status: Status,
         output: OutputDeviceDescriptor? = nil,
         warning: String? = nil,
-        permission: PermissionStatus? = nil
+        permission: PermissionStatus? = nil,
+        tapHealth: TapHealth? = nil
     ) {
         if let permission { permissionStatus = permission }
+        if let tapHealth { self.tapHealth = tapHealth }
         self.currentOutput = output
         self.status = status
         self.warningMessage = warning
     }
 
-    private static func inferredPermissionStatus(
-        for status: Status,
-        output: OutputDeviceDescriptor?
-    ) -> PermissionStatus {
-        switch status {
-        case .needsPermission:
-            .denied
-        case .processing:
-            .granted
-        case .inactive where output != nil:
-            .granted
-        default:
-            .unknown
-        }
-    }
 }

@@ -198,7 +198,7 @@ final class PermissionWindowFocusRestorer: PermissionFocusRestoring {
 
 enum SystemAudioPermissionPresentation: Equatable {
     case unknown
-    case requesting
+    case checking
     case granted
     case denied
 }
@@ -241,24 +241,35 @@ final class OnboardingViewModel: ObservableObject {
             .sink { [weak self] permissionStatus in
                 guard let self,
                       self.permissionFocusRestorationPending,
-                      permissionStatus != .requesting else { return }
+                      permissionStatus != .checking else { return }
                 self.permissionFocusRestorationPending = false
                 self.focusRestorer.permissionRequestResolved()
+            }
+            .store(in: &cancellables)
+        runtime.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
             }
             .store(in: &cancellables)
     }
 
     var shouldPresentAutomatically: Bool { !persistence.isComplete && !persistence.isDeferred }
-    var shouldShowSetupMenuItem: Bool { !persistence.isComplete }
+    var shouldShowSetupMenuItem: Bool { needsSetupAttention }
     var isComplete: Bool { persistence.isComplete }
 
     /// First-run completion remains gated by live runtime readiness.
-    var isConfigurationHealthy: Bool { canComplete }
-    var needsSetupAttention: Bool { !persistence.isComplete }
+    var isConfigurationHealthy: Bool { runtime.isSetupHealthy }
+    var needsSetupAttention: Bool {
+        if !persistence.isComplete { return true }
+        if runtime.permissionStatus == .unknown || runtime.permissionStatus == .denied { return true }
+        if case .failed = runtime.tapHealth { return true }
+        return false
+    }
 
     var recommendedVoluntaryEntryStep: OnboardingStepV2 {
-        if persistence.isComplete { return .welcome }
+        if persistence.isComplete && !needsSetupAttention { return .welcome }
         if runtime.status == .needsPermission { return .systemAudio }
+        if case .failed = runtime.tapHealth { return .systemAudio }
         if let output = runtime.currentOutput,
            output.outputChannelCount != 2 || output.isVirtual || output.isAggregate {
             return .liveHealth
@@ -273,18 +284,15 @@ final class OnboardingViewModel: ObservableObject {
             return .granted
         case .denied:
             return .denied
-        case .requesting:
-            return .requesting
+        case .checking:
+            return .checking
         case .unknown:
             return .unknown
         }
     }
 
     var canComplete: Bool {
-        guard permissionPresentation == .granted,
-              runtime.status == .processing || runtime.status == .inactive,
-              let output = runtime.currentOutput else { return false }
-        return output.outputChannelCount == 2 && !output.isVirtual && !output.isAggregate
+        runtime.isSetupHealthy && (runtime.status == .processing || runtime.status == .inactive)
     }
 
     func advance() {

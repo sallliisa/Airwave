@@ -15,6 +15,7 @@ nonisolated enum EqualizerSettingsLibraryModel {
         presets: [EqualizerPreset],
         selectedID: UUID?
     ) -> [EqualizerSettingsLibraryRow] {
+        guard !presets.isEmpty else { return [] }
         return [EqualizerSettingsLibraryRow(
             id: "none",
             name: "None",
@@ -37,69 +38,6 @@ nonisolated enum EqualizerSettingsLibraryModel {
         let selectedID: UUID?
         if case .preset(let id) = selection { selectedID = id } else { selectedID = nil }
         return rows(presets: presets, selectedID: selectedID)
-    }
-}
-
-nonisolated struct EqualizerSettingsFilterRow: Equatable {
-    let state: String
-    let type: String
-    let frequency: String
-    let gain: String
-    let q: String
-    let isMuted: Bool
-}
-
-nonisolated struct EqualizerSettingsDetailModel: Equatable {
-    let title: String
-    let filename: String
-    let preamp: String
-    let explanation: String?
-    let filters: [EqualizerSettingsFilterRow]
-    let isBypassed: Bool
-
-    init(preset: EqualizerPreset?) {
-        guard let preset else {
-            title = "Equalizer bypassed"
-            filename = "No managed file"
-            preamp = "0.00 dB"
-            explanation = "None is the default. Select an imported preset to opt into Equalizer processing."
-            filters = []
-            isBypassed = true
-            return
-        }
-
-        title = preset.displayName
-        filename = preset.fileURL.lastPathComponent
-        preamp = Self.format(preset.definition.preampDB, decimals: 2, suffix: " dB")
-        explanation = nil
-        filters = preset.definition.filters.map { filter in
-            EqualizerSettingsFilterRow(
-                state: filter.isEnabled ? "ON" : "OFF",
-                type: Self.typeName(filter.type),
-                frequency: Self.format(filter.frequencyHz, decimals: 1, suffix: " Hz"),
-                gain: Self.format(filter.gainDB, decimals: 1, suffix: " dB"),
-                q: Self.format(filter.q, decimals: 2, suffix: ""),
-                isMuted: !filter.isEnabled
-            )
-        }
-        isBypassed = false
-    }
-
-    private static func typeName(_ type: EqualizerFilterType) -> String {
-        switch type {
-        case .peaking: "PK"
-        case .lowShelf: "LSC"
-        case .highShelf: "HSC"
-        }
-    }
-
-    private static func format(_ value: Double, decimals: Int, suffix: String) -> String {
-        String(
-            format: "%@%@",
-            locale: Locale(identifier: "en_US_POSIX"),
-            String(format: "%.*f", decimals, value),
-            suffix
-        )
     }
 }
 
@@ -351,13 +289,8 @@ struct EqualizerSettingsView: View {
     }
 
     private var content: some View {
-        HStack(alignment: .top, spacing: AirwaveLayout.cardSpacing) {
-            libraryCard
-                .frame(width: 292, alignment: .top)
-            detailCard
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        libraryCard
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     private var libraryCard: some View {
@@ -371,38 +304,46 @@ struct EqualizerSettingsView: View {
             Divider()
 
             ZStack {
-                ScrollView {
-                    LazyVStack(spacing: 2) {
-                    ForEach(EqualizerSettingsLibraryModel.rows(
-                        presets: manager.presets,
-                        selectedID: profiles.editingProfile?.equalizerPresetID
-                    )) { row in
-                        Button {
-                            profiles.setEqualizerPresetID(row.preset?.id)
-                        } label: {
-                            HStack(spacing: 8) {
-                                Text(row.name)
-                                    .font(.callout)
-                                    .lineLimit(1)
-                                Spacer(minLength: 4)
-                                if row.isSelected {
-                                    Image(systemName: "checkmark")
-                                        .font(.caption.weight(.semibold))
+                if manager.presets.isEmpty {
+                    AirwaveEmptyLibraryState(
+                        systemImage: "slider.horizontal.3",
+                        title: "No equalizer presets",
+                        description: "Import an EqualizerAPO .txt preset to choose an equalizer profile."
+                    )
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 2) {
+                            ForEach(EqualizerSettingsLibraryModel.rows(
+                                presets: manager.presets,
+                                selectedID: profiles.editingProfile?.equalizerPresetID
+                            )) { row in
+                                Button {
+                                    profiles.setEqualizerPresetID(row.preset?.id)
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        Text(row.name)
+                                            .font(.callout)
+                                            .lineLimit(1)
+                                        Spacer(minLength: 4)
+                                        if row.isSelected {
+                                            Image(systemName: "checkmark")
+                                                .font(.caption.weight(.semibold))
+                                        }
+                                    }
+                                    .padding(.horizontal, AirwaveLayout.rowHorizontalPadding)
+                                    .padding(.vertical, AirwaveLayout.rowVerticalPadding)
+                                    .contentShape(Rectangle())
                                 }
+                                .buttonStyle(.plain)
+                                .background(
+                                    row.isSelected ? AirwavePalette.hover : .clear,
+                                    in: RoundedRectangle(cornerRadius: 6)
+                                )
+                                .accessibilityValue(row.isSelected ? "Selected" : "Not selected")
                             }
-                            .padding(.horizontal, AirwaveLayout.rowHorizontalPadding)
-                            .padding(.vertical, AirwaveLayout.rowVerticalPadding)
-                            .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
-                        .background(
-                            row.isSelected ? AirwavePalette.hover : .clear,
-                            in: RoundedRectangle(cornerRadius: 6)
-                        )
-                        .accessibilityValue(row.isSelected ? "Selected" : "Not selected")
+                        .padding(6)
                     }
-                }
-                    .padding(6)
                 }
             }
             .frame(maxHeight: .infinity)
@@ -430,78 +371,6 @@ struct EqualizerSettingsView: View {
         }
         .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: AirwaveLayout.cardCornerRadius))
         .frame(maxHeight: .infinity, alignment: .top)
-    }
-
-    private var detailCard: some View {
-        let detail = EqualizerSettingsDetailModel(preset: selectedPreset)
-        return VStack(alignment: .leading, spacing: AirwaveLayout.sectionContentSpacing) {
-            AirwaveSectionHeader(
-                title: "Equalizer Details",
-                subtitle: detail.isBypassed
-                    ? "Select a preset to opt into equalizer processing."
-                    : "Read-only settings from the managed copy."
-            )
-
-            VStack(alignment: .leading, spacing: 12) {
-                Text(detail.title).font(.title3.weight(.semibold))
-                if !detail.isBypassed {
-                    Text("Managed file: \(detail.filename)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    HStack {
-                        Text("Preamp").font(.callout.weight(.medium))
-                        Spacer()
-                        Text(detail.preamp).font(.callout.monospacedDigit())
-                    }
-                    Divider()
-                    Text("Filters").font(.callout.weight(.medium))
-                    ScrollView {
-                        LazyVStack(spacing: 0) {
-                            filterHeader
-                            ForEach(Array(detail.filters.enumerated()), id: \.offset) { _, filter in
-                                filterRow(filter)
-                            }
-                        }
-                    }
-                } else if let explanation = detail.explanation {
-                    Text(explanation)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .padding(AirwaveLayout.cardPadding)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: AirwaveLayout.cardCornerRadius))
-        }
-    }
-
-    private var filterHeader: some View {
-        HStack(spacing: 8) {
-            Text("State").frame(width: 38, alignment: .leading)
-            Text("Type").frame(width: 38, alignment: .leading)
-            Text("Frequency").frame(maxWidth: .infinity, alignment: .trailing)
-            Text("Gain").frame(width: 72, alignment: .trailing)
-            Text("Q").frame(width: 46, alignment: .trailing)
-        }
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(.secondary)
-        .padding(.vertical, 4)
-    }
-
-    private func filterRow(_ filter: EqualizerSettingsFilterRow) -> some View {
-        HStack(spacing: 8) {
-            Text(filter.state).frame(width: 38, alignment: .leading)
-            Text(filter.type).frame(width: 38, alignment: .leading)
-            Text(filter.frequency).frame(maxWidth: .infinity, alignment: .trailing)
-            Text(filter.gain).frame(width: 72, alignment: .trailing)
-            Text(filter.q).frame(width: 46, alignment: .trailing)
-        }
-        .font(.caption.monospacedDigit())
-        .foregroundStyle(filter.isMuted ? .secondary : .primary)
-        .opacity(filter.isMuted ? 0.55 : 1)
-        .padding(.vertical, 5)
-        .accessibilityLabel("\(filter.state) \(filter.type), \(filter.frequency), \(filter.gain), Q \(filter.q)")
     }
 
     private var selectedPreset: EqualizerPreset? {

@@ -92,10 +92,12 @@ final class AudioRuntimeController {
     private let scheduler: AudioRuntimeScheduling
     private let effectGraph: AudioEffectGraphControlling?
     private let retryDelays: [TimeInterval] = [1, 2, 4, 8, 15]
+    private let permissionVerificationTimeout: TimeInterval = 5
 
     private var pipeline: AudioPipelineControlling?
     private var retryToken: AudioRuntimeCancellation?
     private var stabilityToken: AudioRuntimeCancellation?
+    private var permissionVerificationToken: AudioRuntimeCancellation?
     private var retryAttempt = 0
     private var generation = 0
     private var effectReadiness = AudioRuntimeEffectReadiness(
@@ -105,6 +107,8 @@ final class AudioRuntimeController {
     private var permissionGranted = false
     private var permissionProbeRequested = false
     private var explicitPermissionRequest = false
+    private var permissionRequestGeneration = 0
+    private var captureVerified = false
     private var soleEffectStopToken: AudioRuntimeCancellation?
     private var launched = false
     private var sleeping = false
@@ -149,7 +153,7 @@ final class AudioRuntimeController {
         )
     }
 
-    func launch(presetReady: Bool, permissionGranted: Bool = true) {
+    func launch(presetReady: Bool, permissionGranted: Bool? = nil) {
         launch(
             effectReadiness: AudioRuntimeEffectReadiness(
                 spatialReady: presetReady,
@@ -161,24 +165,25 @@ final class AudioRuntimeController {
 
     func launch(
         effectReadiness: AudioRuntimeEffectReadiness,
-        permissionGranted: Bool = true
+        permissionGranted: Bool? = nil
     ) {
         guard !launched else {
             self.effectReadiness = effectReadiness
             updateReadiness(
                 effectReadiness,
                 invalidation: .spatial,
-                permissionGranted: permissionGranted
+                permissionGranted: permissionGranted ?? self.permissionGranted
             )
             return
         }
         launched = true
         self.effectReadiness = effectReadiness
-        self.permissionGranted = permissionGranted
-        // With no preset there would otherwise be no pipeline creation to
-        // establish the current TCC state. Use the same short-lived safe probe
-        // as onboarding so permission is never inferred from saved setup data.
-        permissionProbeRequested = !effectReadiness.hasSelectedEffect && permissionGranted
+        let initialPermission = permissionGranted.map {
+            $0 ? SystemAudioPermissionStatus.granted : .denied
+        } ?? platform.systemAudioPermissionStatus()
+        self.permissionGranted = initialPermission == .granted
+        state.setPermissionStatus(permissionState(for: initialPermission))
+        permissionProbeRequested = self.permissionGranted && !effectReadiness.hasSelectedEffect
         do {
             try platform.observeDefaultOutput { [weak self] output in
                 // AudioPlatformClient installs this observer on the main queue.
@@ -189,14 +194,6 @@ final class AudioRuntimeController {
             return
         }
         reconcile()
-    }
-
-    func updateReadiness(presetReady: Bool, permissionGranted: Bool) {
-        updateReadiness(
-            AudioRuntimeEffectReadiness(spatialReady: presetReady, equalizerDefinition: nil),
-            invalidation: .spatial,
-            permissionGranted: permissionGranted
-        )
     }
 
     func updateReadiness(
@@ -269,11 +266,102 @@ final class AudioRuntimeController {
     /// Performs the same safe tap setup used for processing, but permits a
     /// short native-passthrough probe before an HRIR preset has been selected.
     func requestSystemAudioAccess() {
+        guard !explicitPermissionRequest else { return }
+        guard launched, !sleeping, !terminated else { return }
+        guard stopForInvalidation() else { return }
         explicitPermissionRequest = true
-        permissionProbeRequested = true
-        permissionGranted = true
-        state.setPermissionStatus(.requesting)
-        retryNow()
+        permissionProbeRequested = false
+        permissionGranted = false
+        permissionRequestGeneration += 1
+        let requestGeneration = permissionRequestGeneration
+        state.setPermissionStatus(.checking)
+        state.setTapHealth(.idle)
+        retryAttempt = 0
+        platform.requestSystemAudioPermission { [weak self] result in
+            if Thread.isMainThread {
+                MainActor.assumeIsolated {
+                    self?.permissionRequestCompleted(result, generation: requestGeneration)
+                }
+            } else {
+                DispatchQueue.main.async {
+                    self?.permissionRequestCompleted(result, generation: requestGeneration)
+                }
+            }
+        }
+    }
+
+    func refreshSystemAudioAccess() {
+        guard launched, !sleeping, !terminated, !explicitPermissionRequest else { return }
+        let result = platform.systemAudioPermissionStatus()
+        let nextPermission = permissionState(for: result)
+        guard nextPermission != state.permissionStatus else { return }
+        guard stopForInvalidation() else { return }
+        permissionGranted = result == .granted
+        state.setPermissionStatus(nextPermission)
+        if permissionGranted {
+            permissionProbeRequested = !effectReadiness.hasSelectedEffect
+            state.setTapHealth(.checking)
+            reconcile()
+        } else {
+            permissionProbeRequested = false
+            state.publish(
+                .needsPermission,
+                output: state.currentOutput,
+                permission: nextPermission,
+                tapHealth: result == .unknown
+                    ? .failed(reason: "Airwave could not verify System Audio Capture permission.")
+                    : .idle
+            )
+        }
+    }
+
+    private func permissionRequestCompleted(
+        _ result: SystemAudioPermissionStatus,
+        generation requestGeneration: Int
+    ) {
+        guard explicitPermissionRequest,
+              requestGeneration == permissionRequestGeneration,
+              !sleeping,
+              !terminated else { return }
+        explicitPermissionRequest = false
+        permissionGranted = result == .granted
+        let permission = permissionState(for: result)
+        state.setPermissionStatus(permission)
+        guard permissionGranted else {
+            permissionProbeRequested = false
+            state.publish(
+                .needsPermission,
+                output: state.currentOutput,
+                permission: permission,
+                tapHealth: result == .unknown
+                    ? .failed(reason: "Airwave could not verify System Audio Capture permission.")
+                    : .idle
+            )
+            return
+        }
+        permissionProbeRequested = !effectReadiness.hasSelectedEffect
+        state.setTapHealth(.checking)
+        reconcile()
+    }
+
+    private func permissionState(
+        for status: SystemAudioPermissionStatus
+    ) -> AudioRuntimeState.PermissionStatus {
+        switch status {
+        case .unknown: .unknown
+        case .denied: .denied
+        case .granted: .granted
+        }
+    }
+
+    private func cancelPendingPermissionRequest() {
+        guard explicitPermissionRequest else { return }
+        permissionRequestGeneration += 1
+        explicitPermissionRequest = false
+        permissionProbeRequested = false
+        permissionGranted = false
+        state.setPermissionStatus(.unknown)
+        state.setTapHealth(.idle)
     }
 
     func openSystemAudioRecordingSettings() {
@@ -282,6 +370,7 @@ final class AudioRuntimeController {
 
     func willSleep() {
         sleeping = true
+        cancelPendingPermissionRequest()
         guard stopForInvalidation() else { return }
         state.publish(.nativePassthrough(reason: "Sleeping; native audio remains active."))
     }
@@ -289,11 +378,16 @@ final class AudioRuntimeController {
     func didWake() {
         guard !terminated else { return }
         sleeping = false
+        let permission = platform.systemAudioPermissionStatus()
+        permissionGranted = permission == .granted
+        state.setPermissionStatus(permissionState(for: permission))
+        permissionProbeRequested = permissionGranted && !effectReadiness.hasSelectedEffect
         reconcile()
     }
 
     func terminate() {
         terminated = true
+        cancelPendingPermissionRequest()
         platform.stopObservingDefaultOutput()
         _ = stopForInvalidation()
         state.publish(.unavailable("Airwave stopped"))
@@ -310,6 +404,8 @@ final class AudioRuntimeController {
         if let output {
             desiredOutput = output
             hasPreparedDesiredOutput = false
+            permissionProbeRequested = state.permissionStatus == .granted
+                && !effectReadiness.hasSelectedEffect
         }
         guard stopForInvalidation() else { return }
         guard let output else {
@@ -324,8 +420,8 @@ final class AudioRuntimeController {
 
     private func reconcile() {
         guard launched, !sleeping, !terminated else { return }
-        guard permissionGranted else {
-            state.publish(.needsPermission, permission: .denied)
+        guard permissionGranted, state.permissionStatus == .granted else {
+            state.publish(.needsPermission, permission: state.permissionStatus)
             return
         }
         if let desiredOutput, hasPreparedDesiredOutput {
@@ -380,6 +476,9 @@ final class AudioRuntimeController {
                   !self.terminated else { return }
             self.effectReadiness = readiness
             self.hasPreparedDesiredOutput = true
+            if readiness.hasSelectedEffect {
+                self.permissionProbeRequested = false
+            }
             guard readiness.hasSelectedEffect || self.permissionProbeRequested else {
                 self.publishInactive(output: output)
                 return
@@ -416,10 +515,36 @@ final class AudioRuntimeController {
             preparation = nil
         }
         let currentGeneration = generation
-        state.publish(.starting, output: output)
+        let startWarning = preparation?.equalizerWarning?.errorDescription ?? effectReadiness.spatialError
+        state.publish(.starting, output: output, tapHealth: .checking)
         let candidate = pipelineFactory()
+        pipeline = candidate
         do {
-            try candidate.start(on: output)
+            try candidate.start(
+                on: output,
+                muteBehavior: permissionProbeRequested ? .unmuted : .mutedWhenTapped
+            ) { [weak self] event in
+                guard let self else { return }
+                if Thread.isMainThread {
+                    MainActor.assumeIsolated {
+                        self.handleCaptureVerification(
+                            event,
+                            generation: currentGeneration,
+                            output: output,
+                            warning: startWarning
+                        )
+                    }
+                } else {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.handleCaptureVerification(
+                            event,
+                            generation: currentGeneration,
+                            output: output,
+                            warning: startWarning
+                        )
+                    }
+                }
+            }
             guard currentGeneration == generation, !sleeping, !terminated else {
                 do { try candidate.stop() } catch {
                     pipeline = candidate
@@ -427,27 +552,15 @@ final class AudioRuntimeController {
                 }
                 return
             }
-            let completedPermissionProbe = permissionProbeRequested
-            permissionProbeRequested = false
-            explicitPermissionRequest = false
-            if completedPermissionProbe && !effectReadiness.hasSelectedEffect {
-                do {
-                    try candidate.stop()
-                    state.publish(.inactive, output: output, permission: .granted)
-                } catch {
-                    pipeline = candidate
-                    scheduleCleanupRetry(error)
-                }
-                return
-            }
-            pipeline = candidate
+            guard !captureVerified else { return }
             state.publish(
-                .processing,
+                .starting,
                 output: output,
-                warning: preparation?.equalizerWarning?.errorDescription ?? effectReadiness.spatialError,
-                permission: .granted
+                warning: startWarning,
+                permission: nil,
+                tapHealth: .checking
             )
-            scheduleStabilityReset(for: currentGeneration)
+            schedulePermissionVerificationTimeout(generation: currentGeneration, output: output)
         } catch {
             do { try candidate.stop() } catch {
                 completeExplicitPermissionRequest(after: error)
@@ -455,8 +568,84 @@ final class AudioRuntimeController {
                 scheduleCleanupRetry(error)
                 return
             }
+            pipeline = nil
             guard currentGeneration == generation else { return }
             handleFailure(error, output: output)
+        }
+    }
+
+    private func handleCaptureVerification(
+        _ event: AudioCaptureVerificationEvent,
+        generation eventGeneration: Int,
+        output: OutputDeviceDescriptor,
+        warning: String?
+    ) {
+        guard eventGeneration == generation, pipeline != nil, !captureVerified else { return }
+        switch event {
+        case .tapReady:
+            captureVerified = true
+            permissionVerificationToken?.cancel()
+            permissionVerificationToken = nil
+            let completedProbe = permissionProbeRequested && !effectReadiness.hasSelectedEffect
+            permissionProbeRequested = false
+            explicitPermissionRequest = false
+            if completedProbe {
+                do {
+                    try pipeline?.stop()
+                    pipeline = nil
+                    state.publish(.inactive, output: output, permission: .granted, tapHealth: .ready)
+                } catch {
+                    scheduleCleanupRetry(error)
+                }
+            } else {
+                state.publish(.processing, output: output, warning: warning, permission: .granted, tapHealth: .ready)
+                scheduleStabilityReset(for: eventGeneration)
+            }
+        case .permissionDenied:
+            handleFailure(AudioRuntimeError.permissionDenied, output: output)
+        case .renderFailed(let status):
+            handleFailure(
+                AudioRuntimeError.ioStartFailed("Render system audio failed (OSStatus \(status))"),
+                output: output
+            )
+        }
+    }
+
+    private func schedulePermissionVerificationTimeout(
+        generation timeoutGeneration: Int,
+        output: OutputDeviceDescriptor
+    ) {
+        permissionVerificationToken?.cancel()
+        permissionVerificationToken = scheduler.schedule(after: permissionVerificationTimeout) { [weak self] in
+            guard let self,
+                  timeoutGeneration == self.generation,
+                  !self.captureVerified else { return }
+            self.permissionVerificationToken = nil
+            self.permissionProbeRequested = false
+            self.explicitPermissionRequest = false
+            do {
+                try self.pipeline?.stop()
+                self.pipeline = nil
+                let guidance = "Audio tap did not start responding. Retry setup."
+                if self.effectReadiness.hasSelectedEffect {
+                    self.state.publish(
+                        .nativePassthrough(reason: guidance),
+                        output: output,
+                        permission: nil,
+                        tapHealth: .failed(reason: guidance)
+                    )
+                } else {
+                    self.state.publish(
+                        .inactive,
+                        output: output,
+                        warning: guidance,
+                        permission: nil,
+                        tapHealth: .failed(reason: guidance)
+                    )
+                }
+            } catch {
+                self.scheduleCleanupRetry(error)
+            }
         }
     }
 
@@ -474,17 +663,47 @@ final class AudioRuntimeController {
             "[AudioRuntime] failure=\(error) outputUID=\(output?.uid ?? state.currentOutput?.uid ?? "<none>") outputName=\(output?.name ?? state.currentOutput?.name ?? "<none>") explicitPermissionRequest=\(explicitRequest)"
         )
         completeExplicitPermissionRequest(after: error)
+        permissionVerificationToken?.cancel()
+        permissionVerificationToken = nil
         guard stopForInvalidation() else { return }
         if case AudioRuntimeError.permissionDenied = error {
             permissionGranted = false
-            state.publish(.needsPermission, output: output, permission: .denied)
+            state.publish(
+                .needsPermission,
+                output: output,
+                permission: .denied,
+                tapHealth: .failed(reason: "System Audio Capture permission blocked audio tap verification.")
+            )
             return
         }
         if case AudioRuntimeError.unsupportedOutput = error {
             state.publish(.nativePassthrough(reason: "Unsupported output. Change output in macOS Settings."), output: output)
             return
         }
-        scheduleRetry(reason: failureMessage(error), output: output)
+        let message = failureMessage(error)
+        if explicitRequest || permissionProbeRequested || !effectReadiness.hasSelectedEffect || isTapHealthFailure(error) {
+            permissionProbeRequested = false
+            state.publish(
+                .nativePassthrough(reason: message),
+                output: output,
+                permission: state.permissionStatus == .granted ? nil : .unknown,
+                tapHealth: .failed(reason: message)
+            )
+            return
+        }
+        state.setTapHealth(.checking)
+        scheduleRetry(reason: message, output: output)
+    }
+
+    private func isTapHealthFailure(_ error: Error) -> Bool {
+        guard let runtimeError = error as? AudioRuntimeError else { return false }
+        switch runtimeError {
+        case .tapCreationFailed, .aggregateCreationFailed, .formatMismatch,
+             .ioCreationFailed, .ioStartFailed:
+            return true
+        case .permissionDenied, .noOutputDevice, .unsupportedOutput, .deviceLost, .cleanupFailed:
+            return false
+        }
     }
 
     private func completeExplicitPermissionRequest(after error: Error) {
@@ -531,6 +750,9 @@ final class AudioRuntimeController {
 
     private func stopForInvalidation() -> Bool {
         generation += 1
+        captureVerified = false
+        permissionVerificationToken?.cancel()
+        permissionVerificationToken = nil
         profilePreparer?.cancelPreparation()
         cancelRetry()
         cancelSoleEffectStop()

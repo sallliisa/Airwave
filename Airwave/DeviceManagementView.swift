@@ -173,19 +173,21 @@ struct DeviceManagementView: View {
                 .transition(.opacity)
             }
 
-            ScrollView {
+            Group {
                 if coordinator.rows.isEmpty {
                     emptyState
                 } else {
-                    LazyVStack(spacing: 0) {
-                        ForEach(coordinator.rows) { row in
-                            deviceRow(row)
-                            if row.id != coordinator.rows.last?.id {
-                                Divider().padding(.leading, 16)
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(coordinator.rows) { row in
+                                deviceRow(row)
+                                if row.id != coordinator.rows.last?.id {
+                                    Divider().padding(.leading, 16)
+                                }
                             }
                         }
+                        .padding(.vertical, 4)
                     }
-                    .padding(.vertical, 4)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -227,7 +229,7 @@ struct DeviceManagementView: View {
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 360)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .padding(AirwaveLayout.cardPadding)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("No remembered devices. Supported stereo outputs will appear here after Airwave sees them.")

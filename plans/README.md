@@ -24,6 +24,8 @@ stop old processing and wait for the latest target pair before starting.
 | [001](001-device-profile-runtime.md) | Apply a persistent HRIR and EQ profile per supported output device | P1 | L | — | DONE |
 | [002](002-device-profile-management.md) | Add a dedicated device profile management page | P2 | M | 001 | DONE |
 | [003](003-discover-available-output-devices.md) | Discover and configure selectable output devices before switching macOS output | P1 | M | 001, 002 | DONE |
+| [004](004-reset-permission-and-tap-health.md) | Reset permission and audio-tap health | P1 | M | 001, 003 | DONE |
+| [005](005-authoritative-permission-and-fail-safe-probe.md) | Make permission authoritative and audio fail-safe | P1 | M | 004 | DONE |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) |
 REJECTED (with one-line rationale)
@@ -38,6 +40,10 @@ REJECTED (with one-line rationale)
 - 003 follows the completed profile/runtime and management work. It adds a
   transient Core Audio inventory beside persisted profiles, lazily materializes
   a profile on the first non-None effect choice, and keeps Devices saved-only.
+- 004 separates macOS permission, Core Audio tap health, and processing state. It
+  builds on the process-tap lifecycle and selectable-output runtime from 001/003.
+- 005 makes TCC the sole permission authority and keeps permission probes
+  unmuted so denied or unverifiable access cannot silence system audio.
 
 ## Verification baseline
 

@@ -41,16 +41,14 @@ struct OnboardingView: View {
 
     private var content: some View {
         AirwavePageLayout(mode: .compact) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: AirwaveLayout.pageHeaderContentMinimumSpacing) {
-                    stepHeader
-                    stepBody
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .id(viewModel.currentStep)
-                .transition(pageTransition)
+            VStack(alignment: .leading, spacing: AirwaveLayout.pageHeaderContentMinimumSpacing) {
+                stepHeader
+                stepBody
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .id(viewModel.currentStep)
+            .transition(pageTransition)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
     }
 
@@ -59,13 +57,7 @@ struct OnboardingView: View {
     }
 
     private var pageTransition: AnyTransition {
-        guard !reduceMotion else { return .opacity }
-        let insertion: Edge = navigationDirection == .forward ? .trailing : .leading
-        let removal: Edge = navigationDirection == .forward ? .leading : .trailing
-        return .asymmetric(
-            insertion: .opacity.combined(with: .move(edge: insertion)),
-            removal: .opacity.combined(with: .move(edge: removal))
-        )
+        .opacity
     }
 
     private var pageAnimation: Animation {
@@ -107,7 +99,7 @@ struct OnboardingView: View {
     private var stepProgressLabel: String {
         switch viewModel.currentStep {
         case .welcome: "Before you begin"
-        case .liveHealth: viewModel.canComplete ? "Setup complete" : "Finish setup"
+        case .liveHealth: viewModel.canComplete ? "All is set. Airwave is now set up." : "Finish setup to use Airwave."
         default: "Step \(currentPageNumber - 1) of 2"
         }
     }
@@ -147,18 +139,23 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: AirwaveLayout.sectionContentSpacing) {
             Text("Allow Airwave to capture system audio so it can apply the selected HRIR preset. Airwave does not use microphone access.")
             permissionStatusCard
+            tapHealthStatusCard
 
             HStack {
                 switch viewModel.permissionPresentation {
                 case .denied:
                     Button("Open System Settings") { viewModel.openPermissionSettings() }
                         .buttonStyle(.borderedProminent)
-                    Button("Retry") { viewModel.retry() }.buttonStyle(.bordered)
-                case .requesting:
+                    Button("Verify Again") { viewModel.requestPermission() }.buttonStyle(.bordered)
+                case .checking:
                     ProgressView().controlSize(.small)
-                    Text("Waiting for macOS…").font(.callout).foregroundStyle(.secondary)
+                    Text("Requesting access…").font(.callout).foregroundStyle(.secondary)
                 case .unknown, .granted:
-                    Button("Allow System Audio Capture") { viewModel.requestPermission() }
+                    Button(
+                        viewModel.permissionPresentation == .unknown
+                            ? "Allow System Audio Capture"
+                            : "System Audio Capture Verified"
+                    ) { viewModel.requestPermission() }
                         .buttonStyle(.borderedProminent)
                         .disabled(viewModel.permissionPresentation == .granted)
                 }
@@ -168,34 +165,21 @@ struct OnboardingView: View {
 
     private var hrirStep: some View {
         VStack(alignment: .leading, spacing: AirwaveLayout.sectionContentSpacing) {
-            Text("Choose the HRIR preset Airwave should use. Compatible WAV files are discovered automatically from the preset folder.")
+            Text("Choose the HRIR preset Airwave uses for spatial audio.")
 
-            if hrirManager.presets.isEmpty {
-                statusCard(
-                    icon: "waveform",
-                    color: .secondary,
-                    title: "No presets installed",
-                    detail: "None is a valid choice. You can also add a compatible WAV file to the preset folder."
-                )
-            }
-
-            VStack(spacing: 0) {
-                AirwavePresetList(
-                    presets: hrirManager.presets,
-                    selectedID: profiles.currentProfile?.hrirPresetID,
-                    onSelect: menuViewModel.selectPreset
-                )
-                .frame(height: 220)
-                .disabled(profiles.currentDeviceUID == nil)
-
-                AirwavePresetDropHint()
-
-                Divider()
-
-                AirwavePresetFilesRow(action: menuViewModel.openPresetsDirectory)
-            }
+            AirwaveHRIRPicker(
+                manager: hrirManager,
+                selectedID: profiles.currentProfile?.hrirPresetID,
+                onSelect: menuViewModel.selectPreset,
+                onDelete: { preset in
+                    if profiles.currentProfile?.hrirPresetID == preset.id {
+                        menuViewModel.selectPreset(nil)
+                    }
+                }
+            )
+            .frame(height: 300, alignment: .top)
+            .disabled(profiles.currentDeviceUID == nil)
             .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: AirwaveLayout.cardCornerRadius))
-            .airwaveHRIRDropTarget(manager: hrirManager)
         }
     }
 
@@ -305,13 +289,26 @@ struct OnboardingView: View {
     private var permissionStatusCard: some View {
         switch viewModel.permissionPresentation {
         case .unknown:
-            statusCard(icon: "circle", color: .secondary, title: "Ready to request", detail: "macOS will ask for System Audio Capture access.")
-        case .requesting:
-            statusCard(icon: "hourglass", color: .secondary, title: "Requesting access…", detail: "Respond to the macOS permission prompt, then return to Airwave.")
+            statusCard(icon: "circle", color: .secondary, title: "macOS Permission", detail: "Ready to verify System Audio Capture access.")
+        case .checking:
+            statusCard(icon: "hourglass", color: .secondary, title: "macOS Permission", detail: "Respond to the macOS permission prompt, then return to Airwave.")
         case .granted:
-            statusCard(icon: "checkmark.seal.fill", color: .green, title: "Permission ready", detail: "System Audio Capture is available to Airwave.")
+            statusCard(icon: "checkmark.seal.fill", color: .green, title: "macOS Permission", detail: "System Audio Capture is available to Airwave.")
         case .denied:
-            statusCard(icon: "exclamationmark.triangle.fill", color: .orange, title: "Permission required", detail: "Enable Airwave in Privacy & Security, then retry.")
+            statusCard(icon: "exclamationmark.triangle.fill", color: .orange, title: "macOS Permission", detail: "Permission required. Enable Airwave in Privacy & Security, then verify again.")
+        }
+    }
+
+    private var tapHealthStatusCard: some View {
+        switch runtime.tapHealth {
+        case .idle:
+            statusCard(icon: "circle", color: .secondary, title: "Audio Tap Health", detail: "Run verification to check the Core Audio tap path.")
+        case .checking:
+            statusCard(icon: "hourglass", color: .secondary, title: "Audio Tap Health", detail: "Checking tap, aggregate device, and audio I/O setup.")
+        case .ready:
+            statusCard(icon: "checkmark.seal.fill", color: .green, title: "Audio Tap Health", detail: "Core Audio tap setup is ready.")
+        case .failed(let reason):
+            statusCard(icon: "exclamationmark.triangle.fill", color: .orange, title: "Audio Tap Health", detail: reason)
         }
     }
 
@@ -382,7 +379,7 @@ struct OnboardingProgressIndicator: View {
             switch permission {
             case .granted: .complete
             case .denied: .attention
-            case .requesting: .checking
+            case .checking: .checking
             case .unknown: .incomplete
             }
         case .hrirPreset: .complete

@@ -70,6 +70,9 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertTrue(settings.contains("systemImage: \"chevron.left\""))
         XCTAssertTrue(settings.contains("AirwavePageLayout(mode: pageLayoutMode)"))
         XCTAssertTrue(settings.contains("pageHeaderContentMinimumSpacing"))
+        XCTAssertFalse(settings.contains("withAnimation(settingsPageAnimation)"))
+        XCTAssertTrue(settings.contains(".animation(settingsPageAnimation, value: page.wrappedValue)"))
+        XCTAssertTrue(settings.contains(".id(page.wrappedValue)"))
         XCTAssertFalse(settings.contains("SettingsRightColumnHeightKey"))
         XCTAssertTrue(settings.contains("applicationPage"))
         XCTAssertFalse(settings.contains("Set Up Airwave Again"))
@@ -78,7 +81,7 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertTrue(style.contains("font(.system(size: 11))"))
         XCTAssertTrue(style.contains("AirwavePressedButtonStyle()"))
         XCTAssertTrue(settings.contains("AirwavePageLayoutMode"))
-        XCTAssertTrue(settings.contains("settingsContentMaxHeight"))
+        XCTAssertTrue(settings.contains("case .equalizer: .compact"))
     }
 
     func testDeviceManagementSurfacePreservesFixedWindowAndAccessibleDestructiveFlow() throws {
@@ -124,31 +127,41 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertEqual(imported.map(\.displayName), ["Zulu", "Alpha"])
     }
 
-    func testEqualizerSettingsDetailShowsNoneAndReferencePresetIncludingMutedRows() throws {
-        let context = try EqualizerSettingsTestContext()
-        let source = try context.writePreset(named: "Reference.txt", contents: """
-            Preamp: -2.56 dB
-            Filter 1: ON LSC Fc 105.0 Hz Gain -2.8 dB Q 0.70
-            Filter 2: OFF PK Fc 440.0 Hz Gain 1.0 dB Q 1.00
-            Filter 3: ON HSC Fc 10000.0 Hz Gain -5.2 dB Q 0.70
-            """)
-        let preset = try XCTUnwrap(
-            context.manager.importPresets([source], collisionPolicy: .reject).imported.first
+    func testEmptyPresetLibrariesHideNoneAndShowSharedEmptyStateCopy() {
+        XCTAssertTrue(EqualizerSettingsLibraryModel.rows(presets: [], selectedID: nil).isEmpty)
+        XCTAssertTrue(HRIRSettingsLibraryModel.rows(presets: [], selectedID: nil).isEmpty)
+
+        let styleURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Airwave/AirwaveStyle.swift")
+        let equalizerURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Airwave/EqualizerSettingsView.swift")
+        let style = try! String(contentsOf: styleURL, encoding: .utf8)
+        let equalizer = try! String(contentsOf: equalizerURL, encoding: .utf8)
+        XCTAssertTrue(style.contains("No HRIR presets"))
+        XCTAssertTrue(style.contains("Import a compatible WAV file to choose a spatial profile."))
+        XCTAssertTrue(equalizer.contains("No equalizer presets"))
+        XCTAssertTrue(equalizer.contains("Import an EqualizerAPO .txt preset to choose an equalizer profile."))
+    }
+
+    func testHRIRSettingsLibraryRowsKeepNoneFirstAndMarkSelection() {
+        let first = HRIRPreset(
+            id: UUID(), name: "Zulu", fileURL: URL(fileURLWithPath: "/tmp/Zulu.wav"),
+            channelCount: 2, sampleRate: 48_000
+        )
+        let second = HRIRPreset(
+            id: UUID(), name: "Alpha", fileURL: URL(fileURLWithPath: "/tmp/Alpha.wav"),
+            channelCount: 2, sampleRate: 48_000
         )
 
-        let none = EqualizerSettingsDetailModel(preset: nil)
-        XCTAssertTrue(none.isBypassed)
-        XCTAssertEqual(none.title, "Equalizer bypassed")
-
-        let detail = EqualizerSettingsDetailModel(preset: preset)
-        XCTAssertFalse(detail.isBypassed)
-        XCTAssertEqual(detail.title, "Reference")
-        XCTAssertEqual(detail.filename, "Reference.txt")
-        XCTAssertEqual(detail.preamp, "-2.56 dB")
-        XCTAssertEqual(detail.filters.map(\.state), ["ON", "OFF", "ON"])
-        XCTAssertEqual(detail.filters.map(\.type), ["LSC", "PK", "HSC"])
-        XCTAssertEqual(detail.filters[1].frequency, "440.0 Hz")
-        XCTAssertTrue(detail.filters[1].isMuted)
+        let rows = HRIRSettingsLibraryModel.rows(presets: [first, second], selectedID: second.id)
+        XCTAssertEqual(rows.map(\.name), ["None", "Alpha", "Zulu"])
+        XCTAssertFalse(rows[0].isSelected)
+        XCTAssertTrue(rows[1].isSelected)
+        XCTAssertFalse(rows[2].isSelected)
     }
 
     func testEqualizerSettingsCoordinatorImportsInInputOrderAndReportsLineErrors() throws {
@@ -238,10 +251,90 @@ final class ProductSurfaceTests: XCTestCase {
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
         XCTAssertTrue(source.contains("activateFileViewerSelecting([manager.managedDirectory])"))
         XCTAssertTrue(source.contains("Drop EqualizerAPO .txt presets"))
+        XCTAssertTrue(source.contains("ScrollView"))
+        XCTAssertFalse(source.contains("Equalizer Details"))
+        XCTAssertFalse(source.contains("detailCard"))
+        XCTAssertFalse(source.contains("width: 292"))
         XCTAssertTrue(source.contains("UTType(filenameExtension: \"txt\")"))
         XCTAssertTrue(source.contains("coordinator.conflicts.count"))
         XCTAssertTrue(source.contains("resolveConflicts(.replace)"))
         XCTAssertTrue(source.contains("resolveConflicts(.keepExisting)"))
+    }
+
+    func testHRIRSettingsCoordinatorImportsConflictsAndDeletesManagedPreset() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let sourceDirectory = root.appendingPathComponent("source", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let source = sourceDirectory.appendingPathComponent("Room.wav")
+        let manager = HRIRManager(
+            presetsDirectory: root.appendingPathComponent("managed", isDirectory: true),
+            startWatcher: false
+        )
+        try wavFixture(frames: 8).write(to: source)
+        let coordinator = HRIRSettingsCoordinator(manager: manager)
+
+        coordinator.receive([source])
+        let imported = try XCTUnwrap(manager.presets.first)
+        XCTAssertEqual(imported.name, "Room")
+
+        try wavFixture(frames: 12).write(to: source)
+        coordinator.receive([source])
+        XCTAssertEqual(coordinator.conflicts, [source])
+        coordinator.resolveConflicts(.replace)
+        XCTAssertEqual(manager.presets.count, 1)
+        XCTAssertEqual(try Data(contentsOf: imported.fileURL), wavFixture(frames: 12))
+
+        XCTAssertFalse(coordinator.delete(imported, decision: .cancel))
+        XCTAssertTrue(coordinator.delete(imported, decision: .confirm))
+        XCTAssertTrue(manager.presets.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: imported.fileURL.path))
+    }
+
+    func testHRIRSettingsCoordinatorReportsDeletionFailureWithoutChangingLibrary() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let manager = HRIRManager(
+            presetsDirectory: root.appendingPathComponent("managed", isDirectory: true),
+            startWatcher: false
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source.wav")
+        try wavFixture(frames: 8).write(to: source)
+        let imported = try XCTUnwrap(manager.importPresets([source], collisionPolicy: .reject).imported.first)
+        let invalidCopy = HRIRPreset(
+            id: imported.id,
+            name: imported.name,
+            fileURL: URL(fileURLWithPath: "/tmp/not-managed.wav"),
+            channelCount: imported.channelCount,
+            sampleRate: imported.sampleRate
+        )
+        let coordinator = HRIRSettingsCoordinator(manager: manager)
+
+        XCTAssertFalse(coordinator.delete(invalidCopy, decision: .confirm))
+        XCTAssertTrue(manager.presets.contains(imported))
+        XCTAssertTrue(coordinator.message?.text.contains("Could not delete") == true)
+    }
+
+    func testHRIRPickerAndDeviceEmptyStateSurfacesUseExpectedLayout() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let style = try String(contentsOf: root.appendingPathComponent("Airwave/AirwaveStyle.swift"), encoding: .utf8)
+        let settings = try String(contentsOf: root.appendingPathComponent("Airwave/SettingsView.swift"), encoding: .utf8)
+        let onboarding = try String(contentsOf: root.appendingPathComponent("Airwave/OnboardingView.swift"), encoding: .utf8)
+        let devices = try String(contentsOf: root.appendingPathComponent("Airwave/DeviceManagementView.swift"), encoding: .utf8)
+
+        XCTAssertTrue(style.contains("struct AirwaveHRIRPicker: View"))
+        XCTAssertTrue(style.contains("Button(\"Import…\")"))
+        XCTAssertTrue(style.contains("Button(\"Show in Finder\")"))
+        XCTAssertTrue(style.contains("Button(\"Delete\", role: .destructive)"))
+        XCTAssertTrue(style.contains("Drop HRIR WAV files"))
+        XCTAssertTrue(settings.contains("AirwaveHRIRPicker("))
+        XCTAssertTrue(onboarding.contains("AirwaveHRIRPicker("))
+        XCTAssertFalse(onboarding.contains("No presets installed"))
+        XCTAssertTrue(devices.contains("if coordinator.rows.isEmpty"))
+        XCTAssertTrue(devices.contains("alignment: .center"))
     }
 
     func testMenuBarVisibilityDefaultsOffAndPersists() throws {
@@ -405,8 +498,8 @@ final class ProductSurfaceTests: XCTestCase {
         viewModel.requestPermission()
         XCTAssertEqual(actions.requestCount, 1)
         XCTAssertEqual(viewModel.permissionPresentation, .unknown)
-        runtime.publish(.starting, output: output(), permission: .requesting)
-        XCTAssertEqual(viewModel.permissionPresentation, .requesting)
+        runtime.publish(.starting, output: output(), permission: .checking)
+        XCTAssertEqual(viewModel.permissionPresentation, .checking)
         runtime.publish(.inactive, output: output(), permission: .granted)
         XCTAssertEqual(viewModel.permissionPresentation, .granted)
         runtime.publish(.needsPermission, output: output(), permission: .denied)
@@ -416,6 +509,26 @@ final class ProductSurfaceTests: XCTestCase {
         viewModel.retry()
         XCTAssertEqual(actions.settingsCount, 1)
         XCTAssertEqual(actions.retryCount, 1)
+    }
+
+    func testPermissionAndTapHealthCardsExistOnlyInOnboarding() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let onboarding = try String(
+            contentsOf: root.appendingPathComponent("Airwave/OnboardingView.swift"),
+            encoding: .utf8
+        )
+        let settings = try String(
+            contentsOf: root.appendingPathComponent("Airwave/SettingsView.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(onboarding.contains("macOS Permission"))
+        XCTAssertTrue(onboarding.contains("Audio Tap Health"))
+        XCTAssertFalse(onboarding.contains("Waiting for macOS"))
+        XCTAssertFalse(settings.contains("Audio Tap Health"))
+        XCTAssertFalse(settings.contains("macOS Permission"))
     }
 
     func testPermissionPresentationDoesNotTreatEffectStartupAsPermissionRequest() {
@@ -443,8 +556,8 @@ final class ProductSurfaceTests: XCTestCase {
 
         runtime.setPermissionStatus(.unknown)
         XCTAssertEqual(viewModel.permissionPresentation, .unknown)
-        runtime.setPermissionStatus(.requesting)
-        XCTAssertEqual(viewModel.permissionPresentation, .requesting)
+        runtime.setPermissionStatus(.checking)
+        XCTAssertEqual(viewModel.permissionPresentation, .checking)
         runtime.setPermissionStatus(.unknown)
         XCTAssertEqual(viewModel.permissionPresentation, .unknown)
     }
@@ -460,7 +573,7 @@ final class ProductSurfaceTests: XCTestCase {
         )
 
         viewModel.requestPermission()
-        runtime.publish(.starting, output: output(), permission: .requesting)
+        runtime.publish(.starting, output: output(), permission: .checking)
         runtime.publish(
             .recovering(reason: "Create process tap failed (OSStatus -50). Retrying in 1s."),
             output: output(),
@@ -485,7 +598,7 @@ final class ProductSurfaceTests: XCTestCase {
 
             viewModel.requestPermission()
             XCTAssertEqual(focus.beginCount, 1)
-            runtime.publish(.starting, output: output(), permission: .requesting)
+            runtime.publish(.starting, output: output(), permission: .checking)
             runtime.publish(
                 resolvedStatus,
                 output: output(),
@@ -512,7 +625,7 @@ final class ProductSurfaceTests: XCTestCase {
 
         viewModel.requestPermission()
         viewModel.requestPermission()
-        runtime.publish(.starting, output: output(), permission: .requesting)
+        runtime.publish(.starting, output: output(), permission: .checking)
         runtime.publish(.needsPermission, output: output(), permission: .denied)
         XCTAssertEqual(focus.beginCount, 2)
         XCTAssertEqual(focus.resolveCount, 1)
@@ -565,7 +678,12 @@ final class ProductSurfaceTests: XCTestCase {
     }
 
     func testCompletionAllowsNoneWithGrantedPermissionAndSupportedOutput() {
-        let runtime = AudioRuntimeState(status: .processing, currentOutput: output())
+        let runtime = AudioRuntimeState(
+            status: .processing,
+            currentOutput: output(),
+            permissionStatus: .granted,
+            tapHealth: .ready
+        )
         let persistence = OnboardingPersistenceFake()
         let viewModel = OnboardingViewModel(
             runtime: runtime,
@@ -585,7 +703,7 @@ final class ProductSurfaceTests: XCTestCase {
         )
         probed.requestPermission()
         probedRuntime.publish(.starting, output: output())
-        probedRuntime.publish(.inactive, output: output())
+        probedRuntime.publish(.inactive, output: output(), permission: .granted, tapHealth: .ready)
         XCTAssertTrue(probed.canComplete)
         XCTAssertTrue(probed.isConfigurationHealthy)
         XCTAssertFalse(probed.needsSetupAttention)
@@ -646,7 +764,12 @@ final class ProductSurfaceTests: XCTestCase {
         completedPersistence.checkpoint = .liveHealth
         completedPersistence.isComplete = true
         let healthy = OnboardingViewModel(
-            runtime: AudioRuntimeState(status: .processing, currentOutput: output()),
+            runtime: AudioRuntimeState(
+                status: .processing,
+                currentOutput: output(),
+                permissionStatus: .granted,
+                tapHealth: .ready
+            ),
             actions: RuntimeActionsFake(), persistence: completedPersistence
         )
         healthy.prepareForPresentation(.voluntary)
@@ -684,16 +807,22 @@ final class ProductSurfaceTests: XCTestCase {
 
     func testCompletedSetupNeverReopensAttentionForTransientRecoveryOrUnsupportedOutput() {
         let cases: [(String, AudioRuntimeState)] = [
-            ("starting", AudioRuntimeState(status: .starting, currentOutput: output())),
+            ("starting", AudioRuntimeState(
+                status: .starting,
+                currentOutput: output(),
+                permissionStatus: .granted
+            )),
             ("recovering", AudioRuntimeState(
                 status: .recovering(reason: "Device lost. Retrying in 1s."),
-                currentOutput: output()
+                currentOutput: output(),
+                permissionStatus: .granted
             )),
             ("unsupported output", AudioRuntimeState(
                 status: .nativePassthrough(reason: "Unsupported output"),
-                currentOutput: output(name: "BlackHole", virtual: true)
+                currentOutput: output(name: "BlackHole", virtual: true),
+                permissionStatus: .granted
             )),
-            ("missing output", AudioRuntimeState(status: .inactive))
+            ("missing output", AudioRuntimeState(status: .inactive, permissionStatus: .granted))
         ]
 
         for (label, runtime) in cases {
@@ -709,6 +838,65 @@ final class ProductSurfaceTests: XCTestCase {
             XCTAssertFalse(viewModel.needsSetupAttention, label)
             XCTAssertFalse(viewModel.shouldShowSetupMenuItem, label)
         }
+    }
+
+    func testCompletedSetupReopensMenuAttentionForTerminalPermissionAuthorityOrTapFailure() {
+        let unknown = AudioRuntimeState(
+            status: .needsPermission,
+            currentOutput: output(),
+            permissionStatus: .unknown
+        )
+        let denied = AudioRuntimeState(
+            status: .needsPermission,
+            currentOutput: output(),
+            permissionStatus: .denied,
+            tapHealth: .failed(reason: "Permission blocked tap verification")
+        )
+        let tapFailed = AudioRuntimeState(
+            status: .nativePassthrough(reason: "Tap failed"),
+            currentOutput: output(),
+            permissionStatus: .granted,
+            tapHealth: .failed(reason: "Tap failed")
+        )
+
+        for runtime in [unknown, denied, tapFailed] {
+            let persistence = OnboardingPersistenceFake()
+            persistence.isComplete = true
+            let viewModel = OnboardingViewModel(
+                runtime: runtime,
+                actions: RuntimeActionsFake(),
+                persistence: persistence
+            )
+
+            XCTAssertTrue(viewModel.needsSetupAttention)
+            XCTAssertTrue(viewModel.shouldShowSetupMenuItem)
+            viewModel.prepareForPresentation(.voluntary)
+            XCTAssertEqual(viewModel.currentStep, .systemAudio)
+        }
+    }
+
+    func testRuntimePermissionChangeRefreshesSetupAttentionConsumers() {
+        let runtime = AudioRuntimeState(
+            status: .inactive,
+            currentOutput: output(),
+            permissionStatus: .granted,
+            tapHealth: .ready
+        )
+        let persistence = OnboardingPersistenceFake()
+        persistence.isComplete = true
+        let viewModel = OnboardingViewModel(
+            runtime: runtime,
+            actions: RuntimeActionsFake(),
+            persistence: persistence
+        )
+        var refreshCount = 0
+        let cancellable = viewModel.objectWillChange.sink { refreshCount += 1 }
+
+        runtime.setPermissionStatus(.unknown)
+
+        XCTAssertGreaterThan(refreshCount, 0)
+        XCTAssertTrue(viewModel.needsSetupAttention)
+        withExtendedLifetime(cancellable) {}
     }
 
     func testIncompleteSetupStillShowsAttentionForTransientRecoveryOrUnsupportedOutput() {
@@ -737,9 +925,8 @@ final class ProductSurfaceTests: XCTestCase {
         }
     }
 
-    func testCompletedVoluntarySetupAlwaysStartsAtWelcomeEvenWhenRuntimeNeedsAttention() {
+    func testCompletedVoluntarySetupStartsAtWelcomeForNonterminalRuntimeStates() {
         let cases: [(String, AudioRuntimeState)] = [
-            ("permission denied", AudioRuntimeState(status: .needsPermission, currentOutput: output())),
             ("inactive without current output", AudioRuntimeState(status: .inactive)),
             ("unsupported output", AudioRuntimeState(
                 status: .nativePassthrough(reason: "Unsupported output"),
@@ -750,6 +937,10 @@ final class ProductSurfaceTests: XCTestCase {
                 currentOutput: output()
             ))
         ]
+
+        for index in cases.indices {
+            cases[index].1.setPermissionStatus(.granted)
+        }
 
         for (label, runtime) in cases {
             let persistence = OnboardingPersistenceFake()
@@ -768,7 +959,7 @@ final class ProductSurfaceTests: XCTestCase {
         }
     }
 
-    func testIncompleteSetupNeedsAttentionWithoutLiveProbeButCompletedSetupDoesNot() {
+    func testMissingPermissionAuthorityNeedsAttentionRegardlessOfPriorCompletion() {
         let freshViewModel = OnboardingViewModel(
             runtime: AudioRuntimeState(status: .inactive),
             actions: RuntimeActionsFake(), persistence: OnboardingPersistenceFake()
@@ -788,8 +979,8 @@ final class ProductSurfaceTests: XCTestCase {
 
         XCTAssertEqual(completedViewModel.permissionPresentation, .unknown)
         XCTAssertFalse(completedViewModel.canComplete)
-        XCTAssertFalse(completedViewModel.needsSetupAttention)
-        XCTAssertFalse(completedViewModel.shouldShowSetupMenuItem)
+        XCTAssertTrue(completedViewModel.needsSetupAttention)
+        XCTAssertTrue(completedViewModel.shouldShowSetupMenuItem)
     }
 
     func testMenuPresentationMapsEveryRuntimeStateAndOnlyRetryableStatesExposeRetry() {

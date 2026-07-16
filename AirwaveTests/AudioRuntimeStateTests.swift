@@ -12,6 +12,8 @@ final class AudioRuntimeStateTests: XCTestCase {
         )
         XCTAssertEqual(runtime.status.title, "Unavailable")
         XCTAssertFalse(runtime.status.isProcessing)
+        XCTAssertEqual(runtime.permissionStatus, .unknown)
+        XCTAssertEqual(runtime.tapHealth, .idle)
     }
 
     func testStatusDisplayMappingIsFiniteAndTruthful() {
@@ -47,7 +49,7 @@ final class AudioRuntimeStateTests: XCTestCase {
     func testRecoveringStateCanExitAnExplicitPermissionRequestToUnknown() {
         let runtime = AudioRuntimeState(
             status: .starting,
-            permissionStatus: .requesting
+            permissionStatus: .checking
         )
 
         runtime.publish(
@@ -57,5 +59,24 @@ final class AudioRuntimeStateTests: XCTestCase {
 
         XCTAssertEqual(runtime.status, .recovering(reason: "Create process tap failed (OSStatus -50). Retrying in 1s."))
         XCTAssertEqual(runtime.permissionStatus, .unknown)
+    }
+
+    func testSetupHealthRequiresIndependentPermissionTapAndSupportedOutput() {
+        let runtime = AudioRuntimeState(
+            status: .inactive,
+            currentOutput: OutputDeviceDescriptor(
+                id: .init(1), uid: "built-in", name: "Built-in Output", transport: "Built-in",
+                outputChannelCount: 2, nominalSampleRate: 48_000, isVirtual: false, isAggregate: false
+            ),
+            permissionStatus: .granted,
+            tapHealth: .ready
+        )
+
+        XCTAssertTrue(runtime.isSetupHealthy)
+        runtime.setTapHealth(.failed(reason: "Tap failed"))
+        XCTAssertFalse(runtime.isSetupHealthy)
+        runtime.setTapHealth(.ready)
+        runtime.setPermissionStatus(.denied)
+        XCTAssertFalse(runtime.isSetupHealthy)
     }
 }

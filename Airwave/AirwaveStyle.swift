@@ -1,4 +1,7 @@
+import AppKit
+import Combine
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum AirwavePalette {
     static let canvas = Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255)
@@ -77,14 +80,11 @@ struct AirwaveEqualHeightColumnsLayout: Layout {
             subview.sizeThatFits(ProposedViewSize(width: columnWidth, height: nil))
         }
         let intrinsicWidth = sizes.reduce(0) { $0 + $1.width } + spacing * CGFloat(max(0, sizes.count - 1))
-        // The trailing column defines the card height on the Settings overview.
-        // The leading preset card receives this same proposal and scrolls its
-        // variable-height list content when needed.
-        let referenceHeight = sizes.last?.height ?? 0
+        let intrinsicHeight = sizes.map(\.height).max() ?? 0
 
         return CGSize(
             width: proposal.width ?? intrinsicWidth,
-            height: referenceHeight
+            height: proposal.height ?? intrinsicHeight
         )
     }
 
@@ -137,6 +137,204 @@ struct AirwaveTopBar<Center: View, Trailing: View>: View {
     }
 }
 
+nonisolated struct HRIRSettingsLibraryRow: Equatable, Identifiable {
+    let id: String
+    let name: String
+    let preset: HRIRPreset?
+    let isSelected: Bool
+}
+
+nonisolated enum HRIRSettingsLibraryModel {
+    static func rows(presets: [HRIRPreset], selectedID: UUID?) -> [HRIRSettingsLibraryRow] {
+        guard !presets.isEmpty else { return [] }
+        return [HRIRSettingsLibraryRow(
+            id: "none",
+            name: "None",
+            preset: nil,
+            isSelected: selectedID == nil
+        )] + presets.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }.map { preset in
+            HRIRSettingsLibraryRow(
+                id: preset.id.uuidString,
+                name: preset.name,
+                preset: preset,
+                isSelected: selectedID == preset.id
+            )
+        }
+    }
+}
+
+nonisolated enum HRIRConflictResolution {
+    case replace
+    case keepExisting
+    case cancel
+}
+
+nonisolated enum HRIRDeletionDecision {
+    case confirm
+    case cancel
+}
+
+nonisolated struct HRIRSettingsMessage: Equatable {
+    let text: String
+    let isSuccess: Bool
+}
+
+@MainActor
+final class HRIRSettingsCoordinator: ObservableObject {
+    @Published private(set) var conflicts: [URL] = []
+    @Published private(set) var message: HRIRSettingsMessage?
+
+    let manager: HRIRManager
+    private var pendingURLs: [URL] = []
+    private var pendingFailures: [HRIRImportFailure] = []
+
+    init(manager: HRIRManager) {
+        self.manager = manager
+    }
+
+    func receive(_ urls: [URL]) {
+        message = nil
+        conflicts = []
+        pendingURLs = []
+        pendingFailures = []
+        guard !urls.isEmpty else { return }
+
+        let preflight = manager.preflightImport(urls)
+        let validURLs = urls.filter { url in
+            preflight.acceptable.contains(url) || preflight.conflicts.contains(url)
+        }
+        pendingFailures = preflight.rejected
+
+        if preflight.conflicts.isEmpty {
+            importURLs(validURLs, collisionPolicy: .reject, preflightFailures: pendingFailures)
+        } else {
+            pendingURLs = validURLs
+            conflicts = preflight.conflicts
+        }
+    }
+
+    func resolveConflicts(_ resolution: HRIRConflictResolution) {
+        guard !conflicts.isEmpty else { return }
+        let urls = pendingURLs
+        let failures = pendingFailures
+        pendingURLs = []
+        pendingFailures = []
+        conflicts = []
+
+        switch resolution {
+        case .replace:
+            importURLs(urls, collisionPolicy: .replace, preflightFailures: failures)
+        case .keepExisting:
+            importURLs(urls, collisionPolicy: .reject, preflightFailures: failures)
+        case .cancel:
+            message = makeMessage(imported: [], skipped: [], failures: failures)
+        }
+    }
+
+    func dismissMessage() {
+        message = nil
+    }
+
+    func presentImportPanel() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsOtherFileTypes = false
+        panel.allowedContentTypes = [UTType(filenameExtension: "wav") ?? .audio]
+        panel.title = "Import HRIR Presets"
+        panel.message = "Choose one or more compatible HRIR WAV files."
+        guard panel.runModal() == .OK else { return }
+        receive(panel.urls)
+    }
+
+    func showInFinder() {
+        manager.openPresetsDirectory()
+    }
+
+    @discardableResult
+    func delete(_ preset: HRIRPreset, decision: HRIRDeletionDecision) -> Bool {
+        guard decision == .confirm else { return false }
+        guard manager.deletePreset(preset) else {
+            message = HRIRSettingsMessage(
+                text: manager.errorMessage.map { "Could not delete \(preset.name): \($0)" }
+                    ?? "Could not delete the managed HRIR preset.",
+                isSuccess: false
+            )
+            return false
+        }
+        message = HRIRSettingsMessage(
+            text: "Deleted \(preset.name) from the managed HRIR Presets folder.",
+            isSuccess: true
+        )
+        return true
+    }
+
+    private func importURLs(
+        _ urls: [URL],
+        collisionPolicy: HRIRImportCollisionPolicy,
+        preflightFailures: [HRIRImportFailure] = []
+    ) {
+        let result = manager.importPresets(urls, collisionPolicy: collisionPolicy)
+        message = makeMessage(
+            imported: result.imported,
+            skipped: result.skipped,
+            failures: preflightFailures + result.failures
+        )
+    }
+
+    private func makeMessage(
+        imported: [HRIRPreset],
+        skipped: [String],
+        failures: [HRIRImportFailure]
+    ) -> HRIRSettingsMessage {
+        var parts: [String] = []
+        if !imported.isEmpty {
+            parts.append("Imported \(imported.count) preset\(imported.count == 1 ? "" : "s").")
+        }
+        if !skipped.isEmpty {
+            parts.append("Kept existing: \(skipped.joined(separator: ", ")).")
+        }
+        if !failures.isEmpty {
+            parts.append(failures.map { "\($0.filename): \($0.reason)" }.joined(separator: " • "))
+        }
+        if parts.isEmpty {
+            parts.append("No presets were imported.")
+        }
+        return HRIRSettingsMessage(
+            text: parts.joined(separator: " "),
+            isSuccess: !imported.isEmpty && failures.isEmpty
+        )
+    }
+}
+
+struct AirwaveEmptyLibraryState: View {
+    let systemImage: String
+    let title: String
+    let description: String
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: systemImage)
+                .font(.system(size: 24))
+                .foregroundStyle(.secondary)
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+            Text(description)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 360)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .padding(AirwaveLayout.cardPadding)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title). \(description)")
+    }
+}
+
 struct AirwavePresetList: View {
     let presets: [HRIRPreset]
     let selectedID: UUID?
@@ -144,23 +342,24 @@ struct AirwavePresetList: View {
 
     var body: some View {
         ZStack {
-            ScrollView {
-                LazyVStack(spacing: 2) {
-                    selectionRow("None", selected: selectedID == nil) { onSelect(nil) }
-                    ForEach(MenuBarViewModel.sortedPresets(presets)) { preset in
-                        selectionRow(preset.name, selected: selectedID == preset.id) { onSelect(preset) }
+            if presets.isEmpty {
+                AirwaveEmptyLibraryState(
+                    systemImage: "waveform",
+                    title: "No HRIR presets",
+                    description: "Import a compatible WAV file to choose a spatial profile."
+                )
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 2) {
+                        ForEach(HRIRSettingsLibraryModel.rows(presets: presets, selectedID: selectedID)) { row in
+                            selectionRow(row.name, selected: row.isSelected) { onSelect(row.preset) }
+                        }
                     }
-                    if presets.isEmpty {
-                        Text("No compatible presets found")
-                            .font(.callout).foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(AirwaveLayout.cardPadding)
-                    }
+                    .padding(6)
                 }
-                .padding(6)
             }
         }
-        .frame(maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func selectionRow(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
@@ -180,48 +379,24 @@ struct AirwavePresetList: View {
     }
 }
 
-struct AirwavePresetFilesRow: View {
-    let action: () -> Void
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "folder.fill")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .frame(width: 20)
-            Text("Manage HRIR WAV files")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Spacer()
-            Button("Manage Files", action: action)
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .fixedSize()
-        }
-        .padding(.horizontal, AirwaveLayout.rowHorizontalPadding)
-        .padding(.vertical, AirwaveLayout.rowVerticalPadding)
-    }
-}
-
-struct AirwavePresetDropHint: View {
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "square.and.arrow.down")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .frame(width: 20)
-            Text("Drag and drop your HRIR files here")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, AirwaveLayout.rowHorizontalPadding)
-        .padding(.vertical, AirwaveLayout.rowVerticalPadding)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("You can drag and drop HRIR WAV files anywhere in this selector")
-    }
-}
+//struct AirwavePresetDropHint: View {
+//    var body: some View {
+//        HStack(spacing: 10) {
+//            Image(systemName: "square.and.arrow.down")
+//                .font(.system(size: 12))
+//                .foregroundStyle(.secondary)
+//                .frame(width: 20)
+//            Text("Drag and drop your HRIR files here")
+//                .font(.system(size: 11))
+//                .foregroundStyle(.secondary)
+//            Spacer(minLength: 0)
+//        }
+//        .padding(.horizontal, AirwaveLayout.rowHorizontalPadding)
+//        .padding(.vertical, AirwaveLayout.rowVerticalPadding)
+//        .accessibilityElement(children: .combine)
+//        .accessibilityLabel("You can drag and drop HRIR WAV files anywhere in this selector")
+//    }
+//}
 
 struct AirwaveScrollEdgeFades: View {
     var bottomHeight: CGFloat = 110
@@ -321,6 +496,7 @@ struct AirwaveSectionHeader: View {
 struct AirwaveNavigationCard: View {
     let title: String
     let subtitle: String
+    var showsWarning = false
     let action: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -350,7 +526,9 @@ struct AirwaveNavigationCard: View {
         }
         .buttonStyle(.plain)
         .background(
-            isHovering ? AirwavePalette.hover : AirwavePalette.raised,
+            showsWarning
+                ? Color.orange.opacity(isHovering ? 0.18 : 0.10)
+                : (isHovering ? AirwavePalette.hover : AirwavePalette.raised),
             in: RoundedRectangle(cornerRadius: AirwaveLayout.cardCornerRadius)
         )
         .onHover { hovering in
@@ -364,87 +542,146 @@ struct AirwaveNavigationCard: View {
     }
 }
 
-private struct AirwaveHRIRDropModifier: ViewModifier {
-    let manager: HRIRManager
+struct AirwaveHRIRPicker: View {
+    @ObservedObject private var manager: HRIRManager
+    let selectedID: UUID?
+    let onSelect: (HRIRPreset?) -> Void
+    let onDelete: (HRIRPreset) -> Void
+
+    @StateObject private var coordinator: HRIRSettingsCoordinator
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isTargeted = false
-    @State private var conflicts: [URL] = []
-    @State private var pendingValidURLs: [URL] = []
-    @State private var message: String?
+    @State private var pendingDelete: HRIRPreset?
 
-    func body(content: Content) -> some View {
-        content
-            .overlay {
-                RoundedRectangle(cornerRadius: AirwaveLayout.cardCornerRadius)
-                    .strokeBorder(Color.primary.opacity(isTargeted ? 0.8 : 0), style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
-            }
-            .overlay(alignment: .bottom) {
-                if isTargeted {
-                    Label("Drop HRIR WAV files", systemImage: "square.and.arrow.down")
-                        .font(.callout.weight(.medium)).padding(8)
-                        .background(.regularMaterial, in: Capsule()).padding(10)
+    @MainActor
+    init(
+        manager: HRIRManager,
+        selectedID: UUID?,
+        onSelect: @escaping (HRIRPreset?) -> Void,
+        onDelete: @escaping (HRIRPreset) -> Void = { _ in }
+    ) {
+        _manager = ObservedObject(wrappedValue: manager)
+        self.selectedID = selectedID
+        self.onSelect = onSelect
+        self.onDelete = onDelete
+        _coordinator = StateObject(wrappedValue: HRIRSettingsCoordinator(manager: manager))
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            AirwavePresetList(
+                presets: manager.presets,
+                selectedID: selectedID,
+                onSelect: onSelect
+            )
+
+            Divider()
+
+            HStack(spacing: 8) {
+                Button("Import…") { coordinator.presentImportPanel() }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                Button("Show in Finder") { coordinator.showInFinder() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("Reveal the managed HRIR Presets folder")
+                Spacer(minLength: 0)
+                Button("Delete", role: .destructive) {
+                    pendingDelete = selectedPreset
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(selectedPreset == nil)
+                .help("Delete the selected managed HRIR preset")
             }
-            .dropDestination(for: URL.self) { urls, _ in
-                Task { @MainActor in
-                    await Task.yield()
-                    handle(urls)
-                }
-                return true
-            } isTargeted: { isTargeted = $0 }
-            .confirmationDialog(
-                conflicts.count == 1 ? "Replace existing preset?" : "Replace \(conflicts.count) existing presets?",
-                isPresented: Binding(get: { !conflicts.isEmpty }, set: { if !$0 { conflicts = [] } })
-            ) {
-                Button("Replace") { importURLs(pendingValidURLs, policy: .replace); clearPending() }
-                Button("Keep Existing", role: .cancel) { importURLs(pendingValidURLs, policy: .reject); clearPending() }
-            } message: {
-                Text("Airwave will replace files with the same name. The original dropped files are not changed.")
+            .padding(AirwaveLayout.cardPadding)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay {
+            RoundedRectangle(cornerRadius: AirwaveLayout.cardCornerRadius)
+                .strokeBorder(
+                    Color.primary.opacity(isTargeted ? 0.8 : 0),
+                    style: StrokeStyle(lineWidth: 2, dash: [6, 4])
+                )
+        }
+        .overlay(alignment: .bottom) {
+            if isTargeted {
+                Label("Drop HRIR WAV files", systemImage: "square.and.arrow.down")
+                    .font(.callout.weight(.medium))
+                    .padding(8)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(10)
+                    .transition(.opacity)
             }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if let message {
-                    HStack {
-                        Text(message).font(.caption).foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Dismiss") { self.message = nil }.buttonStyle(.plain).font(.caption)
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            coordinator.receive(urls)
+            return true
+        } isTargeted: { targeted in
+            if reduceMotion {
+                isTargeted = targeted
+            } else {
+                withAnimation(.easeOut(duration: 0.12)) { isTargeted = targeted }
+            }
+        }
+        .confirmationDialog(
+            coordinator.conflicts.count == 1
+                ? "Replace existing preset?"
+                : "Replace \(coordinator.conflicts.count) existing presets?",
+            isPresented: Binding(
+                get: { !coordinator.conflicts.isEmpty },
+                set: { isPresented in
+                    if !isPresented && !coordinator.conflicts.isEmpty {
+                        coordinator.resolveConflicts(.cancel)
                     }
-                    .padding(8).background(AirwavePalette.raised)
                 }
+            )
+        ) {
+            Button("Replace") { coordinator.resolveConflicts(.replace) }
+            Button("Keep Existing", role: .cancel) {
+                coordinator.resolveConflicts(.keepExisting)
             }
-    }
-
-    private func handle(_ urls: [URL]) {
-        message = nil
-        let preflight = manager.preflightImport(urls)
-        let validSet = Set(preflight.acceptable + preflight.conflicts)
-        let validInInputOrder = urls.filter { validSet.contains($0) }
-        if preflight.conflicts.isEmpty {
-            importURLs(validInInputOrder, policy: .reject)
-        } else {
-            pendingValidURLs = validInInputOrder
-            conflicts = preflight.conflicts
+        } message: {
+            Text("Files with the same name can replace the managed copy. Other valid files will still import.")
         }
-        if !preflight.rejected.isEmpty {
-            message = "\(preflight.rejected.count) file\(preflight.rejected.count == 1 ? "" : "s") could not be imported."
+        .confirmationDialog(
+            "Delete \(pendingDelete?.name ?? "preset")?",
+            isPresented: Binding(
+                get: { pendingDelete != nil },
+                set: { if !$0 { pendingDelete = nil } }
+            ),
+            presenting: pendingDelete
+        ) { preset in
+            Button("Delete", role: .destructive) {
+                if coordinator.delete(preset, decision: .confirm) {
+                    onDelete(preset)
+                }
+                pendingDelete = nil
+            }
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+        } message: { preset in
+            Text("This deletes the managed copy of \(preset.name) from Airwave’s HRIR Presets folder.")
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if let message = coordinator.message {
+                HStack(spacing: 8) {
+                    Image(systemName: message.isSuccess ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    Text(message.text).font(.caption).foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    Button("Dismiss") { coordinator.dismissMessage() }
+                        .buttonStyle(.plain)
+                        .font(.caption)
+                }
+                .padding(8)
+                .background(AirwavePalette.raised)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(message.text)
+                .accessibilityAddTraits(.updatesFrequently)
+            }
         }
     }
 
-    private func importURLs(_ urls: [URL], policy: HRIRImportCollisionPolicy) {
-        let result = manager.importPresets(urls, collisionPolicy: policy)
-        if !result.failures.isEmpty {
-            message = "\(result.imported.count) imported; \(result.failures.count) could not be imported."
-        } else if !result.imported.isEmpty {
-            message = "Imported \(result.imported.count) preset\(result.imported.count == 1 ? "" : "s")."
-        }
-    }
-
-    private func clearPending() {
-        conflicts = []
-        pendingValidURLs = []
-    }
-}
-
-extension View {
-    func airwaveHRIRDropTarget(manager: HRIRManager) -> some View {
-        modifier(AirwaveHRIRDropModifier(manager: manager))
+    private var selectedPreset: HRIRPreset? {
+        manager.presets.first { $0.id == selectedID }
     }
 }
