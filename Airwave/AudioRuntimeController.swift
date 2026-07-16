@@ -28,6 +28,16 @@ nonisolated enum AudioRuntimeInvalidation {
 }
 
 @MainActor
+protocol OutputEffectProfilePreparing: AnyObject {
+    func prepare(
+        output: OutputDeviceDescriptor,
+        completion: @escaping (AudioRuntimeEffectReadiness) -> Void
+    )
+    func cancelPreparation()
+    func outputBecameUnsupportedOrUnavailable()
+}
+
+@MainActor
 protocol AudioRuntimeScheduling: AnyObject {
     @discardableResult
     func schedule(after delay: TimeInterval, _ action: @escaping @MainActor () -> Void) -> AudioRuntimeCancellation
@@ -99,6 +109,9 @@ final class AudioRuntimeController {
     private var launched = false
     private var sleeping = false
     private var terminated = false
+    private weak var profilePreparer: (any OutputEffectProfilePreparing)?
+    private var desiredOutput: OutputDeviceDescriptor?
+    private var hasPreparedDesiredOutput = false
 
     init(
         state: AudioRuntimeState,
@@ -112,6 +125,28 @@ final class AudioRuntimeController {
         self.pipelineFactory = pipelineFactory
         self.scheduler = scheduler
         self.effectGraph = effectGraph
+    }
+
+    func setProfilePreparer(_ preparer: (any OutputEffectProfilePreparing)?) {
+        profilePreparer = preparer
+    }
+
+    func reprepareCurrentOutput() {
+        guard launched, !sleeping, !terminated else { return }
+        guard stopForInvalidation() else { return }
+        hasPreparedDesiredOutput = false
+        reconcile()
+    }
+
+    func updateCurrentEqualizer(_ definition: EqualizerDefinition?) {
+        updateReadiness(
+            AudioRuntimeEffectReadiness(
+                spatialReady: effectReadiness.spatialReady,
+                equalizerDefinition: definition,
+                spatialError: effectReadiness.spatialError
+            ),
+            invalidation: .equalizerTarget
+        )
     }
 
     func launch(presetReady: Bool, permissionGranted: Bool = true) {
@@ -272,12 +307,19 @@ final class AudioRuntimeController {
            state.status == .processing {
             return
         }
+        if let output {
+            desiredOutput = output
+            hasPreparedDesiredOutput = false
+        }
         guard stopForInvalidation() else { return }
         guard let output else {
+            desiredOutput = nil
+            hasPreparedDesiredOutput = false
+            profilePreparer?.outputBecameUnsupportedOrUnavailable()
             handleFailure(AudioRuntimeError.noOutputDevice, output: nil)
             return
         }
-        start(on: output)
+        transition(to: output)
     }
 
     private func reconcile() {
@@ -286,7 +328,15 @@ final class AudioRuntimeController {
             state.publish(.needsPermission, permission: .denied)
             return
         }
-        guard effectReadiness.hasSelectedEffect || permissionProbeRequested else {
+        if let desiredOutput, hasPreparedDesiredOutput {
+            guard effectReadiness.hasSelectedEffect || permissionProbeRequested else {
+                publishInactive(output: desiredOutput)
+                return
+            }
+            start(on: desiredOutput)
+            return
+        }
+        guard profilePreparer != nil || effectReadiness.hasSelectedEffect || permissionProbeRequested else {
             // Selecting None intentionally stops processing, but it does not
             // invalidate the permission result or the supported output that
             // the running pipeline just proved. Keep that live runtime context
@@ -300,9 +350,49 @@ final class AudioRuntimeController {
         }
         do {
             let output = try platform.defaultOutputDevice()
-            start(on: output)
+            transition(to: output)
         } catch {
             handleFailure(error, output: nil)
+        }
+    }
+
+    private func transition(to output: OutputDeviceDescriptor) {
+        guard validate(output) else {
+            desiredOutput = nil
+            hasPreparedDesiredOutput = false
+            profilePreparer?.outputBecameUnsupportedOrUnavailable()
+            return
+        }
+        desiredOutput = output
+        hasPreparedDesiredOutput = false
+        guard let profilePreparer else {
+            hasPreparedDesiredOutput = true
+            start(on: output)
+            return
+        }
+        let preparationGeneration = generation
+        state.publish(.starting, output: output)
+        profilePreparer.prepare(output: output) { [weak self] readiness in
+            guard let self,
+                  preparationGeneration == self.generation,
+                  self.desiredOutput?.uid == output.uid,
+                  !self.sleeping,
+                  !self.terminated else { return }
+            self.effectReadiness = readiness
+            self.hasPreparedDesiredOutput = true
+            guard readiness.hasSelectedEffect || self.permissionProbeRequested else {
+                self.publishInactive(output: output)
+                return
+            }
+            self.start(on: output)
+        }
+    }
+
+    private func publishInactive(output: OutputDeviceDescriptor) {
+        if let spatialError = effectReadiness.spatialError {
+            state.publish(.nativePassthrough(reason: spatialError), output: output)
+        } else {
+            state.publish(.inactive, output: output)
         }
     }
 
@@ -371,15 +461,7 @@ final class AudioRuntimeController {
     }
 
     private func validate(_ output: OutputDeviceDescriptor) -> Bool {
-        let reason: String?
-        if output.isVirtual || output.isAggregate {
-            reason = "Unsupported virtual or aggregate output. Change output in macOS Settings."
-        } else if output.outputChannelCount != 2 {
-            reason = "Airwave requires a stereo output. Change output in macOS Settings."
-        } else {
-            reason = nil
-        }
-        if let reason {
+        if let reason = output.unsupportedProfileReason {
             state.publish(.nativePassthrough(reason: reason), output: output)
             return false
         }
@@ -449,6 +531,7 @@ final class AudioRuntimeController {
 
     private func stopForInvalidation() -> Bool {
         generation += 1
+        profilePreparer?.cancelPreparation()
         cancelRetry()
         cancelSoleEffectStop()
         stabilityToken?.cancel()

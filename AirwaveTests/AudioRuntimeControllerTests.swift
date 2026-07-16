@@ -196,6 +196,109 @@ final class AudioRuntimeControllerTests: XCTestCase {
         XCTAssertEqual(harness.state.permissionStatus, .granted)
     }
 
+    func testProfilePreparationWaitsForPairBeforeStarting() {
+        let harness = Harness()
+        let preparer = RuntimeProfilePreparerFake()
+        harness.controller.setProfilePreparer(preparer)
+
+        harness.controller.launch(presetReady: false)
+
+        XCTAssertEqual(preparer.preparedOutputs, [harness.platform.output])
+        XCTAssertEqual(harness.pipelines.startedOutputs, [])
+        XCTAssertEqual(harness.state.status, .starting)
+
+        preparer.complete(outputUID: harness.platform.output.uid, readiness: .init(spatialReady: true, equalizerDefinition: nil))
+
+        XCTAssertEqual(harness.pipelines.startedOutputs, [harness.platform.output])
+        XCTAssertEqual(harness.pipelines.liveCount, 1)
+        XCTAssertEqual(harness.state.status, .processing)
+    }
+
+    func testStaleProfilePreparationCannotStartOldOutput() {
+        let harness = Harness()
+        let preparer = RuntimeProfilePreparerFake()
+        harness.controller.setProfilePreparer(preparer)
+        harness.controller.launch(presetReady: false)
+        let b = device(id: 2, name: "B")
+        let c = device(id: 3, name: "C")
+
+        harness.platform.emit(b)
+        harness.platform.emit(c)
+        preparer.complete(outputUID: b.uid, readiness: .init(spatialReady: true, equalizerDefinition: nil))
+
+        XCTAssertEqual(harness.pipelines.startedOutputs, [])
+
+        preparer.complete(outputUID: c.uid, readiness: .init(spatialReady: true, equalizerDefinition: nil))
+
+        XCTAssertEqual(harness.pipelines.startedOutputs, [c])
+        XCTAssertEqual(harness.pipelines.liveCount, 1)
+    }
+
+    func testEmptyProfilePreparationUsesProbeWithoutLeavingPipelineLive() {
+        let harness = Harness()
+        let preparer = RuntimeProfilePreparerFake()
+        harness.controller.setProfilePreparer(preparer)
+        harness.controller.launch(presetReady: false)
+
+        preparer.complete(outputUID: harness.platform.output.uid, readiness: .init(spatialReady: false, equalizerDefinition: nil))
+
+        XCTAssertEqual(harness.pipelines.startedOutputs, [harness.platform.output])
+        XCTAssertEqual(harness.pipelines.liveCount, 0)
+        XCTAssertEqual(harness.state.status, .inactive)
+    }
+
+    func testOutputLossDuringProfilePreparationCancelsWithoutStarting() {
+        let harness = Harness()
+        let preparer = RuntimeProfilePreparerFake()
+        harness.controller.setProfilePreparer(preparer)
+        harness.controller.launch(presetReady: false)
+
+        harness.platform.emit(nil)
+        preparer.complete(outputUID: harness.platform.output.uid, readiness: .init(spatialReady: true, equalizerDefinition: nil))
+
+        XCTAssertGreaterThanOrEqual(preparer.cancelCount, 1)
+        XCTAssertEqual(preparer.unavailableCount, 1)
+        XCTAssertEqual(harness.pipelines.startedOutputs, [])
+    }
+
+    func testSleepCancelsPreparationAndWakeStartsOnlyLatestPair() {
+        let harness = Harness()
+        let preparer = RuntimeProfilePreparerFake()
+        harness.controller.setProfilePreparer(preparer)
+        harness.controller.launch(presetReady: false)
+
+        harness.controller.willSleep()
+        preparer.complete(outputUID: harness.platform.output.uid, readiness: .init(spatialReady: true, equalizerDefinition: nil))
+        XCTAssertEqual(harness.pipelines.startedOutputs, [])
+
+        harness.controller.didWake()
+        preparer.complete(outputUID: harness.platform.output.uid, readiness: .init(spatialReady: true, equalizerDefinition: nil))
+
+        XCTAssertEqual(preparer.cancelCount, 1)
+        XCTAssertEqual(harness.pipelines.startedOutputs, [harness.platform.output])
+        XCTAssertEqual(harness.pipelines.liveCount, 1)
+    }
+
+    func testCleanupFailureDefersNewProfilePreparationUntilRetry() {
+        let harness = Harness()
+        let preparer = RuntimeProfilePreparerFake()
+        harness.controller.setProfilePreparer(preparer)
+        harness.controller.launch(presetReady: false)
+        preparer.complete(outputUID: harness.platform.output.uid, readiness: .init(spatialReady: true, equalizerDefinition: nil))
+        harness.pipelines.stopFailuresRemaining = 1
+        let a = harness.platform.output
+        let b = device(id: 2, name: "B")
+
+        harness.platform.emit(b)
+
+        XCTAssertEqual(preparer.preparedOutputs, [a])
+        XCTAssertEqual(harness.scheduler.pendingDelays, [1])
+
+        harness.scheduler.runNext()
+
+        XCTAssertEqual(preparer.preparedOutputs, [a, b])
+    }
+
     func testSameOutputCallbackDoesNotRecreateLivePipeline() {
         let harness = Harness()
         harness.controller.launch(presetReady: true)
@@ -465,18 +568,16 @@ final class AudioRuntimeControllerTests: XCTestCase {
         XCTAssertEqual(harness.scheduler.pendingDelays, [30])
     }
 
-    func testAppDelegateCombinesSpatialAndEqualizerReadinessSources() throws {
+    func testAppDelegateLaunchesTheDeviceProfileCoordinator() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("Airwave/AppDelegate.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
-        XCTAssertTrue(source.contains("EqualizerManager.shared"))
-        XCTAssertTrue(source.contains("hrir.$activePreset"))
-        XCTAssertTrue(source.contains("hrir.$errorMessage"))
-        XCTAssertTrue(source.contains("eq.$selectedDefinition"))
-        XCTAssertTrue(source.contains(".equalizerTarget"))
+        XCTAssertTrue(source.contains("DeviceProfileRuntimeCoordinator.shared.launch()"))
+        XCTAssertFalse(source.contains("hrir.$activePreset"))
+        XCTAssertFalse(source.contains("eq.$selectedDefinition"))
     }
 }
 
@@ -608,6 +709,36 @@ private final class RuntimePlatformFake: AudioPlatformClient {
     func stopIO(_ io: AudioIOHandle) throws { fatalError() }
     func destroyIO(_ io: AudioIOHandle) throws { fatalError() }
     func openAudioCapturePermissionSettings() {}
+}
+
+@MainActor
+private final class RuntimeProfilePreparerFake: OutputEffectProfilePreparing {
+    private var completions: [String: (AudioRuntimeEffectReadiness) -> Void] = [:]
+    private(set) var preparedOutputs: [OutputDeviceDescriptor] = []
+    private(set) var cancelCount = 0
+    private(set) var unavailableCount = 0
+
+    func prepare(
+        output: OutputDeviceDescriptor,
+        completion: @escaping (AudioRuntimeEffectReadiness) -> Void
+    ) {
+        preparedOutputs.append(output)
+        completions[output.uid] = completion
+    }
+
+    func complete(outputUID: String, readiness: AudioRuntimeEffectReadiness) {
+        let completion = completions.removeValue(forKey: outputUID)
+        completion?(readiness)
+    }
+
+    func cancelPreparation() {
+        cancelCount += 1
+        completions.removeAll()
+    }
+
+    func outputBecameUnsupportedOrUnavailable() {
+        unavailableCount += 1
+    }
 }
 
 @MainActor

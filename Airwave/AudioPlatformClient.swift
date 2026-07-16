@@ -18,6 +18,25 @@ nonisolated struct OutputDeviceDescriptor: Equatable, Sendable {
     let nominalSampleRate: Double
     let isVirtual: Bool
     let isAggregate: Bool
+
+    /// The single support policy shared by persistence and the audio runtime.
+    var isSupportedProfileOutput: Bool {
+        !uid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !isVirtual && !isAggregate && outputChannelCount == 2
+    }
+
+    var unsupportedProfileReason: String? {
+        if uid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "The output has no stable device identity."
+        }
+        if isVirtual || isAggregate {
+            return "Unsupported virtual or aggregate output. Change output in macOS Settings."
+        }
+        if outputChannelCount != 2 {
+            return "Airwave requires a stereo output. Change output in macOS Settings."
+        }
+        return nil
+    }
 }
 
 nonisolated struct AudioStreamFormat: Equatable, Sendable {

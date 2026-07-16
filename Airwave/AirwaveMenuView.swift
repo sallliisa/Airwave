@@ -143,6 +143,7 @@ private struct MenuActionRow: View {
 struct AirwaveMenuView: View {
     @EnvironmentObject private var viewModel: MenuBarViewModel
     @ObservedObject private var hrirManager = HRIRManager.shared
+    @ObservedObject private var profiles = DeviceProfileManager.shared
     @ObservedObject private var onboarding = OnboardingViewModel.shared
     @State private var isPresetExpanded = false
 
@@ -154,17 +155,17 @@ struct AirwaveMenuView: View {
 
             MenuAccordion(
                 title: "HRIR Preset",
-                value: hrirManager.activePreset?.name ?? "None",
+                value: selectedPreset?.name ?? "None",
                 isExpanded: isPresetExpanded,
                 onToggle: {
                     withAnimation(.easeInOut(duration: 0.2)) { isPresetExpanded.toggle() }
                 }
             ) {
-                MenuSelectionRow(name: "None", isSelected: hrirManager.activePreset == nil) {
+                MenuSelectionRow(name: "None", isSelected: selectedPreset == nil) {
                     viewModel.selectPreset(nil)
                 }
                 ForEach(MenuBarViewModel.sortedPresets(hrirManager.presets)) { preset in
-                    MenuSelectionRow(name: preset.name, isSelected: preset.id == hrirManager.activePreset?.id) {
+                    MenuSelectionRow(name: preset.name, isSelected: preset.id == selectedPreset?.id) {
                         viewModel.selectPreset(preset)
                     }
                 }
@@ -196,5 +197,10 @@ struct AirwaveMenuView: View {
         .frame(width: 280)
         .padding(.horizontal, AirwaveLayout.menuOuterPadding)
         .padding(.vertical, AirwaveLayout.menuGroupPadding)
+    }
+
+    private var selectedPreset: HRIRPreset? {
+        guard let id = profiles.currentProfile?.hrirPresetID else { return nil }
+        return hrirManager.presets.first { $0.id == id }
     }
 }

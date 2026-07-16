@@ -44,6 +44,11 @@ struct HRIRImportResult {
     let failures: [HRIRImportFailure]
 }
 
+enum HRIRActivationResult: Equatable {
+    case success
+    case failure(String)
+}
+
 struct PresetActivationKey: Hashable {
     let presetID: UUID
     let fileURL: URL
@@ -99,6 +104,7 @@ class HRIRManager: ObservableObject {
     @Published var activePreset: HRIRPreset?
     
     @Published var errorMessage: String?
+    @Published private(set) var initialLibrarySyncReady = false
     
     // Internal state
     private(set) var currentInputLayout: InputLayout?
@@ -133,6 +139,7 @@ class HRIRManager: ObservableObject {
     private var currentActivationKey: PresetActivationKey?
     private var inFlightActivationKey: PresetActivationKey?
     private var activationCancellationToken: ActivationCancellationToken?
+    private var activationCompletion: ((HRIRActivationResult) -> Void)?
     
     private var rendererState: RendererState? {
         get { stateLock.withLock { $0 } }
@@ -282,7 +289,8 @@ class HRIRManager: ObservableObject {
         _ preset: HRIRPreset,
         targetSampleRate: Double,
         inputLayout: InputLayout,
-        hrirMap: HRIRChannelMap? = nil
+        hrirMap: HRIRChannelMap? = nil,
+        completion: ((HRIRActivationResult) -> Void)? = nil
     ) {
         let activationKey = hrirMap == nil
             ? PresetActivationKey(preset: preset, targetSampleRate: targetSampleRate, inputLayout: inputLayout)
@@ -291,6 +299,7 @@ class HRIRManager: ObservableObject {
         if let activationKey,
            activationKey == currentActivationKey,
            rendererState != nil {
+            completion?(.success)
             return
         }
         if let activationKey, activationKey == inFlightActivationKey {
@@ -305,6 +314,7 @@ class HRIRManager: ObservableObject {
         let blockSize = processingBlockSize
         let cancellationToken = ActivationCancellationToken()
         activationCancellationToken = cancellationToken
+        activationCompletion = completion
 
         let task = DispatchWorkItem { [weak self] in
             do {
@@ -391,7 +401,8 @@ class HRIRManager: ObservableObject {
                         preset: preset,
                         inputLayout: inputLayout,
                         channelMap: channelMap,
-                        renderers: newRenderers
+                        renderers: newRenderers,
+                        completion: completion
                     )
                 }
             } catch {
@@ -399,7 +410,8 @@ class HRIRManager: ObservableObject {
                 DispatchQueue.main.async {
                     self?.publishActivationFailure(
                         generation: generation,
-                        message: "Failed to activate preset: \(error.localizedDescription)"
+                        message: "Failed to activate preset: \(error.localizedDescription)",
+                        completion: completion
                     )
                 }
             }
@@ -425,6 +437,7 @@ class HRIRManager: ObservableObject {
         activationTask = nil
         activationCancellationToken?.cancel()
         activationCancellationToken = nil
+        activationCompletion = nil
         activationGeneration += 1
         inFlightActivationKey = nil
         currentActivationKey = nil
@@ -442,7 +455,8 @@ class HRIRManager: ObservableObject {
         preset: HRIRPreset,
         inputLayout: InputLayout,
         channelMap: HRIRChannelMap,
-        renderers: [VirtualSpeakerRenderer]
+        renderers: [VirtualSpeakerRenderer],
+        completion: ((HRIRActivationResult) -> Void)?
     ) {
         guard generation == activationGeneration else { return }
         rendererState = RendererState(renderers: renderers, blockSize: processingBlockSize)
@@ -454,14 +468,22 @@ class HRIRManager: ObservableObject {
         currentInputLayout = inputLayout
         currentHRIRMap = channelMap
         errorMessage = nil
+        activationCompletion = nil
+        completion?(.success)
     }
 
-    private func publishActivationFailure(generation: Int, message: String) {
+    private func publishActivationFailure(
+        generation: Int,
+        message: String,
+        completion: ((HRIRActivationResult) -> Void)?
+    ) {
         guard generation == activationGeneration else { return }
         inFlightActivationKey = nil
         activationTask = nil
         activationCancellationToken = nil
         errorMessage = message
+        activationCompletion = nil
+        completion?(.failure(message))
     }
 
     /// Process selected stereo input through convolution without render-thread allocation.
@@ -600,7 +622,10 @@ class HRIRManager: ObservableObject {
             at: presetsDirectory,
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]
-        ) else { return }
+        ) else {
+            DispatchQueue.main.async { self.initialLibrarySyncReady = true }
+            return
+        }
         
         let wavFiles = fileURLs.filter { $0.pathExtension.lowercased() == "wav" }
         
@@ -654,6 +679,7 @@ class HRIRManager: ObservableObject {
             if let active = self.activePreset, !updatedPresets.contains(where: { $0.id == active.id }) {
                 self.deactivatePreset()
             }
+            self.initialLibrarySyncReady = true
         }
     }
     

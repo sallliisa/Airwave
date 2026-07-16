@@ -17,6 +17,10 @@ final class ProductSurfaceTests: XCTestCase {
         state.selectSettingsPage(.application)
         XCTAssertEqual(state.settingsPage, .application)
 
+        state.selectSettingsPage(.devices)
+        XCTAssertEqual(state.settingsPage, .devices)
+        XCTAssertEqual(SettingsPage.devices.title, "Devices")
+
         state.show(.setup)
         XCTAssertEqual(state.mode, .setup)
         XCTAssertFalse(state.canReturnToSettings)
@@ -55,6 +59,10 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertTrue(settings.contains("title: \"Equalizer\""))
         XCTAssertTrue(settings.contains("title: \"Setup\""))
         XCTAssertTrue(settings.contains("title: \"Application\""))
+        XCTAssertTrue(settings.contains("title: \"Devices\""))
+        XCTAssertTrue(settings.contains("DeviceManagementView()"))
+        XCTAssertTrue(settings.contains("case .devices:"))
+        XCTAssertTrue(settings.contains("state.settingsPage == .general || state.settingsPage == .equalizer"))
         XCTAssertTrue(settings.contains("AirwaveIconButton("))
         XCTAssertTrue(settings.contains("systemImage: \"chevron.left\""))
         XCTAssertTrue(settings.contains("SettingsRightColumnHeightKey"))
@@ -71,6 +79,32 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertTrue(settings.contains("settingsContentMaxHeight"))
     }
 
+    func testDeviceManagementSurfacePreservesFixedWindowAndAccessibleDestructiveFlow() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let settings = try String(
+            contentsOf: root.appendingPathComponent("Airwave/SettingsView.swift"),
+            encoding: .utf8
+        )
+        let management = try String(
+            contentsOf: root.appendingPathComponent("Airwave/DeviceManagementView.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(settings.contains(".frame(width: 900, height: 600)"))
+        XCTAssertTrue(settings.contains("page.wrappedValue = .devices"))
+        XCTAssertTrue(management.contains("ScrollView"))
+        XCTAssertTrue(management.contains("Reset Profile"))
+        XCTAssertTrue(management.contains("Forget Device"))
+        XCTAssertTrue(management.contains("Both HRIR and EQ will become None."))
+        XCTAssertTrue(management.contains("recreate a blank profile"))
+        XCTAssertTrue(management.contains("No remembered devices"))
+        XCTAssertTrue(management.contains("canForget: profile.deviceUID != profileManager.currentDeviceUID"))
+        XCTAssertTrue(management.contains("accessibilityLabel(\"Result:"))
+        XCTAssertTrue(management.contains("role: .destructive"))
+    }
+
     func testEqualizerSettingsLibraryRowsKeepNoneFirstAndPreserveManagerOrder() throws {
         let context = try EqualizerSettingsTestContext()
         let zulu = try context.writePreset(named: "Zulu.txt", preamp: 2)
@@ -79,7 +113,7 @@ final class ProductSurfaceTests: XCTestCase {
 
         let rows = EqualizerSettingsLibraryModel.rows(
             presets: context.manager.presets,
-            selection: .none
+            selectedID: nil
         )
         XCTAssertEqual(rows.map(\.name), ["None", "Alpha", "Zulu"])
         XCTAssertTrue(rows.first?.isSelected == true)
@@ -123,19 +157,17 @@ final class ProductSurfaceTests: XCTestCase {
 
         coordinator.receive([first, invalid, second])
 
-        XCTAssertEqual(context.manager.selectedPreset?.displayName, "First")
         XCTAssertEqual(context.manager.presets.map(\.displayName), ["First", "Second"])
         XCTAssertTrue(coordinator.message?.text.contains("Broken.txt") == true)
         XCTAssertTrue(coordinator.message?.text.contains("line 1") == true)
     }
 
-    func testEqualizerSettingsCoordinatorConflictChoicesPartialSuccessAndZeroSuccessPreserveSelection() throws {
+    func testEqualizerSettingsCoordinatorConflictChoicesPreserveLibraryIdentity() throws {
         let context = try EqualizerSettingsTestContext()
         let existingSource = try context.writePreset(named: "Existing.txt", preamp: 1)
         let existing = try XCTUnwrap(
             context.manager.importPresets([existingSource], collisionPolicy: .reject).imported.first
         )
-        context.manager.select(.preset(existing.id))
         let replacement = try context.writePreset(named: "Existing.txt", preamp: 2)
         let added = try context.writePreset(named: "Added.txt", preamp: 3)
         let invalid = try context.writePreset(named: "Broken.txt", contents: "not supported\n")
@@ -144,45 +176,41 @@ final class ProductSurfaceTests: XCTestCase {
         coordinator.receive([replacement, added])
         XCTAssertEqual(coordinator.conflicts.map(\.lastPathComponent), ["Existing.txt"])
         coordinator.resolveConflicts(.keepExisting)
-        XCTAssertEqual(context.manager.selectedPreset?.displayName, "Added")
-        XCTAssertEqual(context.manager.selectedDefinition?.preampDB, 3)
+        XCTAssertEqual(context.manager.preset(id: existing.id)?.definition.preampDB, 1)
+        XCTAssertNotNil(context.manager.presets.first { $0.displayName == "Added" })
 
-        context.manager.select(.preset(existing.id))
         coordinator.receive([replacement])
         coordinator.resolveConflicts(.replace)
-        XCTAssertEqual(context.manager.selection, .preset(existing.id))
-        XCTAssertEqual(context.manager.selectedDefinition?.preampDB, 2)
+        XCTAssertEqual(context.manager.preset(id: existing.id)?.definition.preampDB, 2)
 
         coordinator.receive([invalid])
-        XCTAssertEqual(context.manager.selection, .preset(existing.id))
+        XCTAssertEqual(context.manager.preset(id: existing.id)?.definition.preampDB, 2)
         coordinator.dismissMessage()
         XCTAssertNil(coordinator.message)
     }
 
-    func testEqualizerSettingsCoordinatorDeletionRequiresConfirmationAndActiveDeletionSelectsNone() throws {
+    func testEqualizerSettingsCoordinatorDeletionRequiresConfirmation() throws {
         let context = try EqualizerSettingsTestContext()
         let source = try context.writePreset(named: "Curve.txt", preamp: 1)
         let preset = try XCTUnwrap(
             context.manager.importPresets([source], collisionPolicy: .reject).imported.first
         )
-        context.manager.select(.preset(preset.id))
         let coordinator = EqualizerSettingsCoordinator(manager: context.manager)
 
         XCTAssertFalse(coordinator.delete(preset, decision: .cancel))
         XCTAssertTrue(FileManager.default.fileExists(atPath: preset.fileURL.path))
         XCTAssertTrue(coordinator.delete(preset, decision: .confirm))
-        XCTAssertEqual(context.manager.selection, .none)
+        XCTAssertNil(context.manager.preset(id: preset.id))
         XCTAssertFalse(FileManager.default.fileExists(atPath: preset.fileURL.path))
     }
 
-    func testEqualizerSettingsCoordinatorPreservesSelectionWhenDeletionFailsAndDeletesInactivePreset() throws {
+    func testEqualizerSettingsCoordinatorPreservesLibraryWhenDeletionFailsAndDeletesPreset() throws {
         let context = try EqualizerSettingsTestContext()
         let activeSource = try context.writePreset(named: "Active.txt", preamp: 1)
         let inactiveSource = try context.writePreset(named: "Inactive.txt", preamp: 2)
         let imported = context.manager.importPresets([activeSource, inactiveSource], collisionPolicy: .reject).imported
         let active = try XCTUnwrap(imported.first(where: { $0.displayName == "Active" }))
         let inactive = try XCTUnwrap(imported.first(where: { $0.displayName == "Inactive" }))
-        context.manager.select(.preset(active.id))
         let coordinator = EqualizerSettingsCoordinator(manager: context.manager)
 
         let invalidCopy = EqualizerPreset(
@@ -192,11 +220,10 @@ final class ProductSurfaceTests: XCTestCase {
             definition: active.definition
         )
         XCTAssertFalse(coordinator.delete(invalidCopy, decision: .confirm))
-        XCTAssertEqual(context.manager.selection, .preset(active.id))
         XCTAssertTrue(context.manager.presets.contains(active))
 
         XCTAssertTrue(coordinator.delete(inactive, decision: .confirm))
-        XCTAssertEqual(context.manager.selection, .preset(active.id))
+        XCTAssertTrue(context.manager.presets.contains(active))
         XCTAssertFalse(context.manager.presets.contains(inactive))
     }
 

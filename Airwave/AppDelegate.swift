@@ -172,12 +172,14 @@ final class ApplicationLifecycleCoordinator: NSObject {
 enum SettingsPage: String, CaseIterable {
     case general
     case equalizer
+    case devices
     case application
 
     var title: String {
         switch self {
         case .general: "General"
         case .equalizer: "Equalizer"
+        case .devices: "Devices"
         case .application: "Application"
         }
     }
@@ -319,47 +321,10 @@ private enum WindowFronting {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var cancellables: Set<AnyCancellable> = []
-
     func applicationDidFinishLaunching(_ notification: Notification) {
         Logger.log("[AppDelegate] Airwave safe shell launched")
         ApplicationLifecycleCoordinator.shared.updateActivationPolicy()
-        let controller = AudioRuntimeController.shared
-        let hrir = HRIRManager.shared
-        let eq = EqualizerManager.shared
-        controller.launch(
-            effectReadiness: AudioRuntimeEffectReadiness(
-                spatialReady: hrir.isConvolutionActive,
-                equalizerDefinition: eq.selectedDefinition
-            )
-        )
-        hrir.$activePreset
-            .combineLatest(hrir.$errorMessage)
-            .receive(on: DispatchQueue.main)
-            .sink { preset, error in
-                controller.updateReadiness(
-                    AudioRuntimeEffectReadiness(
-                        spatialReady: preset != nil && hrir.isConvolutionActive,
-                        equalizerDefinition: eq.selectedDefinition,
-                        spatialError: error
-                    ),
-                    invalidation: .spatial
-                )
-            }
-            .store(in: &cancellables)
-        eq.$selectedDefinition
-            .receive(on: DispatchQueue.main)
-            .sink { definition in
-                controller.updateReadiness(
-                    AudioRuntimeEffectReadiness(
-                        spatialReady: hrir.isConvolutionActive,
-                        equalizerDefinition: definition,
-                        spatialError: hrir.errorMessage
-                    ),
-                    invalidation: .equalizerTarget
-                )
-            }
-            .store(in: &cancellables)
+        DeviceProfileRuntimeCoordinator.shared.launch()
 
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(willSleep),
