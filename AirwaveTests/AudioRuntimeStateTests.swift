@@ -29,4 +29,18 @@ final class AudioRuntimeStateTests: XCTestCase {
         }
         XCTAssertTrue(AudioRuntimeState.Status.processing.isProcessing)
     }
+
+    func testPermissionStatusCanBeIndependentFromEffectRuntimeStatus() {
+        let runtime = AudioRuntimeState(
+            status: .recovering(reason: "EQ is changing"),
+            permissionStatus: .granted
+        )
+
+        XCTAssertEqual(runtime.permissionStatus, .granted)
+        runtime.publish(
+            .recovering(reason: "EQ is changing"),
+            permission: .unknown
+        )
+        XCTAssertEqual(runtime.permissionStatus, .unknown)
+    }
 }

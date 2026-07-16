@@ -388,6 +388,47 @@ final class AudioRuntimeControllerTests: XCTestCase {
         XCTAssertNil(harness.state.warningMessage)
     }
 
+    func testRevalidateSystemAudioAccessDoesNotSkipSelectedEqualizer() {
+        let graph = RuntimeEffectGraphFake(spatialReady: false)
+        let harness = Harness(effectGraph: graph)
+        harness.pipelines.startErrors = [.deviceLost, .permissionDenied]
+
+        harness.controller.launch(effectReadiness: .init(
+            spatialReady: false,
+            equalizerDefinition: runtimeDefinition()
+        ))
+
+        guard case .recovering = harness.state.status else {
+            return XCTFail("Expected the first startup failure to recover")
+        }
+        XCTAssertEqual(harness.scheduler.pendingDelays, [1])
+
+        harness.controller.revalidateSystemAudioAccess()
+
+        XCTAssertEqual(harness.state.status, .needsPermission)
+        XCTAssertEqual(harness.scheduler.pendingDelays, [])
+    }
+
+    func testRevalidateSystemAudioAccessDoesNotRetryAfterGrantedEqualizerStartup() {
+        let graph = RuntimeEffectGraphFake(spatialReady: false)
+        let harness = Harness(effectGraph: graph)
+
+        harness.controller.launch(effectReadiness: .init(
+            spatialReady: false,
+            equalizerDefinition: runtimeDefinition()
+        ))
+
+        XCTAssertEqual(harness.state.status, .processing)
+        XCTAssertEqual(harness.state.permissionStatus, .granted)
+        let events = harness.pipelines.events
+
+        harness.controller.revalidateSystemAudioAccess()
+
+        XCTAssertEqual(harness.state.status, .processing)
+        XCTAssertEqual(harness.state.permissionStatus, .granted)
+        XCTAssertEqual(harness.pipelines.events, events)
+    }
+
     func testSpatialContinuesThroughInvalidEqualizerAndRecoversOnCompatibleOutput() {
         let graph = RuntimeEffectGraphFake(spatialReady: true)
         graph.warning = AudioEffectWarning(filterLine: 9, reason: "above Nyquist")

@@ -3,6 +3,13 @@ import Combine
 
 @MainActor
 final class AudioRuntimeState: ObservableObject {
+    enum PermissionStatus: Equatable {
+        case unknown
+        case requesting
+        case granted
+        case denied
+    }
+
     enum Status: Equatable {
         case unavailable(String)
         case inactive
@@ -47,26 +54,54 @@ final class AudioRuntimeState: ObservableObject {
     static let shared = AudioRuntimeState()
 
     @Published private(set) var status: Status
+    @Published private(set) var permissionStatus: PermissionStatus
     @Published private(set) var currentOutput: OutputDeviceDescriptor?
     @Published private(set) var warningMessage: String?
 
     init(
         status: Status = .unavailable("Airwave 2.0 audio backend is not installed yet"),
         currentOutput: OutputDeviceDescriptor? = nil,
-        warningMessage: String? = nil
+        warningMessage: String? = nil,
+        permissionStatus: PermissionStatus? = nil
     ) {
         self.status = status
+        self.permissionStatus = permissionStatus ?? Self.inferredPermissionStatus(
+            for: status,
+            output: currentOutput
+        )
         self.currentOutput = currentOutput
         self.warningMessage = warningMessage
+    }
+
+    func setPermissionStatus(_ permissionStatus: PermissionStatus) {
+        self.permissionStatus = permissionStatus
     }
 
     func publish(
         _ status: Status,
         output: OutputDeviceDescriptor? = nil,
-        warning: String? = nil
+        warning: String? = nil,
+        permission: PermissionStatus? = nil
     ) {
+        if let permission { permissionStatus = permission }
         self.currentOutput = output
         self.status = status
         self.warningMessage = warning
+    }
+
+    private static func inferredPermissionStatus(
+        for status: Status,
+        output: OutputDeviceDescriptor?
+    ) -> PermissionStatus {
+        switch status {
+        case .needsPermission:
+            .denied
+        case .processing:
+            .granted
+        case .inactive where output != nil:
+            .granted
+        default:
+            .unknown
+        }
     }
 }

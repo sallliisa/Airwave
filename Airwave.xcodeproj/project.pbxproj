@@ -14,8 +14,8 @@
 		A00200000000000000000001 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A00200000000000000000003 /* Sparkle */; };
 		A00200000000000000000005 /* UpdateStateModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00200000000000000000004 /* UpdateStateModelTests.swift */; };
 		A00300000000000000000001 /* AudioPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00300000000000000000002 /* AudioPipelineTests.swift */; };
-		A00500000000000000000001 /* AudioRuntimeControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00500000000000000000002 /* AudioRuntimeControllerTests.swift */; };
 		A00400000000000000000001 /* CoreAudioPlatformClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00400000000000000000002 /* CoreAudioPlatformClientTests.swift */; };
+		A00500000000000000000001 /* AudioRuntimeControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00500000000000000000002 /* AudioRuntimeControllerTests.swift */; };
 		A00600000000000000000001 /* ProductSurfaceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00600000000000000000002 /* ProductSurfaceTests.swift */; };
 		A00700000000000000000001 /* EqualizerAPOParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00700000000000000000002 /* EqualizerAPOParserTests.swift */; };
 		A00800000000000000000001 /* EqualizerLibraryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00800000000000000000002 /* EqualizerLibraryTests.swift */; };
@@ -42,8 +42,8 @@
 		A00100000000000000000005 /* PresetActivationCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresetActivationCoordinatorTests.swift; sourceTree = "<group>"; };
 		A00200000000000000000004 /* UpdateStateModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateStateModelTests.swift; sourceTree = "<group>"; };
 		A00300000000000000000002 /* AudioPipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPipelineTests.swift; sourceTree = "<group>"; };
-		A00500000000000000000002 /* AudioRuntimeControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRuntimeControllerTests.swift; sourceTree = "<group>"; };
 		A00400000000000000000002 /* CoreAudioPlatformClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreAudioPlatformClientTests.swift; sourceTree = "<group>"; };
+		A00500000000000000000002 /* AudioRuntimeControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRuntimeControllerTests.swift; sourceTree = "<group>"; };
 		A00600000000000000000002 /* ProductSurfaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProductSurfaceTests.swift; sourceTree = "<group>"; };
 		A00700000000000000000002 /* EqualizerAPOParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EqualizerAPOParserTests.swift; sourceTree = "<group>"; };
 		A00800000000000000000002 /* EqualizerLibraryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EqualizerLibraryTests.swift; sourceTree = "<group>"; };
@@ -553,7 +553,7 @@
 				25B21E882ECCDD9C00FE4B05 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
+			defaultConfigurationName = Debug;
 		};
 		25B21E892ECCDD9C00FE4B05 /* Build configuration list for PBXNativeTarget "Airwave" */ = {
 			isa = XCConfigurationList;
@@ -562,7 +562,7 @@
 				25B21E8B2ECCDD9C00FE4B05 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
+			defaultConfigurationName = Debug;
 		};
 		A00100000000000000000062 /* Build configuration list for PBXNativeTarget "AirwaveTests" */ = {
 			isa = XCConfigurationList;
@@ -571,7 +571,7 @@
 				A00100000000000000000061 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
+			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
 

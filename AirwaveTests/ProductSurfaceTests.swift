@@ -363,6 +363,21 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertEqual(actions.retryCount, 1)
     }
 
+    func testPermissionPresentationDoesNotTreatEffectStartupAsPermissionRequest() {
+        let runtime = AudioRuntimeState(status: .starting)
+        let viewModel = OnboardingViewModel(
+            runtime: runtime,
+            actions: RuntimeActionsFake(),
+            persistence: OnboardingPersistenceFake()
+        )
+
+        XCTAssertEqual(viewModel.permissionPresentation, .unknown)
+
+        runtime.publish(.recovering(reason: "Audio processing stopped safely."))
+
+        XCTAssertEqual(viewModel.permissionPresentation, .unknown)
+    }
+
     func testPermissionFocusRestoresOnceAfterSuccessAndDenial() {
         for resolvedStatus in [AudioRuntimeState.Status.processing, .needsPermission] {
             let runtime = AudioRuntimeState(status: .inactive)

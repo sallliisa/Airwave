@@ -56,6 +56,17 @@ nonisolated struct StereoCallbackPreparation {
     let status: OSStatus
 }
 
+nonisolated struct StereoCallbackInput {
+    let left: UnsafePointer<Float>
+    let right: UnsafePointer<Float>
+    let frameCount: Int
+}
+
+nonisolated struct StereoCallbackInputPreparation {
+    let input: StereoCallbackInput?
+    let status: OSStatus
+}
+
 nonisolated enum StereoCallbackBridge {
     static let maximumFrames = 4_096
 
@@ -117,43 +128,51 @@ nonisolated enum StereoCallbackBridge {
             status: noErr
         )
     }
+
+    static func prepareInput(
+        inputData: UnsafePointer<AudioBufferList>?,
+        requestedFrames: UInt32
+    ) -> StereoCallbackInputPreparation {
+        guard let inputData else {
+            return StereoCallbackInputPreparation(input: nil, status: kAudio_ParamError)
+        }
+        let input = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData))
+        guard input.count == 2,
+              input[0].mNumberChannels == 1,
+              input[1].mNumberChannels == 1,
+              let leftData = input[0].mData?.assumingMemoryBound(to: Float.self),
+              let rightData = input[1].mData?.assumingMemoryBound(to: Float.self) else {
+            return StereoCallbackInputPreparation(input: nil, status: kAudio_ParamError)
+        }
+        let availableFrames = min(
+            Int(input[0].mDataByteSize) / MemoryLayout<Float>.size,
+            Int(input[1].mDataByteSize) / MemoryLayout<Float>.size
+        )
+        let frames = Int(requestedFrames)
+        guard frames <= maximumFrames, frames <= availableFrames else {
+            return StereoCallbackInputPreparation(input: nil, status: kAudioUnitErr_TooManyFramesToProcess)
+        }
+        return StereoCallbackInputPreparation(
+            input: StereoCallbackInput(
+                left: UnsafePointer(leftData),
+                right: UnsafePointer(rightData),
+                frameCount: frames
+            ),
+            status: noErr
+        )
+    }
 }
 
 nonisolated final class CoreAudioPlatformClient: AudioPlatformClient {
     fileprivate final class IOContext {
-        let unit: AudioUnit
+        let aggregateID: AudioObjectID
         let callback: AudioIOCallback
-        let inputLeft: UnsafeMutablePointer<Float>
-        let inputRight: UnsafeMutablePointer<Float>
-        let inputListStorage: UnsafeMutableRawPointer
+        var ioProcID: AudioDeviceIOProcID?
+        var isStarted = false
 
-        init(unit: AudioUnit, callback: @escaping AudioIOCallback) {
-            self.unit = unit
+        init(aggregateID: AudioObjectID, callback: @escaping AudioIOCallback) {
+            self.aggregateID = aggregateID
             self.callback = callback
-            inputLeft = .allocate(capacity: StereoCallbackBridge.maximumFrames)
-            inputRight = .allocate(capacity: StereoCallbackBridge.maximumFrames)
-            let byteCount = MemoryLayout<AudioBufferList>.size + MemoryLayout<AudioBuffer>.size
-            inputListStorage = .allocate(byteCount: byteCount, alignment: MemoryLayout<AudioBufferList>.alignment)
-            inputListStorage.initializeMemory(as: UInt8.self, repeating: 0, count: byteCount)
-            let inputList = inputListStorage.assumingMemoryBound(to: AudioBufferList.self)
-            inputList.pointee.mNumberBuffers = 2
-            let buffers = UnsafeMutableAudioBufferListPointer(inputList)
-            buffers[0] = AudioBuffer(
-                mNumberChannels: 1,
-                mDataByteSize: UInt32(StereoCallbackBridge.maximumFrames * MemoryLayout<Float>.size),
-                mData: inputLeft
-            )
-            buffers[1] = AudioBuffer(
-                mNumberChannels: 1,
-                mDataByteSize: UInt32(StereoCallbackBridge.maximumFrames * MemoryLayout<Float>.size),
-                mData: inputRight
-            )
-        }
-
-        deinit {
-            inputLeft.deallocate()
-            inputRight.deallocate()
-            inputListStorage.deallocate()
         }
     }
 
@@ -345,83 +364,99 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient {
     func createIO(aggregate: PrivateAggregateHandle, callback: @escaping AudioIOCallback) throws -> AudioIOHandle {
         let aggregateID = AudioObjectID(aggregate.value)
         guard aggregateIDs.contains(aggregateID) else { throw AudioRuntimeError.ioCreationFailed("Unknown aggregate") }
-        var description = AudioComponentDescription(
-            componentType: kAudioUnitType_Output,
-            componentSubType: kAudioUnitSubType_HALOutput,
-            componentManufacturer: kAudioUnitManufacturer_Apple,
-            componentFlags: 0,
-            componentFlagsMask: 0
-        )
-        guard let component = AudioComponentFindNext(nil, &description) else {
-            throw AudioRuntimeError.ioCreationFailed("HAL output component unavailable")
-        }
-        var candidate: AudioUnit?
-        var status = AudioComponentInstanceNew(component, &candidate)
-        guard status == noErr, let unit = candidate else {
-            throw AudioRuntimeError.ioCreationFailed(CoreAudioStatus.creationError(status, operation: "Create HAL unit"))
-        }
-        do {
-            var enabled: UInt32 = 1
-            try setUnit(unit, property: kAudioOutputUnitProperty_EnableIO, scope: kAudioUnitScope_Input, element: 1, value: &enabled)
-            try setUnit(unit, property: kAudioOutputUnitProperty_EnableIO, scope: kAudioUnitScope_Output, element: 0, value: &enabled)
-            var currentDevice = aggregateID
-            try setUnit(unit, property: kAudioOutputUnitProperty_CurrentDevice, scope: kAudioUnitScope_Global, element: 0, value: &currentDevice)
-
-            let rate: Float64 = try getObjectValue(aggregateID, selector: kAudioDevicePropertyNominalSampleRate)
-            var format = canonicalStereoFormat(sampleRate: rate)
-            try setUnit(unit, property: kAudioUnitProperty_StreamFormat, scope: kAudioUnitScope_Output, element: 1, value: &format)
-            try setUnit(unit, property: kAudioUnitProperty_StreamFormat, scope: kAudioUnitScope_Input, element: 0, value: &format)
-            var maximumFrames = UInt32(StereoCallbackBridge.maximumFrames)
-            try setUnit(unit, property: kAudioUnitProperty_MaximumFramesPerSlice, scope: kAudioUnitScope_Global, element: 0, value: &maximumFrames)
-
-            let context = IOContext(unit: unit, callback: callback)
-            var render = AURenderCallbackStruct(
-                inputProc: coreAudioRenderCallback,
-                inputProcRefCon: Unmanaged.passUnretained(context).toOpaque()
+        // macOS associates the NSAudioCaptureUsageDescription prompt with
+        // recording started through the aggregate device API. A HAL output
+        // Audio Unit can render audio but does not reliably trigger that TCC
+        // request for a process tap.
+        let context = IOContext(aggregateID: aggregateID, callback: callback)
+        var ioProcID: AudioDeviceIOProcID?
+        let status = AudioDeviceCreateIOProcIDWithBlock(
+            &ioProcID,
+            aggregateID,
+            nil
+        ) { [context] _, inputData, _, outputData, _ in
+            let requestedFrames = Self.frameCount(
+                inputData: inputData,
+                outputData: outputData
             )
-            try setUnit(unit, property: kAudioUnitProperty_SetRenderCallback, scope: kAudioUnitScope_Input, element: 0, value: &render)
-            status = AudioUnitInitialize(unit)
-            guard status == noErr else {
-                throw AudioRuntimeError.ioCreationFailed(CoreAudioStatus.creationError(status, operation: "Initialize HAL unit"))
-            }
-            let handle = AudioIOHandle(value: nextIOHandle)
-            nextIOHandle += 1
-            ioContexts[handle.value] = context
-            return handle
-        } catch {
-            AudioComponentInstanceDispose(unit)
-            throw error
+            guard requestedFrames > 0 else { return }
+
+            let input = StereoCallbackBridge.prepareInput(
+                inputData: inputData,
+                requestedFrames: requestedFrames
+            )
+            let output = StereoCallbackBridge.prepare(
+                ioData: outputData,
+                requestedFrames: requestedFrames
+            )
+            guard let input = input.input, let output = output.output else { return }
+            context.callback(
+                UnsafePointer<Float>(input.left),
+                UnsafePointer<Float>(input.right),
+                output.left,
+                output.right,
+                min(input.frameCount, output.frameCount)
+            )
         }
+        guard status == noErr, let ioProcID else {
+            throw AudioRuntimeError.ioCreationFailed(
+                CoreAudioStatus.creationError(status, operation: "Create aggregate I/O proc")
+            )
+        }
+        context.ioProcID = ioProcID
+        let handle = AudioIOHandle(value: nextIOHandle)
+        nextIOHandle += 1
+        ioContexts[handle.value] = context
+        return handle
+    }
+
+    private static func frameCount(
+        inputData: UnsafePointer<AudioBufferList>,
+        outputData: UnsafeMutablePointer<AudioBufferList>
+    ) -> UInt32 {
+        let input = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData))
+        let output = UnsafeMutableAudioBufferListPointer(outputData)
+        guard !input.isEmpty, !output.isEmpty else { return 0 }
+
+        var frames = Int.max
+        for buffer in input {
+            frames = min(frames, Int(buffer.mDataByteSize) / MemoryLayout<Float>.size)
+        }
+        for buffer in output {
+            frames = min(frames, Int(buffer.mDataByteSize) / MemoryLayout<Float>.size)
+        }
+        return UInt32(min(frames, Int(UInt32.max)))
     }
 
     func startIO(_ io: AudioIOHandle) throws {
         guard let context = ioContexts[io.value] else { throw AudioRuntimeError.ioStartFailed("Unknown I/O") }
-        let status = AudioOutputUnitStart(context.unit)
+        let status = AudioDeviceStart(context.aggregateID, context.ioProcID)
         guard status == noErr else {
-            throw AudioRuntimeError.ioStartFailed(CoreAudioStatus.creationError(status, operation: "Start HAL unit"))
+            throw AudioRuntimeError.ioStartFailed(CoreAudioStatus.creationError(status, operation: "Start aggregate I/O"))
         }
+        context.isStarted = true
     }
 
     func stopIO(_ io: AudioIOHandle) throws {
         guard let context = ioContexts[io.value] else { return }
-        let status = AudioOutputUnitStop(context.unit)
-        guard status == noErr || status == kAudioUnitErr_Uninitialized else {
-            throw AudioRuntimeError.cleanupFailed(CoreAudioStatus.creationError(status, operation: "Stop HAL unit"))
+        guard context.isStarted else { return }
+        let status = AudioDeviceStop(context.aggregateID, context.ioProcID)
+        guard status == noErr || status == kAudioHardwareNotRunningError else {
+            throw AudioRuntimeError.cleanupFailed(CoreAudioStatus.creationError(status, operation: "Stop aggregate I/O"))
         }
+        context.isStarted = false
     }
 
     func destroyIO(_ io: AudioIOHandle) throws {
         guard let context = ioContexts[io.value] else { return }
-        let uninitializeStatus = AudioUnitUninitialize(context.unit)
-        let disposeStatus = AudioComponentInstanceDispose(context.unit)
-        let disposition = CoreAudioIOCleanup.disposition(
-            uninitializeStatus: uninitializeStatus,
-            disposeStatus: disposeStatus
-        )
-        if disposition.shouldRemoveContext {
-            ioContexts.removeValue(forKey: io.value)
+        guard !context.isStarted, let ioProcID = context.ioProcID else { return }
+        let status = AudioDeviceDestroyIOProcID(context.aggregateID, ioProcID)
+        guard status == noErr || CoreAudioStatus.isAlreadyGone(status) else {
+            throw AudioRuntimeError.cleanupFailed(
+                CoreAudioStatus.creationError(status, operation: "Destroy aggregate I/O proc")
+            )
         }
-        if let error = disposition.error { throw error }
+        ioContexts.removeValue(forKey: io.value)
     }
 
     func openAudioCapturePermissionSettings() {
@@ -491,72 +526,10 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient {
         )
     }
 
-    private func canonicalStereoFormat(sampleRate: Double) -> AudioStreamBasicDescription {
-        AudioStreamBasicDescription(
-            mSampleRate: sampleRate,
-            mFormatID: kAudioFormatLinearPCM,
-            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked | kAudioFormatFlagIsNonInterleaved,
-            mBytesPerPacket: 4,
-            mFramesPerPacket: 1,
-            mBytesPerFrame: 4,
-            mChannelsPerFrame: 2,
-            mBitsPerChannel: 32,
-            mReserved: 0
-        )
-    }
-
-    private func setUnit<T>(
-        _ unit: AudioUnit,
-        property: AudioUnitPropertyID,
-        scope: AudioUnitScope,
-        element: AudioUnitElement,
-        value: inout T
-    ) throws {
-        let status = withUnsafePointer(to: &value) { pointer in
-            AudioUnitSetProperty(
-                unit,
-                property,
-                scope,
-                element,
-                UnsafeRawPointer(pointer),
-                UInt32(MemoryLayout<T>.size)
-            )
-        }
-        guard status == noErr else {
-            throw AudioRuntimeError.ioCreationFailed(CoreAudioStatus.creationError(status, operation: "Configure HAL unit"))
-        }
-    }
-
     private func fourCC(_ value: UInt32) -> String {
         String(bytes: [
             UInt8((value >> 24) & 0xff), UInt8((value >> 16) & 0xff),
             UInt8((value >> 8) & 0xff), UInt8(value & 0xff)
         ], encoding: .macOSRoman) ?? String(value)
     }
-}
-
-nonisolated private func coreAudioRenderCallback(
-    inRefCon: UnsafeMutableRawPointer,
-    ioActionFlags: UnsafeMutablePointer<AudioUnitRenderActionFlags>,
-    inTimeStamp: UnsafePointer<AudioTimeStamp>,
-    inBusNumber: UInt32,
-    inNumberFrames: UInt32,
-    ioData: UnsafeMutablePointer<AudioBufferList>?
-) -> OSStatus {
-    let context = Unmanaged<CoreAudioPlatformClient.IOContext>.fromOpaque(inRefCon).takeUnretainedValue()
-    let preparation = StereoCallbackBridge.prepare(ioData: ioData, requestedFrames: inNumberFrames)
-    guard let output = preparation.output else { return preparation.status }
-
-    let inputList = context.inputListStorage.assumingMemoryBound(to: AudioBufferList.self)
-    var flags: AudioUnitRenderActionFlags = []
-    let status = AudioUnitRender(context.unit, &flags, inTimeStamp, 1, inNumberFrames, inputList)
-    guard status == noErr else { return status }
-    context.callback(
-        UnsafePointer<Float>(context.inputLeft),
-        UnsafePointer<Float>(context.inputRight),
-        output.left,
-        output.right,
-        output.frameCount
-    )
-    return noErr
 }
