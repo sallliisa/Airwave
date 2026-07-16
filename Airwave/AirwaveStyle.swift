@@ -12,6 +12,10 @@ enum AirwaveLayout {
     static let cardSpacing: CGFloat = 12
     static let cardPadding: CGFloat = 12
     static let cardCornerRadius: CGFloat = 8
+    static let onboardingContentHorizontalPadding: CGFloat = 30
+    static let onboardingContentTopPadding: CGFloat = 94
+    static let onboardingContentBottomPadding: CGFloat = 104
+    static let onboardingContentMaxWidth: CGFloat = 680
     static let rowHorizontalPadding: CGFloat = 12
     static let rowVerticalPadding: CGFloat = 8
     static let menuGroupPadding: CGFloat = 4
@@ -55,20 +59,22 @@ struct AirwavePresetList: View {
     let onSelect: (HRIRPreset?) -> Void
 
     var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 2) {
-                selectionRow("None", selected: selectedID == nil) { onSelect(nil) }
-                ForEach(MenuBarViewModel.sortedPresets(presets)) { preset in
-                    selectionRow(preset.name, selected: selectedID == preset.id) { onSelect(preset) }
+        ZStack {
+            ScrollView {
+                LazyVStack(spacing: 2) {
+                    selectionRow("None", selected: selectedID == nil) { onSelect(nil) }
+                    ForEach(MenuBarViewModel.sortedPresets(presets)) { preset in
+                        selectionRow(preset.name, selected: selectedID == preset.id) { onSelect(preset) }
+                    }
+                    if presets.isEmpty {
+                        Text("No compatible presets found")
+                            .font(.callout).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(AirwaveLayout.cardPadding)
+                    }
                 }
-                if presets.isEmpty {
-                    Text("No compatible presets found")
-                        .font(.callout).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(AirwaveLayout.cardPadding)
-                }
+                .padding(6)
             }
-            .padding(6)
         }
         .frame(maxHeight: .infinity)
     }
@@ -164,6 +170,7 @@ struct AirwaveScrollEdgeFades: View {
     }
 }
 
+
 struct AirwavePressedButtonStyle: ButtonStyle {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -257,7 +264,7 @@ struct AirwaveNavigationCard: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
-        .buttonStyle(AirwavePressedButtonStyle())
+        .buttonStyle(.plain)
         .background(
             isHovering ? AirwavePalette.hover : AirwavePalette.raised,
             in: RoundedRectangle(cornerRadius: AirwaveLayout.cardCornerRadius)

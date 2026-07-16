@@ -64,6 +64,11 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertTrue(style.contains("font(.system(size: 12, weight: .semibold))"))
         XCTAssertTrue(style.contains("font(.system(size: 11))"))
         XCTAssertTrue(style.contains("AirwavePressedButtonStyle()"))
+        XCTAssertTrue(settings.contains("onboardingContentHorizontalPadding"))
+        XCTAssertTrue(settings.contains("onboardingContentTopPadding"))
+        XCTAssertTrue(settings.contains("onboardingContentBottomPadding"))
+        XCTAssertTrue(settings.contains("onboardingContentMaxWidth"))
+        XCTAssertTrue(settings.contains("settingsContentMaxHeight"))
     }
 
     func testEqualizerSettingsLibraryRowsKeepNoneFirstAndPreserveManagerOrder() throws {

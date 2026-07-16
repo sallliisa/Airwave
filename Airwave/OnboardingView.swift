@@ -44,10 +44,10 @@ struct OnboardingView: View {
                 stepHeader
                 stepBody
             }
-            .padding(.horizontal, 30)
-            .padding(.top, 94)
-            .padding(.bottom, 104)
-            .frame(maxWidth: 680, alignment: .leading)
+            .padding(.horizontal, AirwaveLayout.onboardingContentHorizontalPadding)
+            .padding(.top, AirwaveLayout.onboardingContentTopPadding)
+            .padding(.bottom, AirwaveLayout.onboardingContentBottomPadding)
+            .frame(maxWidth: AirwaveLayout.onboardingContentMaxWidth, alignment: .leading)
             .frame(maxWidth: .infinity)
             .id(viewModel.currentStep)
             .transition(pageTransition)

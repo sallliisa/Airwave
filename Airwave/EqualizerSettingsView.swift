@@ -370,8 +370,9 @@ struct EqualizerSettingsView: View {
 
             Divider()
 
-            ScrollView {
-                LazyVStack(spacing: 2) {
+            ZStack {
+                ScrollView {
+                    LazyVStack(spacing: 2) {
                     ForEach(EqualizerSettingsLibraryModel.rows(
                         presets: manager.presets,
                         selection: manager.selection
@@ -405,7 +406,8 @@ struct EqualizerSettingsView: View {
                         .accessibilityValue(row.isSelected ? "Selected" : "Not selected")
                     }
                 }
-                .padding(6)
+                    .padding(6)
+                }
             }
             .frame(maxHeight: .infinity)
 
