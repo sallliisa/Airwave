@@ -1,6 +1,32 @@
 import AppKit
 import Foundation
 
+nonisolated struct AudioRuntimeEffectReadiness: Equatable, Sendable {
+    let spatialReady: Bool
+    let equalizerDefinition: EqualizerDefinition?
+    let spatialError: String?
+
+    init(
+        spatialReady: Bool,
+        equalizerDefinition: EqualizerDefinition?,
+        spatialError: String? = nil
+    ) {
+        self.spatialReady = spatialReady
+        self.equalizerDefinition = equalizerDefinition
+        self.spatialError = spatialError
+    }
+
+    var hasSelectedEffect: Bool {
+        spatialReady || equalizerDefinition != nil
+    }
+}
+
+nonisolated enum AudioRuntimeInvalidation {
+    case spatial
+    case equalizerTarget
+    case output
+}
+
 @MainActor
 protocol AudioRuntimeScheduling: AnyObject {
     @discardableResult
@@ -37,11 +63,16 @@ final class AudioRuntimeController {
 
     static let shared: AudioRuntimeController = {
         let platform = CoreAudioPlatformClient()
+        let effectGraph = AudioEffectGraph(
+            spatial: HRIRManager.shared,
+            equalizer: EqualizerManager.shared.runtimeEffect
+        )
         return AudioRuntimeController(
             state: .shared,
             platform: platform,
-            pipelineFactory: { AudioPipeline(platform: platform, processor: HRIRManager.shared) },
-            scheduler: DispatchRuntimeScheduler()
+            pipelineFactory: { AudioPipeline(platform: platform, processor: effectGraph) },
+            scheduler: DispatchRuntimeScheduler(),
+            effectGraph: effectGraph
         )
     }()
 
@@ -49,6 +80,7 @@ final class AudioRuntimeController {
     private let platform: AudioPlatformClient
     private let pipelineFactory: PipelineFactory
     private let scheduler: AudioRuntimeScheduling
+    private let effectGraph: AudioEffectGraphControlling?
     private let retryDelays: [TimeInterval] = [1, 2, 4, 8, 15]
 
     private var pipeline: AudioPipelineControlling?
@@ -56,9 +88,13 @@ final class AudioRuntimeController {
     private var stabilityToken: AudioRuntimeCancellation?
     private var retryAttempt = 0
     private var generation = 0
-    private var presetReady = false
+    private var effectReadiness = AudioRuntimeEffectReadiness(
+        spatialReady: false,
+        equalizerDefinition: nil
+    )
     private var permissionGranted = false
     private var permissionProbeRequested = false
+    private var soleEffectStopToken: AudioRuntimeCancellation?
     private var launched = false
     private var sleeping = false
     private var terminated = false
@@ -67,26 +103,46 @@ final class AudioRuntimeController {
         state: AudioRuntimeState,
         platform: AudioPlatformClient,
         pipelineFactory: @escaping PipelineFactory,
-        scheduler: AudioRuntimeScheduling
+        scheduler: AudioRuntimeScheduling,
+        effectGraph: AudioEffectGraphControlling? = nil
     ) {
         self.state = state
         self.platform = platform
         self.pipelineFactory = pipelineFactory
         self.scheduler = scheduler
+        self.effectGraph = effectGraph
     }
 
     func launch(presetReady: Bool, permissionGranted: Bool = true) {
+        launch(
+            effectReadiness: AudioRuntimeEffectReadiness(
+                spatialReady: presetReady,
+                equalizerDefinition: nil
+            ),
+            permissionGranted: permissionGranted
+        )
+    }
+
+    func launch(
+        effectReadiness: AudioRuntimeEffectReadiness,
+        permissionGranted: Bool = true
+    ) {
         guard !launched else {
-            updateReadiness(presetReady: presetReady, permissionGranted: permissionGranted)
+            self.effectReadiness = effectReadiness
+            updateReadiness(
+                effectReadiness,
+                invalidation: .spatial,
+                permissionGranted: permissionGranted
+            )
             return
         }
         launched = true
-        self.presetReady = presetReady
+        self.effectReadiness = effectReadiness
         self.permissionGranted = permissionGranted
         // With no preset there would otherwise be no pipeline creation to
         // establish the current TCC state. Use the same short-lived safe probe
         // as onboarding so permission is never inferred from saved setup data.
-        permissionProbeRequested = !presetReady && permissionGranted
+        permissionProbeRequested = !effectReadiness.hasSelectedEffect && permissionGranted
         do {
             try platform.observeDefaultOutput { [weak self] output in
                 // AudioPlatformClient installs this observer on the main queue.
@@ -100,24 +156,72 @@ final class AudioRuntimeController {
     }
 
     func updateReadiness(presetReady: Bool, permissionGranted: Bool) {
-        let changed = self.presetReady != presetReady || self.permissionGranted != permissionGranted
-        self.presetReady = presetReady
+        updateReadiness(
+            AudioRuntimeEffectReadiness(spatialReady: presetReady, equalizerDefinition: nil),
+            invalidation: .spatial,
+            permissionGranted: permissionGranted
+        )
+    }
+
+    func updateReadiness(
+        _ effectReadiness: AudioRuntimeEffectReadiness,
+        invalidation: AudioRuntimeInvalidation
+    ) {
+        updateReadiness(effectReadiness, invalidation: invalidation, permissionGranted: permissionGranted)
+    }
+
+    private func updateReadiness(
+        _ effectReadiness: AudioRuntimeEffectReadiness,
+        invalidation: AudioRuntimeInvalidation,
+        permissionGranted: Bool
+    ) {
+        let changed = self.effectReadiness != effectReadiness || self.permissionGranted != permissionGranted
+        self.effectReadiness = effectReadiness
         self.permissionGranted = permissionGranted
         guard changed else { return }
+
+        cancelSoleEffectStop()
+        if invalidation == .equalizerTarget,
+           launched,
+           !sleeping,
+           !terminated,
+           let effectGraph,
+           pipeline != nil {
+            stabilityToken?.cancel()
+            stabilityToken = nil
+            let result = effectGraph.updateEqualizer(definition: effectReadiness.equalizerDefinition)
+            handleLiveEffectUpdate(result)
+            return
+        }
         guard stopForInvalidation() else { return }
         reconcile()
     }
 
     func presetDidChange(isReady: Bool) {
-        presetReady = isReady
+        effectReadiness = AudioRuntimeEffectReadiness(
+            spatialReady: isReady,
+            equalizerDefinition: effectReadiness.equalizerDefinition
+        )
+        guard launched else { return }
         guard stopForInvalidation() else { return }
         reconcile()
     }
 
     func presetActivationFailed(_ message: String) {
-        presetReady = false
-        guard stopForInvalidation() else { return }
-        state.publish(.nativePassthrough(reason: message))
+        if effectGraph == nil {
+            effectReadiness = AudioRuntimeEffectReadiness(spatialReady: false, equalizerDefinition: nil)
+            guard stopForInvalidation() else { return }
+            state.publish(.nativePassthrough(reason: message))
+            return
+        }
+        updateReadiness(
+            AudioRuntimeEffectReadiness(
+                spatialReady: false,
+                equalizerDefinition: effectReadiness.equalizerDefinition,
+                spatialError: message
+            ),
+            invalidation: .spatial
+        )
     }
 
     func retryNow() {
@@ -140,7 +244,7 @@ final class AudioRuntimeController {
     /// opens. This catches permission revoked while Airwave was inactive.
     func revalidateSystemAudioAccess() {
         guard launched else { return }
-        if presetReady {
+        if effectReadiness.hasSelectedEffect {
             if state.status == .needsPermission { retryNow() }
             return
         }
@@ -187,12 +291,16 @@ final class AudioRuntimeController {
             state.publish(.needsPermission)
             return
         }
-        guard presetReady || permissionProbeRequested else {
+        guard effectReadiness.hasSelectedEffect || permissionProbeRequested else {
             // Selecting None intentionally stops processing, but it does not
             // invalidate the permission result or the supported output that
             // the running pipeline just proved. Keep that live runtime context
             // so product surfaces do not fall back to an unverified state.
-            state.publish(.inactive, output: state.currentOutput)
+            if let spatialError = effectReadiness.spatialError {
+                state.publish(.nativePassthrough(reason: spatialError), output: state.currentOutput)
+            } else {
+                state.publish(.inactive, output: state.currentOutput)
+            }
             return
         }
         do {
@@ -205,6 +313,23 @@ final class AudioRuntimeController {
 
     private func start(on output: OutputDeviceDescriptor) {
         guard validate(output) else { return }
+        let preparation: AudioEffectPreparationResult?
+        if let effectGraph {
+            let result = effectGraph.prepare(
+                for: output,
+                equalizerDefinition: effectReadiness.equalizerDefinition
+            )
+            guard !result.noEffectCanRun || permissionProbeRequested else {
+                let reason = result.equalizerWarning?.errorDescription
+                    ?? effectReadiness.spatialError
+                    ?? "No compatible audio effect is available for this output."
+                state.publish(.nativePassthrough(reason: reason), output: output)
+                return
+            }
+            preparation = result
+        } else {
+            preparation = nil
+        }
         let currentGeneration = generation
         state.publish(.starting, output: output)
         let candidate = pipelineFactory()
@@ -219,7 +344,7 @@ final class AudioRuntimeController {
             }
             let completedPermissionProbe = permissionProbeRequested
             permissionProbeRequested = false
-            if completedPermissionProbe && !presetReady {
+            if completedPermissionProbe && !effectReadiness.hasSelectedEffect {
                 do {
                     try candidate.stop()
                     state.publish(.inactive, output: output)
@@ -230,7 +355,11 @@ final class AudioRuntimeController {
                 return
             }
             pipeline = candidate
-            state.publish(.processing, output: output)
+            state.publish(
+                .processing,
+                output: output,
+                warning: preparation?.equalizerWarning?.errorDescription ?? effectReadiness.spatialError
+            )
             scheduleStabilityReset(for: currentGeneration)
         } catch {
             do { try candidate.stop() } catch {
@@ -275,7 +404,7 @@ final class AudioRuntimeController {
 
     private func scheduleRetry(reason: String, output: OutputDeviceDescriptor?) {
         guard retryToken == nil,
-              presetReady || permissionProbeRequested,
+              effectReadiness.hasSelectedEffect || permissionProbeRequested,
               permissionGranted, !sleeping, !terminated else { return }
         let delay = retryDelays[min(retryAttempt, retryDelays.count - 1)]
         retryAttempt += 1
@@ -300,6 +429,7 @@ final class AudioRuntimeController {
     private func stopForInvalidation() -> Bool {
         generation += 1
         cancelRetry()
+        cancelSoleEffectStop()
         stabilityToken?.cancel()
         stabilityToken = nil
         if let pipeline {
@@ -331,6 +461,50 @@ final class AudioRuntimeController {
     private func cancelRetry() {
         retryToken?.cancel()
         retryToken = nil
+    }
+
+    private func cancelSoleEffectStop() {
+        soleEffectStopToken?.cancel()
+        soleEffectStopToken = nil
+    }
+
+    private func handleLiveEffectUpdate(_ result: AudioEffectPreparationResult) {
+        let output = state.currentOutput
+        if result.noEffectCanRun {
+            if !effectReadiness.spatialReady {
+                state.publish(
+                    .nativePassthrough(
+                        reason: result.equalizerWarning?.errorDescription
+                            ?? "No compatible audio effect is available for this output."
+                    ),
+                    output: output
+                )
+                scheduleSoleEffectStop()
+            }
+            return
+        }
+
+        state.publish(
+            .processing,
+            output: output,
+            warning: result.equalizerWarning?.errorDescription ?? effectReadiness.spatialError
+        )
+        scheduleStabilityReset(for: generation)
+    }
+
+    private func scheduleSoleEffectStop() {
+        cancelSoleEffectStop()
+        let scheduledGeneration = generation
+        soleEffectStopToken = scheduler.schedule(after: 0.020) { [weak self] in
+            guard let self,
+                  scheduledGeneration == self.generation,
+                  !self.effectReadiness.hasSelectedEffect,
+                  !self.sleeping,
+                  !self.terminated else { return }
+            self.soleEffectStopToken = nil
+            guard self.stopForInvalidation() else { return }
+            self.reconcile()
+        }
     }
 
     private func failureMessage(_ error: Error) -> String {

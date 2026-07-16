@@ -8,6 +8,10 @@ final class ProductSurfaceTests: XCTestCase {
         let state = SettingsWindowContentState()
         XCTAssertEqual(state.mode, .settings)
         XCTAssertFalse(state.canReturnToSettings)
+        XCTAssertEqual(state.settingsPage, .general)
+
+        state.selectSettingsPage(.equalizer)
+        XCTAssertEqual(state.settingsPage, .equalizer)
 
         state.show(.setup)
         XCTAssertEqual(state.mode, .setup)
@@ -19,6 +23,170 @@ final class ProductSurfaceTests: XCTestCase {
         state.show(.settings, canReturnToSettings: true)
         XCTAssertEqual(state.mode, .settings)
         XCTAssertFalse(state.canReturnToSettings)
+        XCTAssertEqual(state.settingsPage, .general)
+    }
+
+    func testSettingsSurfaceUsesOneWindowAndOneSharedMenuBarViewModelPath() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let appDelegate = try String(
+            contentsOf: root.appendingPathComponent("Airwave/AppDelegate.swift"),
+            encoding: .utf8
+        )
+        let settings = try String(
+            contentsOf: root.appendingPathComponent("Airwave/SettingsView.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertEqual(appDelegate.components(separatedBy: "let content = SettingsWindowContent(state: contentState)").count - 1, 1)
+        XCTAssertEqual(appDelegate.components(separatedBy: ".environmentObject(MenuBarViewModel.shared)").count - 1, 1)
+        XCTAssertTrue(settings.contains("SettingsPage.allCases"))
+        XCTAssertTrue(settings.contains("transition(.opacity)"))
+        XCTAssertTrue(settings.contains("accessibilityReduceMotion"))
+    }
+
+    func testEqualizerSettingsLibraryRowsKeepNoneFirstAndPreserveManagerOrder() throws {
+        let context = try EqualizerSettingsTestContext()
+        let zulu = try context.writePreset(named: "Zulu.txt", preamp: 2)
+        let alpha = try context.writePreset(named: "Alpha.txt", preamp: 1)
+        let imported = context.manager.importPresets([zulu, alpha], collisionPolicy: .reject).imported
+
+        let rows = EqualizerSettingsLibraryModel.rows(
+            presets: context.manager.presets,
+            selection: .none
+        )
+        XCTAssertEqual(rows.map(\.name), ["None", "Alpha", "Zulu"])
+        XCTAssertTrue(rows.first?.isSelected == true)
+        XCTAssertFalse(rows.dropFirst().contains(where: { $0.isSelected }))
+        XCTAssertEqual(imported.map(\.displayName), ["Zulu", "Alpha"])
+    }
+
+    func testEqualizerSettingsDetailShowsNoneAndReferencePresetIncludingMutedRows() throws {
+        let context = try EqualizerSettingsTestContext()
+        let source = try context.writePreset(named: "Reference.txt", contents: """
+            Preamp: -2.56 dB
+            Filter 1: ON LSC Fc 105.0 Hz Gain -2.8 dB Q 0.70
+            Filter 2: OFF PK Fc 440.0 Hz Gain 1.0 dB Q 1.00
+            Filter 3: ON HSC Fc 10000.0 Hz Gain -5.2 dB Q 0.70
+            """)
+        let preset = try XCTUnwrap(
+            context.manager.importPresets([source], collisionPolicy: .reject).imported.first
+        )
+
+        let none = EqualizerSettingsDetailModel(preset: nil)
+        XCTAssertTrue(none.isBypassed)
+        XCTAssertEqual(none.title, "Equalizer bypassed")
+
+        let detail = EqualizerSettingsDetailModel(preset: preset)
+        XCTAssertFalse(detail.isBypassed)
+        XCTAssertEqual(detail.title, "Reference")
+        XCTAssertEqual(detail.filename, "Reference.txt")
+        XCTAssertEqual(detail.preamp, "-2.56 dB")
+        XCTAssertEqual(detail.filters.map(\.state), ["ON", "OFF", "ON"])
+        XCTAssertEqual(detail.filters.map(\.type), ["LSC", "PK", "HSC"])
+        XCTAssertEqual(detail.filters[1].frequency, "440.0 Hz")
+        XCTAssertTrue(detail.filters[1].isMuted)
+    }
+
+    func testEqualizerSettingsCoordinatorImportsInInputOrderAndReportsLineErrors() throws {
+        let context = try EqualizerSettingsTestContext()
+        let first = try context.writePreset(named: "First.txt", preamp: 1)
+        let invalid = try context.writePreset(named: "Broken.txt", contents: "Filter 1: ???\n")
+        let second = try context.writePreset(named: "Second.txt", preamp: 2)
+        let coordinator = EqualizerSettingsCoordinator(manager: context.manager)
+
+        coordinator.receive([first, invalid, second])
+
+        XCTAssertEqual(context.manager.selectedPreset?.displayName, "First")
+        XCTAssertEqual(context.manager.presets.map(\.displayName), ["First", "Second"])
+        XCTAssertTrue(coordinator.message?.text.contains("Broken.txt") == true)
+        XCTAssertTrue(coordinator.message?.text.contains("line 1") == true)
+    }
+
+    func testEqualizerSettingsCoordinatorConflictChoicesPartialSuccessAndZeroSuccessPreserveSelection() throws {
+        let context = try EqualizerSettingsTestContext()
+        let existingSource = try context.writePreset(named: "Existing.txt", preamp: 1)
+        let existing = try XCTUnwrap(
+            context.manager.importPresets([existingSource], collisionPolicy: .reject).imported.first
+        )
+        context.manager.select(.preset(existing.id))
+        let replacement = try context.writePreset(named: "Existing.txt", preamp: 2)
+        let added = try context.writePreset(named: "Added.txt", preamp: 3)
+        let invalid = try context.writePreset(named: "Broken.txt", contents: "not supported\n")
+        let coordinator = EqualizerSettingsCoordinator(manager: context.manager)
+
+        coordinator.receive([replacement, added])
+        XCTAssertEqual(coordinator.conflicts.map(\.lastPathComponent), ["Existing.txt"])
+        coordinator.resolveConflicts(.keepExisting)
+        XCTAssertEqual(context.manager.selectedPreset?.displayName, "Added")
+        XCTAssertEqual(context.manager.selectedDefinition?.preampDB, 3)
+
+        context.manager.select(.preset(existing.id))
+        coordinator.receive([replacement])
+        coordinator.resolveConflicts(.replace)
+        XCTAssertEqual(context.manager.selection, .preset(existing.id))
+        XCTAssertEqual(context.manager.selectedDefinition?.preampDB, 2)
+
+        coordinator.receive([invalid])
+        XCTAssertEqual(context.manager.selection, .preset(existing.id))
+        coordinator.dismissMessage()
+        XCTAssertNil(coordinator.message)
+    }
+
+    func testEqualizerSettingsCoordinatorDeletionRequiresConfirmationAndActiveDeletionSelectsNone() throws {
+        let context = try EqualizerSettingsTestContext()
+        let source = try context.writePreset(named: "Curve.txt", preamp: 1)
+        let preset = try XCTUnwrap(
+            context.manager.importPresets([source], collisionPolicy: .reject).imported.first
+        )
+        context.manager.select(.preset(preset.id))
+        let coordinator = EqualizerSettingsCoordinator(manager: context.manager)
+
+        XCTAssertFalse(coordinator.delete(preset, decision: .cancel))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: preset.fileURL.path))
+        XCTAssertTrue(coordinator.delete(preset, decision: .confirm))
+        XCTAssertEqual(context.manager.selection, .none)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: preset.fileURL.path))
+    }
+
+    func testEqualizerSettingsCoordinatorPreservesSelectionWhenDeletionFailsAndDeletesInactivePreset() throws {
+        let context = try EqualizerSettingsTestContext()
+        let activeSource = try context.writePreset(named: "Active.txt", preamp: 1)
+        let inactiveSource = try context.writePreset(named: "Inactive.txt", preamp: 2)
+        let imported = context.manager.importPresets([activeSource, inactiveSource], collisionPolicy: .reject).imported
+        let active = try XCTUnwrap(imported.first(where: { $0.displayName == "Active" }))
+        let inactive = try XCTUnwrap(imported.first(where: { $0.displayName == "Inactive" }))
+        context.manager.select(.preset(active.id))
+        let coordinator = EqualizerSettingsCoordinator(manager: context.manager)
+
+        let invalidCopy = EqualizerPreset(
+            id: active.id,
+            displayName: active.displayName,
+            fileURL: URL(fileURLWithPath: "/tmp/not-managed.txt"),
+            definition: active.definition
+        )
+        XCTAssertFalse(coordinator.delete(invalidCopy, decision: .confirm))
+        XCTAssertEqual(context.manager.selection, .preset(active.id))
+        XCTAssertTrue(context.manager.presets.contains(active))
+
+        XCTAssertTrue(coordinator.delete(inactive, decision: .confirm))
+        XCTAssertEqual(context.manager.selection, .preset(active.id))
+        XCTAssertFalse(context.manager.presets.contains(inactive))
+    }
+
+    func testEqualizerSettingsUsesManagedFinderTargetAndDoesNotExposeExternalPaths() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Airwave/EqualizerSettingsView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        XCTAssertTrue(source.contains("activateFileViewerSelecting([manager.managedDirectory])"))
+        XCTAssertTrue(source.contains("Drop EqualizerAPO .txt presets"))
+        XCTAssertTrue(source.contains("UTType(filenameExtension: \"txt\")"))
+        XCTAssertTrue(source.contains("coordinator.conflicts.count"))
+        XCTAssertTrue(source.contains("resolveConflicts(.replace)"))
+        XCTAssertTrue(source.contains("resolveConflicts(.keepExisting)"))
     }
 
     func testMenuBarVisibilityDefaultsOffAndPersists() throws {
@@ -586,4 +754,43 @@ private func output(
         outputChannelCount: channels, nominalSampleRate: 48_000,
         isVirtual: virtual, isAggregate: aggregate
     )
+}
+
+@MainActor
+private final class EqualizerSettingsTestContext {
+    let root: URL
+    let managed: URL
+    let sourceDirectory: URL
+    let defaults: UserDefaults
+    let manager: EqualizerManager
+    private let suiteName: String
+
+    init() throws {
+        root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        managed = root.appendingPathComponent("Equalizer Presets", isDirectory: true)
+        sourceDirectory = root.appendingPathComponent("source", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: true)
+        suiteName = "EqualizerSettingsTestContext.\(UUID().uuidString)"
+        defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        manager = EqualizerManager(
+            managedDirectory: managed,
+            fileManager: .default,
+            defaults: defaults
+        )
+    }
+
+    deinit {
+        try? FileManager.default.removeItem(at: root)
+        defaults.removePersistentDomain(forName: suiteName)
+    }
+
+    func writePreset(named name: String, preamp: Double) throws -> URL {
+        try writePreset(named: name, contents: "Preamp: \(preamp) dB\n")
+    }
+
+    func writePreset(named name: String, contents: String) throws -> URL {
+        let url = sourceDirectory.appendingPathComponent(name)
+        try Data(contents.utf8).write(to: url)
+        return url
+    }
 }

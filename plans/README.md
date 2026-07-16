@@ -37,10 +37,10 @@ status row.
 | 007 | Prove multichannel feasibility before committing | P2 | M | 006 | BLOCKED (plan 006 release gate not DONE) |
 | 008 | Refine branding, HRIR selection, and Settings layout | P1 | M | 005 | DONE |
 | 009 | Add safe HRIR importing and hidden menu-bar app lifecycle | P1 | L | 008 | DONE |
-| 010 | Add a strict EqualizerAPO preset library | P1 | M | 009 | TODO |
-| 011 | Implement the realtime parametric EQ processor | P1 | L | 010 | TODO |
-| 012 | Compose EQ with the fail-open audio runtime | P1 | L | 011 | TODO |
-| 013 | Add the Equalizer Settings section and product validation | P1 | L | 012 | TODO |
+| 010 | Add a strict EqualizerAPO preset library | P1 | M | 009 | DONE |
+| 011 | Implement the realtime parametric EQ processor | P1 | L | 010 | DONE |
+| 012 | Compose EQ with the fail-open audio runtime | P1 | L | 011 | DONE |
+| 013 | Add the Equalizer Settings section and product validation | P1 | L | 012 | DONE |
 
 Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED (<reason>)`, or
 `REJECTED (<reason>)`.

@@ -17,6 +17,10 @@
 		A00500000000000000000001 /* AudioRuntimeControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00500000000000000000002 /* AudioRuntimeControllerTests.swift */; };
 		A00400000000000000000001 /* CoreAudioPlatformClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00400000000000000000002 /* CoreAudioPlatformClientTests.swift */; };
 		A00600000000000000000001 /* ProductSurfaceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00600000000000000000002 /* ProductSurfaceTests.swift */; };
+		A00700000000000000000001 /* EqualizerAPOParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00700000000000000000002 /* EqualizerAPOParserTests.swift */; };
+		A00800000000000000000001 /* EqualizerLibraryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00800000000000000000002 /* EqualizerLibraryTests.swift */; };
+		A00900000000000000000001 /* ParametricEqualizerProcessorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00900000000000000000002 /* ParametricEqualizerProcessorTests.swift */; };
+		A01000000000000000000001 /* AudioEffectGraphTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A01000000000000000000002 /* AudioEffectGraphTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -41,6 +45,10 @@
 		A00500000000000000000002 /* AudioRuntimeControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRuntimeControllerTests.swift; sourceTree = "<group>"; };
 		A00400000000000000000002 /* CoreAudioPlatformClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreAudioPlatformClientTests.swift; sourceTree = "<group>"; };
 		A00600000000000000000002 /* ProductSurfaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProductSurfaceTests.swift; sourceTree = "<group>"; };
+		A00700000000000000000002 /* EqualizerAPOParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EqualizerAPOParserTests.swift; sourceTree = "<group>"; };
+		A00800000000000000000002 /* EqualizerLibraryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EqualizerLibraryTests.swift; sourceTree = "<group>"; };
+		A00900000000000000000002 /* ParametricEqualizerProcessorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParametricEqualizerProcessorTests.swift; sourceTree = "<group>"; };
+		A01000000000000000000002 /* AudioEffectGraphTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioEffectGraphTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -113,6 +121,10 @@
 				A00500000000000000000002 /* AudioRuntimeControllerTests.swift */,
 				A00400000000000000000002 /* CoreAudioPlatformClientTests.swift */,
 				A00600000000000000000002 /* ProductSurfaceTests.swift */,
+				A00700000000000000000002 /* EqualizerAPOParserTests.swift */,
+				A00800000000000000000002 /* EqualizerLibraryTests.swift */,
+				A00900000000000000000002 /* ParametricEqualizerProcessorTests.swift */,
+				A01000000000000000000002 /* AudioEffectGraphTests.swift */,
 			);
 			path = AirwaveTests;
 			sourceTree = "<group>";
@@ -241,6 +253,10 @@
 				A00500000000000000000001 /* AudioRuntimeControllerTests.swift in Sources */,
 				A00400000000000000000001 /* CoreAudioPlatformClientTests.swift in Sources */,
 				A00600000000000000000001 /* ProductSurfaceTests.swift in Sources */,
+				A00700000000000000000001 /* EqualizerAPOParserTests.swift in Sources */,
+				A00800000000000000000001 /* EqualizerLibraryTests.swift in Sources */,
+				A00900000000000000000001 /* ParametricEqualizerProcessorTests.swift in Sources */,
+				A01000000000000000000001 /* AudioEffectGraphTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

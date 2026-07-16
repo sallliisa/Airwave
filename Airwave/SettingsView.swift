@@ -70,7 +70,10 @@ struct SettingsWindowContent: View {
             SettingsView(showSetup: {
                 OnboardingViewModel.shared.prepareForPresentation(.voluntary)
                 state.show(.setup, canReturnToSettings: true)
-            })
+            }, page: Binding(
+                get: { state.settingsPage },
+                set: { state.selectSettingsPage($0) }
+            ))
             .transition(.opacity)
         }
     }
@@ -133,6 +136,7 @@ struct SettingsWindowContent: View {
 
 struct SettingsView: View {
     var showSetup: () -> Void
+    var page: Binding<SettingsPage> = .constant(.general)
     @ObservedObject private var onboarding = OnboardingViewModel.shared
     @ObservedObject private var runtime = AudioRuntimeState.shared
     @ObservedObject private var hrirManager = HRIRManager.shared
@@ -140,6 +144,7 @@ struct SettingsView: View {
     @ObservedObject private var menuVisibility = MenuBarVisibilityManager.shared
     @ObservedObject private var updateManager = UpdateManager.shared
     @EnvironmentObject private var viewModel: MenuBarViewModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var rightColumnHeight: CGFloat = 0
 
     var body: some View {
@@ -148,28 +153,21 @@ struct SettingsView: View {
 
             VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
                 pageHeader
-                HStack(alignment: .top, spacing: AirwaveLayout.cardSpacing) {
-                    spatialProfileSection
-                        .frame(maxWidth: .infinity, alignment: .top)
-                        .frame(height: rightColumnHeight > 0 ? rightColumnHeight : nil, alignment: .top)
-                    VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
-                        hrirResourcesSection
-                        applicationSection
-                    }
-                    .frame(maxWidth: .infinity, alignment: .top)
-                    .background {
-                        GeometryReader { proxy in
-                            Color.clear.preference(key: SettingsRightColumnHeightKey.self, value: proxy.size.height)
-                        }
-                    }
-                }
-                .onPreferenceChange(SettingsRightColumnHeightKey.self) { height in
-                    guard abs(height - rightColumnHeight) > 0.5 else { return }
-                    rightColumnHeight = height
+                if page.wrappedValue == .general {
+                    generalPage
+                } else {
+                    EqualizerSettingsView()
+                        .transition(.opacity)
+                        .animation(
+                            reduceMotion ? nil : .easeOut(duration: 0.16),
+                            value: page.wrappedValue
+                        )
                 }
 
                 #if DEBUG
-                debugSection
+                if page.wrappedValue == .general {
+                    debugSection
+                }
                 #endif
             }
             .padding(.horizontal, 24)
@@ -183,17 +181,51 @@ struct SettingsView: View {
         .preferredColorScheme(.dark)
     }
 
+    private var generalPage: some View {
+        HStack(alignment: .top, spacing: AirwaveLayout.cardSpacing) {
+            spatialProfileSection
+                .frame(maxWidth: .infinity, alignment: .top)
+                .frame(height: rightColumnHeight > 0 ? rightColumnHeight : nil, alignment: .top)
+            VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
+                hrirResourcesSection
+                applicationSection
+            }
+            .frame(maxWidth: .infinity, alignment: .top)
+            .background {
+                GeometryReader { proxy in
+                    Color.clear.preference(key: SettingsRightColumnHeightKey.self, value: proxy.size.height)
+                }
+            }
+        }
+        .onPreferenceChange(SettingsRightColumnHeightKey.self) { height in
+            guard abs(height - rightColumnHeight) > 0.5 else { return }
+            rightColumnHeight = height
+        }
+    }
+
     private var pageHeader: some View {
         VStack(alignment: .leading, spacing: 7) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 14) {
                 Text("Settings").font(.largeTitle.weight(.semibold))
+                Picker("Settings section", selection: page) {
+                    ForEach(SettingsPage.allCases, id: \.self) { page in
+                        Text(page.title).tag(page)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 190)
+                .accessibilityLabel("Settings section navigation")
+                .accessibilityHint("Choose General or Equalizer settings")
+                .accessibilityAddTraits(.isHeader)
                 if onboardingNeedsAttention {
                     Label("Reopen setup", systemImage: "exclamationmark.triangle.fill")
                         .font(.callout.weight(.medium))
                         .foregroundStyle(.orange)
                 }
             }
-            Text("Choose your spatial profile and application preferences.")
+            Text(page.wrappedValue == .general
+                 ? "Choose your spatial profile and application preferences."
+                 : "Import and inspect EqualizerAPO-style presets.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
