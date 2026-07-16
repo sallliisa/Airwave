@@ -9,7 +9,7 @@ enum AirwavePalette {
 enum AirwaveLayout {
     static let sectionSpacing: CGFloat = 24
     static let sectionContentSpacing: CGFloat = 12
-    static let cardSpacing: CGFloat = 12
+    static let cardSpacing: CGFloat = 8
     static let cardPadding: CGFloat = 12
     static let cardCornerRadius: CGFloat = 8
     static let onboardingContentHorizontalPadding: CGFloat = 30
@@ -282,7 +282,6 @@ struct AirwaveNavigationCard: View {
 
 private struct AirwaveHRIRDropModifier: ViewModifier {
     let manager: HRIRManager
-    let onSelect: (HRIRPreset?) -> Void
     @State private var isTargeted = false
     @State private var conflicts: [URL] = []
     @State private var pendingValidURLs: [URL] = []
@@ -347,7 +346,6 @@ private struct AirwaveHRIRDropModifier: ViewModifier {
 
     private func importURLs(_ urls: [URL], policy: HRIRImportCollisionPolicy) {
         let result = manager.importPresets(urls, collisionPolicy: policy)
-        if let first = result.imported.first { onSelect(first) }
         if !result.failures.isEmpty {
             message = "\(result.imported.count) imported; \(result.failures.count) could not be imported."
         } else if !result.imported.isEmpty {
@@ -362,7 +360,7 @@ private struct AirwaveHRIRDropModifier: ViewModifier {
 }
 
 extension View {
-    func airwaveHRIRDropTarget(manager: HRIRManager, onSelect: @escaping (HRIRPreset?) -> Void) -> some View {
-        modifier(AirwaveHRIRDropModifier(manager: manager, onSelect: onSelect))
+    func airwaveHRIRDropTarget(manager: HRIRManager) -> some View {
+        modifier(AirwaveHRIRDropModifier(manager: manager))
     }
 }

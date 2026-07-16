@@ -21,18 +21,22 @@ Airwave is currently distributed without Apple notarization. On first launch, ma
 
 1. Open Airwave and choose **Manage HRIR Files**.
 2. Copy a compatible stereo HRIR WAV file into the presets folder.
-3. Select the preset from Airwave's menu.
+3. Select the preset for the current output from Airwave's menu.
 4. Grant **System Audio Capture** permission when macOS asks. This is system-audio capture; Airwave does not request microphone access.
 
-Processing starts automatically when a preset, permission, and supported output are ready. There is no audio-engine toggle. Output changes are made only in macOS; Airwave follows the current default output automatically.
+Each supported physical stereo output has its own persistent HRIR and EQ profile. A newly observed output starts at **None / None**, so Airwave never applies an unreviewed profile. Processing starts automatically when the selected profile, permission, and supported output are ready. There is no audio-engine toggle. Output changes are made only in macOS; Airwave follows the current default output automatically.
 
 Airwave never changes macOS volume. If capture, output, or permission becomes unavailable, Airwave releases its private audio objects and native audio continues unprocessed. Status and recovery guidance appear in the menu and Settings.
 
 ## Equalizer
 
-Airwave ships no headphone curves and does not recommend any preset. Import an EqualizerAPO-style `.txt` file from **Settings → Equalizer**; files are copied into Airwave's managed `Equalizer Presets` folder and **None** is the default selection. Imported presets are read-only in Airwave.
+Airwave ships no headphone curves and does not recommend any preset. Import an EqualizerAPO-style `.txt` file from **Settings → Equalizer**; files are copied into Airwave's managed `Equalizer Presets` folder. Imports add to the library but do not select a preset for any device. EQ selection is persistent per supported output, and **None** is the default for new devices. Imported presets are read-only in Airwave.
 
 The supported v1 subset is `Preamp` plus `Filter` directives using `PK`, `LSC`, or `HSC`, each with frequency, gain, and Q. Preamp is applied exactly as written. Airwave has no limiter and does not add automatic headroom. EQ can run alone; when combined with spatial processing, the order is HRIR first, then EQ. See the upstream [Equalizer APO configuration reference](https://sourceforge.net/p/equalizerapo/wiki/Configuration%20reference/) for the source syntax.
+
+## Device management
+
+Open **Settings → Devices** from the General page to review remembered output profiles. **Reset Profile** atomically returns both HRIR and EQ to **None**. **Forget Device** removes a remembered profile and is available only for devices marked **Not Current**; Airwave does not enumerate connected devices. Both actions require confirmation, and a forgotten device is recreated as **None / None** if it is encountered again.
 
 ## Upgrading from Airwave 1.x
 

@@ -6,37 +6,37 @@ final class MenuBarViewModel: ObservableObject {
     static let shared = MenuBarViewModel(
         runtime: .shared,
         hrirManager: .shared,
+        profileManager: .shared,
         updateManager: .shared,
         runtimeActions: AudioRuntimeController.shared
     )
 
     let runtime: AudioRuntimeState
     let hrirManager: HRIRManager
+    let profileManager: DeviceProfileManager
     let updateManager: UpdateManager
     private let runtimeActions: AudioRuntimeUserActions
 
     init(
         runtime: AudioRuntimeState,
         hrirManager: HRIRManager,
+        profileManager: DeviceProfileManager = .shared,
         updateManager: UpdateManager,
         runtimeActions: AudioRuntimeUserActions
     ) {
         self.runtime = runtime
         self.hrirManager = hrirManager
+        self.profileManager = profileManager
         self.updateManager = updateManager
         self.runtimeActions = runtimeActions
     }
 
     func selectPreset(_ preset: HRIRPreset?) {
-        guard let preset else {
-            hrirManager.deactivatePreset()
-            return
-        }
-        hrirManager.activatePreset(
-            preset,
-            targetSampleRate: Self.presetTargetSampleRate(for: runtime.currentOutput),
-            inputLayout: .stereo
-        )
+        profileManager.setCurrentHRIRPresetID(preset?.id)
+    }
+
+    var currentHRIRPreset: HRIRPreset? {
+        hrirManager.presets.first { $0.id == profileManager.currentProfile?.hrirPresetID }
     }
 
     static func sortedPresets(_ presets: [HRIRPreset]) -> [HRIRPreset] {

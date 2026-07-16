@@ -13,6 +13,7 @@ struct OnboardingView: View {
     var onReturnToSettings: () -> Void = {}
     @ObservedObject private var runtime = AudioRuntimeState.shared
     @ObservedObject private var hrirManager = HRIRManager.shared
+    @ObservedObject private var profiles = DeviceProfileManager.shared
     @ObservedObject private var launchAtLogin = LaunchAtLoginManager.shared
     @ObservedObject private var menuVisibility = MenuBarVisibilityManager.shared
     @EnvironmentObject private var menuViewModel: MenuBarViewModel
@@ -183,10 +184,11 @@ struct OnboardingView: View {
             VStack(spacing: 0) {
                 AirwavePresetList(
                     presets: hrirManager.presets,
-                    selectedID: hrirManager.activePreset?.id,
+                    selectedID: profiles.currentProfile?.hrirPresetID,
                     onSelect: menuViewModel.selectPreset
                 )
                 .frame(height: 220)
+                .disabled(profiles.currentDeviceUID == nil)
 
                 AirwavePresetDropHint()
 
@@ -195,7 +197,7 @@ struct OnboardingView: View {
                 AirwavePresetFilesRow(action: menuViewModel.openPresetsDirectory)
             }
             .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: AirwaveLayout.cardCornerRadius))
-            .airwaveHRIRDropTarget(manager: hrirManager, onSelect: menuViewModel.selectPreset)
+            .airwaveHRIRDropTarget(manager: hrirManager)
         }
     }
 
@@ -263,7 +265,7 @@ struct OnboardingView: View {
     private var footer: some View {
         let isCompletion = viewModel.currentStep == .liveHealth
         let primaryLabel = isCompletion
-            ? (hrirManager.activePreset == nil ? "Finish Setup" : "Start Airwave")
+            ? (profiles.currentProfile?.hrirPresetID == nil ? "Finish Setup" : "Start Airwave")
             : (viewModel.currentStep == .welcome ? "Begin Setup" : "Continue")
 
         return HStack {
@@ -318,7 +320,7 @@ struct OnboardingView: View {
     private var readinessPresentation: OnboardingReadinessPresentation {
         OnboardingReadinessPresentation.make(
             permission: viewModel.permissionPresentation,
-            hasPreset: hrirManager.activePreset != nil,
+            hasPreset: profiles.currentProfile?.hrirPresetID != nil,
             runtimeStatus: runtime.status,
             isReady: viewModel.canComplete
         )

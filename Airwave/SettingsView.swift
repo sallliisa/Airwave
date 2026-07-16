@@ -30,6 +30,7 @@ struct SettingsWindowContent: View {
     @ObservedObject var state: SettingsWindowContentState
     @ObservedObject private var onboarding = OnboardingViewModel.shared
     @ObservedObject private var hrirManager = HRIRManager.shared
+    @ObservedObject private var profiles = DeviceProfileManager.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var onboardingNavigationDirection: OnboardingNavigationDirection = .forward
 
@@ -85,7 +86,7 @@ struct SettingsWindowContent: View {
             OnboardingProgressIndicator(
                 currentStep: onboarding.currentStep,
                 permission: onboarding.permissionPresentation,
-                hasPreset: hrirManager.activePreset != nil,
+                hasPreset: profiles.currentProfile?.hrirPresetID != nil,
                 isReady: onboarding.canComplete,
                 onSelect: { step in
                     onboardingNavigationDirection = onboardingIndex(of: step) > onboardingIndex(of: onboarding.currentStep)
@@ -97,7 +98,41 @@ struct SettingsWindowContent: View {
                 }
             )
         case .settings:
-            EmptyView()
+            if state.settingsPage == .general || state.settingsPage == .equalizer {
+                deviceMenu
+            }
+        }
+    }
+
+    private var deviceMenu: some View {
+        Group {
+            if let editing = profiles.editingProfile {
+                Menu {
+                    ForEach(profiles.sortedProfiles) { profile in
+                        Button {
+                            profiles.selectEditingDevice(uid: profile.deviceUID)
+                        } label: {
+                            HStack {
+                                if profile.deviceUID == profiles.editingDeviceUID { Image(systemName: "checkmark") }
+                                Text(profile.deviceName)
+                                if profile.deviceUID == profiles.currentDeviceUID { Text("Current") }
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Text(editing.deviceName)
+                        Image(systemName: "chevron.down").font(.caption2)
+                    }
+                    .foregroundStyle(.primary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Editing audio device")
+                .accessibilityValue(editing.deviceName)
+            } else {
+                Text("No Supported Output").foregroundStyle(.secondary)
+                    .accessibilityLabel("No supported output device")
+            }
         }
     }
 
@@ -140,6 +175,7 @@ struct SettingsView: View {
     @ObservedObject private var onboarding = OnboardingViewModel.shared
     @ObservedObject private var runtime = AudioRuntimeState.shared
     @ObservedObject private var hrirManager = HRIRManager.shared
+    @ObservedObject private var profiles = DeviceProfileManager.shared
     @ObservedObject private var launchAtLogin = LaunchAtLoginManager.shared
     @ObservedObject private var menuVisibility = MenuBarVisibilityManager.shared
     @ObservedObject private var updateManager = UpdateManager.shared
@@ -179,7 +215,7 @@ struct SettingsView: View {
     }
 
     private var settingsContentPadding: EdgeInsets {
-        guard page.wrappedValue == .application else {
+        guard page.wrappedValue == .application || page.wrappedValue == .devices else {
             return EdgeInsets(top: 80, leading: 24, bottom: 24, trailing: 24)
         }
         return EdgeInsets(
@@ -191,13 +227,13 @@ struct SettingsView: View {
     }
 
     private var settingsContentMaxWidth: CGFloat {
-        page.wrappedValue == .application
+        page.wrappedValue == .application || page.wrappedValue == .devices
             ? AirwaveLayout.onboardingContentMaxWidth
             : 1000
     }
 
     private var settingsContentMaxHeight: CGFloat? {
-        page.wrappedValue == .application ? .infinity : nil
+        page.wrappedValue == .application || page.wrappedValue == .devices ? .infinity : nil
     }
 
     private var settingsPageAnimation: Animation? {
@@ -211,6 +247,9 @@ struct SettingsView: View {
             generalPage
         case .equalizer:
             EqualizerSettingsView()
+                .transition(.opacity)
+        case .devices:
+            DeviceManagementView()
                 .transition(.opacity)
         case .application:
             applicationPage
@@ -283,6 +322,8 @@ struct SettingsView: View {
             "Choose your spatial profile and application preferences."
         case .equalizer:
             "Import and inspect EqualizerAPO-style presets."
+        case .devices:
+            "Review, reset, or forget remembered output profiles."
         case .application:
             "Manage startup, updates, and app information."
         }
@@ -299,7 +340,11 @@ struct SettingsView: View {
             Divider()
 
             VStack(spacing: 0) {
-                AirwavePresetList(presets: hrirManager.presets, selectedID: hrirManager.activePreset?.id, onSelect: viewModel.selectPreset)
+                AirwavePresetList(
+                    presets: hrirManager.presets,
+                    selectedID: profiles.editingProfile?.hrirPresetID,
+                    onSelect: { profiles.setHRIRPresetID($0?.id) }
+                )
 
                 AirwavePresetDropHint()
 
@@ -308,7 +353,7 @@ struct SettingsView: View {
                 AirwavePresetFilesRow(action: viewModel.openPresetsDirectory)
             }
             .frame(minHeight: 300, maxHeight: .infinity)
-            .airwaveHRIRDropTarget(manager: hrirManager, onSelect: viewModel.selectPreset)
+            .airwaveHRIRDropTarget(manager: hrirManager)
         }
         .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: AirwaveLayout.cardCornerRadius))
         .frame(maxHeight: .infinity, alignment: .top)
@@ -328,6 +373,15 @@ struct SettingsView: View {
                 ) {
                     withAnimation(settingsPageAnimation) {
                         page.wrappedValue = .equalizer
+                    }
+                }
+
+                AirwaveNavigationCard(
+                    title: "Devices",
+                    subtitle: "Review and manage remembered output profiles."
+                ) {
+                    withAnimation(settingsPageAnimation) {
+                        page.wrappedValue = .devices
                     }
                 }
 

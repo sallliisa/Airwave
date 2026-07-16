@@ -8,12 +8,10 @@ final class EqualizerLibraryTests: XCTestCase {
         let context = try TestContext()
 
         XCTAssertTrue(context.manager.presets.isEmpty)
-        XCTAssertEqual(context.manager.selection, .none)
-        XCTAssertNil(context.manager.selectedDefinition)
         XCTAssertNil(context.manager.libraryError)
     }
 
-    func testImportPersistsStableIDsAndSelectionAcrossRelaunch() throws {
+    func testImportPersistsStableIDsAcrossRelaunchWithoutGlobalSelection() throws {
         let context = try TestContext()
         let alpha = try context.writePreset(named: "Alpha.TXT", preamp: 1)
         let zulu = try context.writePreset(named: "Zulu.txt", preamp: 2)
@@ -21,9 +19,6 @@ final class EqualizerLibraryTests: XCTestCase {
         let result = context.manager.importPresets([zulu, alpha], collisionPolicy: .reject)
         XCTAssertEqual(result.imported.map(\.displayName), ["Zulu", "Alpha"])
         XCTAssertEqual(context.manager.presets.map(\.displayName), ["Alpha", "Zulu"])
-        let selected = try XCTUnwrap(result.imported.last)
-        context.manager.select(.preset(selected.id))
-        let selectedDefinition = context.manager.selectedDefinition
 
         let relaunched = EqualizerManager(
             managedDirectory: context.managed,
@@ -33,8 +28,7 @@ final class EqualizerLibraryTests: XCTestCase {
         )
 
         XCTAssertEqual(relaunched.presets.map(\.id), context.manager.presets.map(\.id))
-        XCTAssertEqual(relaunched.selection, .preset(selected.id))
-        XCTAssertEqual(relaunched.selectedDefinition, selectedDefinition)
+        XCTAssertEqual(relaunched.presets.map(\.definition), context.manager.presets.map(\.definition))
     }
 
     func testInvalidManagedFileIsSkippedAndReported() throws {
@@ -53,11 +47,10 @@ final class EqualizerLibraryTests: XCTestCase {
         XCTAssertEqual(manager.libraryError?.filename, "broken.txt")
     }
 
-    func testMissingSelectedFileFallsBackToNoneAndClearsStaleKey() throws {
+    func testMissingManagedFileIsRemovedFromLibrary() throws {
         let context = try TestContext()
         let source = try context.writePreset(named: "Selected.txt", preamp: 1)
         let imported = try XCTUnwrap(context.manager.importPresets([source], collisionPolicy: .reject).imported.first)
-        context.manager.select(.preset(imported.id))
         try FileManager.default.removeItem(at: imported.fileURL)
 
         let relaunched = EqualizerManager(
@@ -67,9 +60,7 @@ final class EqualizerLibraryTests: XCTestCase {
             securityScope: context.securityScope
         )
 
-        XCTAssertEqual(relaunched.selection, .none)
-        XCTAssertNil(relaunched.selectedDefinition)
-        XCTAssertNil(context.defaults.string(forKey: EqualizerManager.selectedPresetDefaultsKey))
+        XCTAssertTrue(relaunched.presets.isEmpty)
         XCTAssertEqual(relaunched.libraryError?.filename, "Selected.txt")
     }
 
@@ -97,7 +88,6 @@ final class EqualizerLibraryTests: XCTestCase {
         let context = try TestContext()
         let source = try context.writePreset(named: "Curve.txt", preamp: 1)
         let first = try XCTUnwrap(context.manager.importPresets([source], collisionPolicy: .reject).imported.first)
-        context.manager.select(.preset(first.id))
         let originalBytes = try Data(contentsOf: first.fileURL)
 
         let replacementSource = try context.writePreset(named: "Curve.txt", preamp: 2)
@@ -106,12 +96,11 @@ final class EqualizerLibraryTests: XCTestCase {
         let rejected = context.manager.importPresets([replacementSource], collisionPolicy: .reject)
         XCTAssertEqual(rejected.skipped, ["Curve.txt"])
         XCTAssertEqual(try Data(contentsOf: first.fileURL), originalBytes)
-        XCTAssertEqual(context.manager.selectedDefinition?.preampDB, 1)
+        XCTAssertEqual(context.manager.preset(id: first.id)?.definition.preampDB, 1)
 
         let replaced = context.manager.importPresets([replacementSource], collisionPolicy: .replace)
         XCTAssertEqual(replaced.imported.first?.id, first.id)
-        XCTAssertEqual(context.manager.selection, .preset(first.id))
-        XCTAssertEqual(context.manager.selectedDefinition?.preampDB, 2)
+        XCTAssertEqual(context.manager.preset(id: first.id)?.definition.preampDB, 2)
         XCTAssertEqual(try Data(contentsOf: first.fileURL), try Data(contentsOf: replacementSource))
         XCTAssertEqual(try Data(contentsOf: replacementSource), Data("Preamp: 2.0 dB\n".utf8))
     }
@@ -120,7 +109,6 @@ final class EqualizerLibraryTests: XCTestCase {
         let context = try TestContext()
         let source = try context.writePreset(named: "Curve.txt", preamp: 1)
         let first = try XCTUnwrap(context.manager.importPresets([source], collisionPolicy: .reject).imported.first)
-        context.manager.select(.preset(first.id))
         let originalBytes = try Data(contentsOf: first.fileURL)
 
         let invalidReplacement = try context.writePreset(named: "Curve.txt", preamp: nil)
@@ -129,8 +117,7 @@ final class EqualizerLibraryTests: XCTestCase {
         XCTAssertTrue(result.imported.isEmpty)
         XCTAssertEqual(result.failures.count, 1)
         XCTAssertEqual(try Data(contentsOf: first.fileURL), originalBytes)
-        XCTAssertEqual(context.manager.selection, .preset(first.id))
-        XCTAssertEqual(context.manager.selectedDefinition?.preampDB, 1)
+        XCTAssertEqual(context.manager.preset(id: first.id)?.definition.preampDB, 1)
     }
 
     func testTraversalResistantBasenameAndSelectedDeletionLeaveSourceUntouched() throws {
@@ -145,10 +132,9 @@ final class EqualizerLibraryTests: XCTestCase {
 
         let imported = try XCTUnwrap(context.manager.importPresets([traversalURL], collisionPolicy: .reject).imported.first)
         XCTAssertEqual(imported.fileURL.deletingLastPathComponent().standardizedFileURL, context.managed.standardizedFileURL)
-        context.manager.select(.preset(imported.id))
         XCTAssertTrue(context.manager.delete(imported))
         XCTAssertEqual(try Data(contentsOf: source), sourceBytes)
-        XCTAssertEqual(context.manager.selection, .none)
+        XCTAssertNil(context.manager.preset(id: imported.id))
         XCTAssertFalse(FileManager.default.fileExists(atPath: imported.fileURL.path))
     }
 
@@ -197,13 +183,12 @@ final class EqualizerLibraryTests: XCTestCase {
         let imported = try XCTUnwrap(
             context.manager.importPresets([source], collisionPolicy: .reject).imported.first
         )
-        context.manager.select(.preset(imported.id))
         let originalBytes = try Data(contentsOf: imported.fileURL)
 
         writer.shouldFail = true
         XCTAssertFalse(context.manager.delete(imported))
         XCTAssertTrue(context.manager.presets.contains(imported))
-        XCTAssertEqual(context.manager.selection, .preset(imported.id))
+        XCTAssertNotNil(context.manager.preset(id: imported.id))
         XCTAssertEqual(try Data(contentsOf: imported.fileURL), originalBytes)
     }
 }

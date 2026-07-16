@@ -60,18 +60,14 @@ nonisolated struct EqualizerLibraryError: Equatable, LocalizedError {
 @MainActor
 final class EqualizerManager: ObservableObject {
     static let shared = EqualizerManager()
-    static let selectedPresetDefaultsKey = "Airwave.Equalizer.SelectedPresetID"
 
     @Published private(set) var presets: [EqualizerPreset] = []
-    @Published private(set) var selection: EqualizerSelection = .none
-    @Published private(set) var selectedDefinition: EqualizerDefinition?
     @Published private(set) var libraryError: EqualizerLibraryError?
 
     let managedDirectory: URL
     let runtimeEffect: EqualizerRuntimeEffect
 
     private let fileManager: FileManager
-    private let defaults: UserDefaults
     private let securityScope: any EqualizerSecurityScopeAccessing
     private let manifestWriter: any EqualizerManifestWriting
     private let manifestURL: URL
@@ -79,13 +75,12 @@ final class EqualizerManager: ObservableObject {
     init(
         managedDirectory: URL? = nil,
         fileManager: FileManager = .default,
-        defaults: UserDefaults = .standard,
+        defaults _: UserDefaults = .standard,
         securityScope: any EqualizerSecurityScopeAccessing = DefaultEqualizerSecurityScope(),
         manifestWriter: any EqualizerManifestWriting = DefaultEqualizerManifestWriter(),
         runtimeEffect: EqualizerRuntimeEffect = EqualizerRuntimeEffect()
     ) {
         self.fileManager = fileManager
-        self.defaults = defaults
         self.securityScope = securityScope
         self.manifestWriter = manifestWriter
         self.runtimeEffect = runtimeEffect
@@ -114,6 +109,7 @@ final class EqualizerManager: ObservableObject {
             includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles]
         )) ?? []
+        let childFilenames = Set(children.map(\.lastPathComponent))
         for fileURL in children where fileURL.pathExtension.caseInsensitiveCompare("txt") == .orderedSame {
             do {
                 let definition = try EqualizerAPOParser.parse(
@@ -131,6 +127,9 @@ final class EqualizerManager: ObservableObject {
                 errors.append(.init(filename: fileURL.lastPathComponent, reason: error.localizedDescription))
             }
         }
+        for metadata in manifest where !childFilenames.contains(metadata.filename) {
+            errors.append(.init(filename: metadata.filename, reason: "the managed file could not be read"))
+        }
 
         presets = sort(updatedPresets)
         let reconciledManifest = presets.map {
@@ -144,42 +143,14 @@ final class EqualizerManager: ObservableObject {
             _ = saveManifest(reconciledManifest)
         }
 
-        if let rawSelection = defaults.string(forKey: Self.selectedPresetDefaultsKey),
-           let selectedID = UUID(uuidString: rawSelection),
-           let selected = presets.first(where: { $0.id == selectedID }) {
-            selection = .preset(selected.id)
-            selectedDefinition = selected.definition
-        } else {
-            if defaults.object(forKey: Self.selectedPresetDefaultsKey) != nil {
-                let staleFilename = manifest.first(where: { $0.id.uuidString == defaults.string(forKey: Self.selectedPresetDefaultsKey) })?.filename ?? "selected preset"
-                errors.append(.init(filename: staleFilename, reason: "selected preset is missing or invalid; selection reset to None"))
-            }
-            selection = .none
-            selectedDefinition = nil
-            defaults.removeObject(forKey: Self.selectedPresetDefaultsKey)
-        }
         if let first = errors.first {
             libraryError = first
         }
     }
 
-    func select(_ selection: EqualizerSelection) {
-        switch selection {
-        case .none:
-            self.selection = .none
-            selectedDefinition = nil
-            defaults.removeObject(forKey: Self.selectedPresetDefaultsKey)
-        case .preset(let id):
-            guard let preset = presets.first(where: { $0.id == id }) else { return }
-            self.selection = .preset(id)
-            selectedDefinition = preset.definition
-            defaults.set(id.uuidString, forKey: Self.selectedPresetDefaultsKey)
-        }
-    }
-
-    var selectedPreset: EqualizerPreset? {
-        guard case .preset(let id) = selection else { return nil }
-        return presets.first(where: { $0.id == id })
+    func preset(id: UUID?) -> EqualizerPreset? {
+        guard let id else { return nil }
+        return presets.first { $0.id == id }
     }
 
     func preflightImport(_ urls: [URL]) -> EqualizerImportPreflight {
@@ -225,7 +196,6 @@ final class EqualizerManager: ObservableObject {
                     throw InputValidationError(reason: "the existing managed file could not be read")
                 }
                 let previousPresets = presets
-                let previousDefinition = selectedDefinition
 
                 let temporary = managedDirectory.appendingPathComponent(".airwave-\(UUID().uuidString).txt")
                 do {
@@ -252,12 +222,8 @@ final class EqualizerManager: ObservableObject {
                     presets.append(preset)
                 }
                 presets = sort(presets)
-                if case .preset(let selectedID) = selection, selectedID == preset.id {
-                    selectedDefinition = preset.definition
-                }
                 guard saveManifest(for: presets) else {
                     presets = previousPresets
-                    selectedDefinition = previousDefinition
                     restoreManagedFile(
                         at: input.destination,
                         existed: destinationExisted,
@@ -292,8 +258,6 @@ final class EqualizerManager: ObservableObject {
             return false
         }
         let previousPresets = presets
-        let previousSelection = selection
-        let previousDefinition = selectedDefinition
         do {
             try fileManager.removeItem(at: stored.fileURL)
         } catch {
@@ -301,15 +265,9 @@ final class EqualizerManager: ObservableObject {
             return false
         }
         presets.removeAll { $0.id == stored.id }
-        if case .preset(let selectedID) = selection, selectedID == stored.id {
-            select(.none)
-        }
         guard saveManifest(for: presets) else {
             restoreManagedFile(at: stored.fileURL, existed: true, data: originalData)
             presets = previousPresets
-            selection = previousSelection
-            selectedDefinition = previousDefinition
-            restoreSelectionDefault(previousSelection)
             return false
         }
         return true
@@ -409,15 +367,6 @@ final class EqualizerManager: ObservableObject {
         try? fileManager.removeItem(at: url)
         guard existed, let data else { return }
         try? data.write(to: url, options: .atomic)
-    }
-
-    private func restoreSelectionDefault(_ selection: EqualizerSelection) {
-        switch selection {
-        case .none:
-            defaults.removeObject(forKey: Self.selectedPresetDefaultsKey)
-        case .preset(let id):
-            defaults.set(id.uuidString, forKey: Self.selectedPresetDefaultsKey)
-        }
     }
 
     private func sort(_ presets: [EqualizerPreset]) -> [EqualizerPreset] {

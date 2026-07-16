@@ -13,28 +13,30 @@ nonisolated struct EqualizerSettingsLibraryRow: Equatable, Identifiable {
 nonisolated enum EqualizerSettingsLibraryModel {
     static func rows(
         presets: [EqualizerPreset],
-        selection: EqualizerSelection
+        selectedID: UUID?
     ) -> [EqualizerSettingsLibraryRow] {
-        let noneSelected = selection == .none
         return [EqualizerSettingsLibraryRow(
             id: "none",
             name: "None",
             preset: nil,
-            isSelected: noneSelected
+            isSelected: selectedID == nil
         )] + presets.map { preset in
-            let isSelected: Bool
-            if case .preset(let selectedID) = selection {
-                isSelected = selectedID == preset.id
-            } else {
-                isSelected = false
-            }
             return EqualizerSettingsLibraryRow(
                 id: preset.id.uuidString,
                 name: preset.displayName,
                 preset: preset,
-                isSelected: isSelected
+                isSelected: selectedID == preset.id
             )
         }
+    }
+
+    static func rows(
+        presets: [EqualizerPreset],
+        selection: EqualizerSelection
+    ) -> [EqualizerSettingsLibraryRow] {
+        let selectedID: UUID?
+        if case .preset(let id) = selection { selectedID = id } else { selectedID = nil }
+        return rows(presets: presets, selectedID: selectedID)
     }
 }
 
@@ -217,9 +219,6 @@ final class EqualizerSettingsCoordinator: ObservableObject {
         preflightFailures: [EqualizerImportFailure] = []
     ) {
         let result = manager.importPresets(urls, collisionPolicy: collisionPolicy)
-        if let first = result.imported.first {
-            manager.select(.preset(first.id))
-        }
         message = makeMessage(
             imported: result.imported,
             skipped: result.skipped,
@@ -255,6 +254,7 @@ final class EqualizerSettingsCoordinator: ObservableObject {
 
 struct EqualizerSettingsView: View {
     @ObservedObject private var manager: EqualizerManager
+    @ObservedObject private var profiles = DeviceProfileManager.shared
     @StateObject private var coordinator: EqualizerSettingsCoordinator
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isTargeted = false
@@ -375,14 +375,10 @@ struct EqualizerSettingsView: View {
                     LazyVStack(spacing: 2) {
                     ForEach(EqualizerSettingsLibraryModel.rows(
                         presets: manager.presets,
-                        selection: manager.selection
+                        selectedID: profiles.editingProfile?.equalizerPresetID
                     )) { row in
                         Button {
-                            if let preset = row.preset {
-                                manager.select(.preset(preset.id))
-                            } else {
-                                manager.select(.none)
-                            }
+                            profiles.setEqualizerPresetID(row.preset?.id)
                         } label: {
                             HStack(spacing: 8) {
                                 Text(row.name)
@@ -423,11 +419,11 @@ struct EqualizerSettingsView: View {
                     .help("Reveal the managed Equalizer Presets folder")
                 Spacer(minLength: 0)
                 Button("Delete", role: .destructive) {
-                    pendingDelete = manager.selectedPreset
+                    pendingDelete = selectedPreset
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .disabled(manager.selectedPreset == nil)
+                .disabled(selectedPreset == nil)
                 .help("Delete the selected managed preset")
             }
             .padding(AirwaveLayout.cardPadding)
@@ -437,7 +433,7 @@ struct EqualizerSettingsView: View {
     }
 
     private var detailCard: some View {
-        let detail = EqualizerSettingsDetailModel(preset: manager.selectedPreset)
+        let detail = EqualizerSettingsDetailModel(preset: selectedPreset)
         return VStack(alignment: .leading, spacing: AirwaveLayout.sectionContentSpacing) {
             AirwaveSectionHeader(
                 title: "Equalizer Details",
@@ -506,5 +502,9 @@ struct EqualizerSettingsView: View {
         .opacity(filter.isMuted ? 0.55 : 1)
         .padding(.vertical, 5)
         .accessibilityLabel("\(filter.state) \(filter.type), \(filter.frequency), \(filter.gain), Q \(filter.q)")
+    }
+
+    private var selectedPreset: EqualizerPreset? {
+        manager.preset(id: profiles.editingProfile?.equalizerPresetID)
     }
 }
