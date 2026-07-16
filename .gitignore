@@ -1,5 +1,6 @@
 .DS_Store
 DerivedData/
+.worktrees/
 build/ss2-hesuvi/
 build/ss2-listening-variations/
 build/ss2-spatial-prototypes/
