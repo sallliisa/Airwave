@@ -169,6 +169,19 @@ final class ApplicationLifecycleCoordinator: NSObject {
 }
 
 @MainActor
+enum SettingsPage: String, CaseIterable {
+    case general
+    case equalizer
+
+    var title: String {
+        switch self {
+        case .general: "General"
+        case .equalizer: "Equalizer"
+        }
+    }
+}
+
+@MainActor
 final class SettingsWindowContentState: ObservableObject {
     enum Mode: Equatable {
         case setup
@@ -177,12 +190,20 @@ final class SettingsWindowContentState: ObservableObject {
 
     @Published private(set) var mode: Mode = .settings
     @Published private(set) var canReturnToSettings = false
+    @Published private(set) var settingsPage: SettingsPage = .general
+
+    func selectSettingsPage(_ page: SettingsPage) {
+        settingsPage = page
+    }
 
     func show(_ mode: Mode, canReturnToSettings: Bool = false) {
         let duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.12 : 0.2
         withAnimation(.easeOut(duration: duration)) {
             self.mode = mode
             self.canReturnToSettings = mode == .setup && canReturnToSettings
+            if mode == .settings {
+                self.settingsPage = .general
+            }
         }
     }
 }
@@ -304,16 +325,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ApplicationLifecycleCoordinator.shared.updateActivationPolicy()
         let controller = AudioRuntimeController.shared
         let hrir = HRIRManager.shared
-        controller.launch(presetReady: hrir.isConvolutionActive)
+        let eq = EqualizerManager.shared
+        controller.launch(
+            effectReadiness: AudioRuntimeEffectReadiness(
+                spatialReady: hrir.isConvolutionActive,
+                equalizerDefinition: eq.selectedDefinition
+            )
+        )
         hrir.$activePreset
             .combineLatest(hrir.$errorMessage)
             .receive(on: DispatchQueue.main)
             .sink { preset, error in
-                if let error {
-                    controller.presetActivationFailed(error)
-                } else {
-                    controller.presetDidChange(isReady: preset != nil && hrir.isConvolutionActive)
-                }
+                controller.updateReadiness(
+                    AudioRuntimeEffectReadiness(
+                        spatialReady: preset != nil && hrir.isConvolutionActive,
+                        equalizerDefinition: eq.selectedDefinition,
+                        spatialError: error
+                    ),
+                    invalidation: .spatial
+                )
+            }
+            .store(in: &cancellables)
+        eq.$selectedDefinition
+            .receive(on: DispatchQueue.main)
+            .sink { definition in
+                controller.updateReadiness(
+                    AudioRuntimeEffectReadiness(
+                        spatialReady: hrir.isConvolutionActive,
+                        equalizerDefinition: definition,
+                        spatialError: hrir.errorMessage
+                    ),
+                    invalidation: .equalizerTarget
+                )
             }
             .store(in: &cancellables)
 

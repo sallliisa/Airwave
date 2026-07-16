@@ -25,6 +25,24 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project Air
 
 CI runs no TCC or hardware-dependent capture test. Lifecycle tests use injected platform and scheduler fakes. Release workflow verifies the archived bundle requires macOS 15 and refuses an appcast without `sparkle:minimumSystemVersion` 15.0.
 
+## Equalizer product validation
+
+These observations remain `NOT TESTED` until performed on the release build. A `PASS` for an audio row requires native output identity and volume to remain unchanged, native audio to resume after transitions, and no audible click or silence beyond the intended transition.
+
+| Scenario | Result | Required evidence / observation |
+|---|---|---|
+| Import one or many `.txt` presets | NOT TESTED | Drag/drop and keyboard Import; managed copies; input-order selection |
+| Same-name collision | NOT TESTED | Replace and Keep Existing choices; non-conflicting files still import |
+| Relaunch persistence | NOT TESTED | Library order, stable selection, and managed files after relaunch |
+| EQ-only processing | NOT TESTED | None → preset and preset → None; native output and volume unchanged |
+| HRIR + EQ processing | NOT TESTED | Audible order is HRIR then EQ; removing EQ keeps HRIR live |
+| Live preset switching | NOT TESTED | Active replacement and selection changes have no audible click |
+| Deletion | NOT TESTED | Inactive and active deletion; active deletion selects None; managed copy only |
+| Incompatible sample rate | NOT TESTED | EQ bypasses safely with actionable warning and recovers on compatible output |
+| Sleep / wake with EQ | NOT TESTED | No private resources during sleep; one chain after wake |
+| Output changes with EQ | NOT TESTED | Output follows macOS; old chain releases before the new chain |
+| Audible click / silence inspection | NOT TESTED | Listen during import, live switch, deletion, output change, sleep/wake |
+
 ## Physical matrix
 
 `PASS` requires output identity and volume measured before/after, native audio resumption, and no audible dropout beyond the transition under test. `NOT TESTED` means no support claim may be made for that class.

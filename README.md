@@ -28,6 +28,12 @@ Processing starts automatically when a preset, permission, and supported output 
 
 Airwave never changes macOS volume. If capture, output, or permission becomes unavailable, Airwave releases its private audio objects and native audio continues unprocessed. Status and recovery guidance appear in the menu and Settings.
 
+## Equalizer
+
+Airwave ships no headphone curves and does not recommend any preset. Import an EqualizerAPO-style `.txt` file from **Settings → Equalizer**; files are copied into Airwave's managed `Equalizer Presets` folder and **None** is the default selection. Imported presets are read-only in Airwave.
+
+The supported v1 subset is `Preamp` plus `Filter` directives using `PK`, `LSC`, or `HSC`, each with frequency, gain, and Q. Preamp is applied exactly as written. Airwave has no limiter and does not add automatic headroom. EQ can run alone; when combined with spatial processing, the order is HRIR first, then EQ. See the upstream [Equalizer APO configuration reference](https://sourceforge.net/p/equalizerapo/wiki/Configuration%20reference/) for the source syntax.
+
 ## Upgrading from Airwave 1.x
 
 Airwave 2.0 is a clean break. Version 1.x used BlackHole and user-created aggregate routing; remove that old routing manually if you no longer need it. Airwave 2.0 will warn when a virtual or aggregate output remains selected, but will never change the selection for you. HRIR files remain on disk; other 1.x preferences and Launch at Login state are reset.

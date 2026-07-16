@@ -465,6 +465,19 @@ class HRIRManager: ObservableObject {
     }
 
     /// Process selected stereo input through convolution without render-thread allocation.
+    nonisolated func hasPublishedRendererForAudioCallback() -> Bool {
+        var state = audioThreadState
+        enum StateRead {
+            case available(RendererState?)
+        }
+        if let read = stateLock.withLockIfAvailable({ StateRead.available($0) }),
+           case .available(let publishedState) = read {
+            state = publishedState
+            audioThreadState = publishedState
+        }
+        return state?.renderers.isEmpty == false
+    }
+
     nonisolated func processAudio(
         inputLeft: UnsafePointer<Float>,
         inputRight: UnsafePointer<Float>?,

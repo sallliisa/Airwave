@@ -48,17 +48,25 @@ final class AudioRuntimeState: ObservableObject {
 
     @Published private(set) var status: Status
     @Published private(set) var currentOutput: OutputDeviceDescriptor?
+    @Published private(set) var warningMessage: String?
 
     init(
         status: Status = .unavailable("Airwave 2.0 audio backend is not installed yet"),
-        currentOutput: OutputDeviceDescriptor? = nil
+        currentOutput: OutputDeviceDescriptor? = nil,
+        warningMessage: String? = nil
     ) {
         self.status = status
         self.currentOutput = currentOutput
+        self.warningMessage = warningMessage
     }
 
-    func publish(_ status: Status, output: OutputDeviceDescriptor? = nil) {
+    func publish(
+        _ status: Status,
+        output: OutputDeviceDescriptor? = nil,
+        warning: String? = nil
+    ) {
         self.currentOutput = output
         self.status = status
+        self.warningMessage = warning
     }
 }

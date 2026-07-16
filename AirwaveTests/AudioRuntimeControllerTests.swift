@@ -259,6 +259,165 @@ final class AudioRuntimeControllerTests: XCTestCase {
         XCTAssertEqual(harness.pipelines.liveCount, 0)
         XCTAssertEqual(harness.platform.stopObservationCount, 1)
     }
+
+    func testEffectReadinessMatrixStartsOnlyRunnableEffects() {
+        let none = Harness(effectGraph: RuntimeEffectGraphFake(spatialReady: false))
+        none.controller.launch(effectReadiness: .init(spatialReady: false, equalizerDefinition: nil))
+        XCTAssertEqual(none.pipelines.startedOutputs.count, 1)
+        XCTAssertEqual(none.pipelines.liveCount, 0)
+        XCTAssertEqual(none.state.status, .inactive)
+
+        let spatial = Harness(effectGraph: RuntimeEffectGraphFake(spatialReady: true))
+        spatial.controller.launch(effectReadiness: .init(spatialReady: true, equalizerDefinition: nil))
+        XCTAssertEqual(spatial.pipelines.liveCount, 1)
+
+        let equalizer = Harness(effectGraph: RuntimeEffectGraphFake(spatialReady: false))
+        equalizer.controller.launch(effectReadiness: .init(spatialReady: false, equalizerDefinition: runtimeDefinition()))
+        XCTAssertEqual(equalizer.pipelines.liveCount, 1)
+
+        let both = Harness(effectGraph: RuntimeEffectGraphFake(spatialReady: true))
+        both.controller.launch(effectReadiness: .init(spatialReady: true, equalizerDefinition: runtimeDefinition()))
+        XCTAssertEqual(both.pipelines.liveCount, 1)
+    }
+
+    func testEqualizerTargetChangeDoesNotRecreatePipelineResources() {
+        let graph = RuntimeEffectGraphFake(spatialReady: false)
+        let harness = Harness(effectGraph: graph)
+        harness.controller.launch(effectReadiness: .init(spatialReady: false, equalizerDefinition: runtimeDefinition(gain: 3)))
+        let events = harness.pipelines.events
+
+        harness.controller.updateReadiness(
+            .init(spatialReady: false, equalizerDefinition: runtimeDefinition(gain: -3)),
+            invalidation: .equalizerTarget
+        )
+
+        XCTAssertEqual(harness.pipelines.events, events)
+        XCTAssertEqual(graph.updatedDefinitions.count, 1)
+        XCTAssertEqual(harness.pipelines.liveCount, 1)
+    }
+
+    func testRemovingEqualizerWhileSpatialRemainsKeepsPipelineLive() {
+        let graph = RuntimeEffectGraphFake(spatialReady: true)
+        let harness = Harness(effectGraph: graph)
+        harness.controller.launch(effectReadiness: .init(
+            spatialReady: true,
+            equalizerDefinition: runtimeDefinition()
+        ))
+        let events = harness.pipelines.events
+
+        harness.controller.updateReadiness(
+            .init(spatialReady: true, equalizerDefinition: nil),
+            invalidation: .equalizerTarget
+        )
+
+        XCTAssertEqual(harness.pipelines.events, events)
+        XCTAssertEqual(harness.pipelines.liveCount, 1)
+        XCTAssertEqual(harness.state.status, .processing)
+    }
+
+    func testSoleEqualizerStopIsDelayedAndCancelledBySelection() {
+        let graph = RuntimeEffectGraphFake(spatialReady: false)
+        let harness = Harness(effectGraph: graph)
+        harness.controller.launch(effectReadiness: .init(spatialReady: false, equalizerDefinition: runtimeDefinition()))
+
+        harness.controller.updateReadiness(
+            .init(spatialReady: false, equalizerDefinition: nil),
+            invalidation: .equalizerTarget
+        )
+        XCTAssertEqual(harness.pipelines.liveCount, 1)
+        XCTAssertEqual(harness.scheduler.pendingDelays, [0.020])
+
+        harness.controller.updateReadiness(
+            .init(spatialReady: false, equalizerDefinition: runtimeDefinition(gain: -3)),
+            invalidation: .equalizerTarget
+        )
+        XCTAssertEqual(harness.scheduler.pendingDelays, [30])
+        XCTAssertEqual(harness.pipelines.liveCount, 1)
+
+        harness.controller.updateReadiness(
+            .init(spatialReady: false, equalizerDefinition: nil),
+            invalidation: .equalizerTarget
+        )
+        harness.scheduler.runNext()
+        XCTAssertEqual(harness.pipelines.liveCount, 0)
+        XCTAssertEqual(harness.state.status, .inactive)
+    }
+
+    func testInvalidEqualizerContinuesSpatialAndDoesNotScheduleRetry() {
+        let graph = RuntimeEffectGraphFake(spatialReady: true)
+        graph.warning = AudioEffectWarning(filterLine: 9, reason: "above Nyquist")
+        let harness = Harness(effectGraph: graph)
+        harness.controller.launch(effectReadiness: .init(spatialReady: true, equalizerDefinition: runtimeDefinition()))
+
+        XCTAssertEqual(harness.pipelines.liveCount, 1)
+        XCTAssertEqual(harness.scheduler.pendingDelays, [30])
+        XCTAssertEqual(harness.state.warningMessage, "Equalizer line 9: above Nyquist")
+    }
+
+    func testInvalidEqualizerWithoutSpatialFallsBackNativelyWithoutRetry() {
+        let graph = RuntimeEffectGraphFake(spatialReady: false)
+        graph.warning = AudioEffectWarning(filterLine: 9, reason: "above Nyquist")
+        let harness = Harness(effectGraph: graph)
+        harness.controller.launch(effectReadiness: .init(spatialReady: false, equalizerDefinition: runtimeDefinition()))
+
+        XCTAssertEqual(harness.pipelines.startedOutputs, [])
+        XCTAssertEqual(harness.pipelines.liveCount, 0)
+        XCTAssertEqual(harness.scheduler.pendingDelays, [])
+        guard case .nativePassthrough(let reason) = harness.state.status else {
+            return XCTFail("Expected native passthrough")
+        }
+        XCTAssertTrue(reason.contains("Nyquist"))
+    }
+
+    func testInvalidEqualizerOnlyRecoversOnValidSelectionWithoutRetry() {
+        let graph = RuntimeEffectGraphFake(spatialReady: false)
+        graph.warning = AudioEffectWarning(filterLine: 9, reason: "above Nyquist")
+        let harness = Harness(effectGraph: graph)
+        harness.controller.launch(effectReadiness: .init(spatialReady: false, equalizerDefinition: runtimeDefinition()))
+        XCTAssertEqual(harness.pipelines.startedOutputs, [])
+
+        graph.warning = nil
+        harness.controller.updateReadiness(
+            .init(spatialReady: false, equalizerDefinition: runtimeDefinition(gain: -3)),
+            invalidation: .equalizerTarget
+        )
+
+        XCTAssertEqual(harness.pipelines.startedOutputs.count, 1)
+        XCTAssertEqual(harness.pipelines.liveCount, 1)
+        XCTAssertEqual(harness.scheduler.pendingDelays, [30])
+        XCTAssertNil(harness.state.warningMessage)
+    }
+
+    func testSpatialContinuesThroughInvalidEqualizerAndRecoversOnCompatibleOutput() {
+        let graph = RuntimeEffectGraphFake(spatialReady: true)
+        graph.warning = AudioEffectWarning(filterLine: 9, reason: "above Nyquist")
+        let harness = Harness(effectGraph: graph)
+        harness.controller.launch(effectReadiness: .init(spatialReady: true, equalizerDefinition: runtimeDefinition()))
+        XCTAssertEqual(harness.pipelines.liveCount, 1)
+        XCTAssertNotNil(harness.state.warningMessage)
+
+        graph.warning = nil
+        harness.platform.emit(device(id: 2, name: "Compatible DAC"))
+
+        XCTAssertEqual(harness.pipelines.startedOutputs.count, 2)
+        XCTAssertEqual(harness.pipelines.liveCount, 1)
+        XCTAssertNil(harness.state.warningMessage)
+        XCTAssertEqual(harness.scheduler.pendingDelays, [30])
+    }
+
+    func testAppDelegateCombinesSpatialAndEqualizerReadinessSources() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Airwave/AppDelegate.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("EqualizerManager.shared"))
+        XCTAssertTrue(source.contains("hrir.$activePreset"))
+        XCTAssertTrue(source.contains("hrir.$errorMessage"))
+        XCTAssertTrue(source.contains("eq.$selectedDefinition"))
+        XCTAssertTrue(source.contains(".equalizerTarget"))
+    }
 }
 
 @MainActor
@@ -269,15 +428,48 @@ private final class Harness {
     let scheduler = ManualRuntimeScheduler()
     let controller: AudioRuntimeController
 
-    init(output: OutputDeviceDescriptor = device(id: 1, name: "Built-in Output")) {
+    init(
+        output: OutputDeviceDescriptor = device(id: 1, name: "Built-in Output"),
+        effectGraph: AudioEffectGraphControlling? = nil
+    ) {
         platform = RuntimePlatformFake(output: output)
         controller = AudioRuntimeController(
             state: state,
             platform: platform,
             pipelineFactory: { [pipelines] in pipelines.make() },
-            scheduler: scheduler
+            scheduler: scheduler,
+            effectGraph: effectGraph
         )
     }
+}
+
+private final class RuntimeEffectGraphFake: AudioEffectGraphControlling {
+    let spatialReady: Bool
+    var warning: AudioEffectWarning?
+    private(set) var updatedDefinitions: [EqualizerDefinition?] = []
+
+    init(spatialReady: Bool) {
+        self.spatialReady = spatialReady
+    }
+
+    func prepare(for output: OutputDeviceDescriptor, equalizerDefinition: EqualizerDefinition?) -> AudioEffectPreparationResult {
+        var effects = Set<AudioEffectKind>()
+        if spatialReady { effects.insert(.spatial) }
+        if equalizerDefinition != nil, warning == nil { effects.insert(.equalizer) }
+        return AudioEffectPreparationResult(runnableEffects: effects, equalizerWarning: warning)
+    }
+
+    func updateEqualizer(definition: EqualizerDefinition?) -> AudioEffectPreparationResult {
+        updatedDefinitions.append(definition)
+        var effects = Set<AudioEffectKind>()
+        if spatialReady { effects.insert(.spatial) }
+        if definition != nil, warning == nil { effects.insert(.equalizer) }
+        return AudioEffectPreparationResult(runnableEffects: effects, equalizerWarning: warning)
+    }
+}
+
+private func runtimeDefinition(gain: Double = 6) -> EqualizerDefinition {
+    EqualizerDefinition(preampDB: gain, filters: [])
 }
 
 @MainActor
