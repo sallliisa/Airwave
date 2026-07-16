@@ -95,7 +95,7 @@ final class AudioRuntimeControllerTests: XCTestCase {
         harness.controller.launch(presetReady: true)
         XCTAssertEqual(harness.state.status, .needsPermission)
 
-        harness.controller.retryNow()
+        harness.controller.requestSystemAudioAccess()
 
         XCTAssertEqual(harness.state.status, .processing)
         XCTAssertEqual(harness.pipelines.liveCount, 1)
@@ -108,7 +108,7 @@ final class AudioRuntimeControllerTests: XCTestCase {
         harness.pipelines.defaultError = .permissionDenied
         harness.controller.launch(presetReady: true)
 
-        harness.controller.retryNow()
+        harness.controller.requestSystemAudioAccess()
 
         XCTAssertEqual(harness.state.status, .needsPermission)
         XCTAssertEqual(harness.pipelines.liveCount, 0)
@@ -128,7 +128,7 @@ final class AudioRuntimeControllerTests: XCTestCase {
         harness.controller.retryNow()
 
         XCTAssertFalse(history.contains(.requesting))
-        XCTAssertEqual(harness.state.permissionStatus, .granted)
+        XCTAssertEqual(harness.state.permissionStatus, .denied)
     }
 
     func testExplicitPermissionRequestEndsUnknownAfterGenericFailure() {
@@ -446,70 +446,6 @@ final class AudioRuntimeControllerTests: XCTestCase {
         XCTAssertEqual(harness.pipelines.liveCount, 1)
         XCTAssertEqual(harness.scheduler.pendingDelays, [30])
         XCTAssertNil(harness.state.warningMessage)
-    }
-
-    func testRevalidateSystemAudioAccessDoesNotSkipSelectedEqualizer() {
-        let graph = RuntimeEffectGraphFake(spatialReady: false)
-        let harness = Harness(effectGraph: graph)
-        harness.pipelines.startErrors = [.deviceLost, .permissionDenied]
-
-        harness.controller.launch(effectReadiness: .init(
-            spatialReady: false,
-            equalizerDefinition: runtimeDefinition()
-        ))
-
-        guard case .recovering = harness.state.status else {
-            return XCTFail("Expected the first startup failure to recover")
-        }
-        XCTAssertEqual(harness.scheduler.pendingDelays, [1])
-
-        harness.controller.revalidateSystemAudioAccess()
-
-        XCTAssertEqual(harness.state.status, .needsPermission)
-        XCTAssertEqual(harness.scheduler.pendingDelays, [])
-    }
-
-    func testRevalidateSystemAudioAccessDoesNotRetryAfterGrantedEqualizerStartup() {
-        let graph = RuntimeEffectGraphFake(spatialReady: false)
-        let harness = Harness(effectGraph: graph)
-
-        harness.controller.launch(effectReadiness: .init(
-            spatialReady: false,
-            equalizerDefinition: runtimeDefinition()
-        ))
-
-        XCTAssertEqual(harness.state.status, .processing)
-        XCTAssertEqual(harness.state.permissionStatus, .granted)
-        let events = harness.pipelines.events
-
-        harness.controller.revalidateSystemAudioAccess()
-
-        XCTAssertEqual(harness.state.status, .processing)
-        XCTAssertEqual(harness.state.permissionStatus, .granted)
-        XCTAssertEqual(harness.pipelines.events, events)
-    }
-
-    func testRevalidateSystemAudioAccessDoesNotRestartAudioOrPublishRequesting() {
-        let graph = RuntimeEffectGraphFake(spatialReady: false)
-        let harness = Harness(effectGraph: graph)
-        harness.pipelines.startErrors = [.permissionDenied]
-
-        harness.controller.launch(effectReadiness: .init(
-            spatialReady: false,
-            equalizerDefinition: runtimeDefinition()
-        ))
-
-        XCTAssertEqual(harness.state.permissionStatus, .denied)
-        let events = harness.pipelines.events
-        var history: [AudioRuntimeState.PermissionStatus] = []
-        let cancellable = harness.state.$permissionStatus.dropFirst().sink { history.append($0) }
-        defer { cancellable.cancel() }
-
-        harness.controller.revalidateSystemAudioAccess()
-
-        XCTAssertEqual(harness.pipelines.events, events)
-        XCTAssertFalse(history.contains(.requesting))
-        XCTAssertEqual(harness.state.permissionStatus, .denied)
     }
 
     func testSpatialContinuesThroughInvalidEqualizerAndRecoversOnCompatibleOutput() {

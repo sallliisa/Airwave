@@ -94,6 +94,7 @@ final class AudioRuntimeController {
     )
     private var permissionGranted = false
     private var permissionProbeRequested = false
+    private var explicitPermissionRequest = false
     private var soleEffectStopToken: AudioRuntimeCancellation?
     private var launched = false
     private var sleeping = false
@@ -227,32 +228,17 @@ final class AudioRuntimeController {
     func retryNow() {
         retryAttempt = 0
         cancelRetry()
-        // Explicit user action is permission's resume condition. Probe once; another
-        // denial returns to needsPermission without scheduling an automatic loop.
-        state.setPermissionStatus(.requesting)
-        permissionGranted = true
         reconcile()
     }
 
     /// Performs the same safe tap setup used for processing, but permits a
     /// short native-passthrough probe before an HRIR preset has been selected.
     func requestSystemAudioAccess() {
+        explicitPermissionRequest = true
         permissionProbeRequested = true
+        permissionGranted = true
         state.setPermissionStatus(.requesting)
         retryNow()
-    }
-
-    /// Refreshes permission from Core Audio when a user-facing status surface
-    /// opens. This catches permission revoked while Airwave was inactive.
-    func revalidateSystemAudioAccess() {
-        guard launched else { return }
-        switch state.permissionStatus {
-        case .granted, .requesting:
-            return
-        case .unknown, .denied:
-            permissionProbeRequested = true
-            retryNow()
-        }
     }
 
     func openSystemAudioRecordingSettings() {
@@ -280,6 +266,12 @@ final class AudioRuntimeController {
 
     private func defaultOutputChanged(_ output: OutputDeviceDescriptor?) {
         guard launched, !sleeping, !terminated else { return }
+        if let output,
+           output == state.currentOutput,
+           pipeline != nil,
+           state.status == .processing {
+            return
+        }
         guard stopForInvalidation() else { return }
         guard let output else {
             handleFailure(AudioRuntimeError.noOutputDevice, output: nil)
@@ -347,6 +339,7 @@ final class AudioRuntimeController {
             }
             let completedPermissionProbe = permissionProbeRequested
             permissionProbeRequested = false
+            explicitPermissionRequest = false
             if completedPermissionProbe && !effectReadiness.hasSelectedEffect {
                 do {
                     try candidate.stop()
@@ -367,6 +360,7 @@ final class AudioRuntimeController {
             scheduleStabilityReset(for: currentGeneration)
         } catch {
             do { try candidate.stop() } catch {
+                completeExplicitPermissionRequest(after: error)
                 pipeline = candidate
                 scheduleCleanupRetry(error)
                 return
@@ -393,6 +387,11 @@ final class AudioRuntimeController {
     }
 
     private func handleFailure(_ error: Error, output: OutputDeviceDescriptor?) {
+        let explicitRequest = explicitPermissionRequest
+        Logger.log(
+            "[AudioRuntime] failure=\(error) outputUID=\(output?.uid ?? state.currentOutput?.uid ?? "<none>") outputName=\(output?.name ?? state.currentOutput?.name ?? "<none>") explicitPermissionRequest=\(explicitRequest)"
+        )
+        completeExplicitPermissionRequest(after: error)
         guard stopForInvalidation() else { return }
         if case AudioRuntimeError.permissionDenied = error {
             permissionGranted = false
@@ -404,6 +403,17 @@ final class AudioRuntimeController {
             return
         }
         scheduleRetry(reason: failureMessage(error), output: output)
+    }
+
+    private func completeExplicitPermissionRequest(after error: Error) {
+        guard explicitPermissionRequest else { return }
+        explicitPermissionRequest = false
+        permissionProbeRequested = false
+        if case AudioRuntimeError.permissionDenied = error {
+            state.setPermissionStatus(.denied)
+        } else {
+            state.setPermissionStatus(.unknown)
+        }
     }
 
     private func scheduleRetry(reason: String, output: OutputDeviceDescriptor?) {

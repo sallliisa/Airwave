@@ -69,6 +69,19 @@ These observations remain `NOT TESTED` until performed on the release build. A `
 
 Host inventory observed on 2026-07-15: BlackHole 2ch was default output; MacBook Air Speakers and a legacy public Aggregate Device were present; reported output volume was 63. A Debug build was launched without an active preset and force-killed after two seconds. Default output remained BlackHole 2ch and volume remained 63 before, while running, and after termination. This proves only the no-preset safe-shell path; it is not the mandatory active-processing force-termination pass.
 
+## Plan 014 sticky setup and permission recovery acceptance
+
+Validation date: 2026-07-16. Signed Debug build used Xcode “Sign to Run Locally” ad-hoc signing. Automated signed pipeline probe was attempted with the current default output `EARPUMP TWS 2` (`A1-AB-61-35-25-55:output`). Probe stopped before callback/playback validation because tap format was 48 kHz interleaved while the output descriptor was 44.1 kHz: `formatMismatch(expected: ... sampleRate: 44100.0 ..., actual: ... sampleRate: 48000.0 ... isInterleaved: true)`. No output route, volume, or TCC state was changed.
+
+| Required row | Result | Evidence |
+|---|---|---|
+| Fresh authorized state: processed audio and callback | NOT TESTED | Signed probe stopped at format validation |
+| Attach second output without selecting it | NOT TESTED | Requires physical device run |
+| Default output A→B recovery | NOT TESTED | Requires physical device run |
+| Quit/relaunch keeps onboarding complete | NOT TESTED | Requires signed app run |
+| Explicit revoked/denied access has terminal guidance | PASS (automated) | State/controller tests: explicit request ends `.granted`, `.denied`, or `.unknown`; generic recovery never presents requesting |
+| Normal quit releases resources; route/volume unchanged | NOT TESTED | Existing signed harness is opt-in and host format mismatch blocks start |
+
 ## Performance observations
 
 Record end-to-end latency, callback underruns/dropouts, and CPU with a local physical output and Bluetooth output. Values are informational for 2.0; functional dropouts, unstable recovery, or failed native resumption block release. Both classes are currently **NOT TESTED**.
