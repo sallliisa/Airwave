@@ -351,11 +351,11 @@ final class ProductSurfaceTests: XCTestCase {
         viewModel.requestPermission()
         XCTAssertEqual(actions.requestCount, 1)
         XCTAssertEqual(viewModel.permissionPresentation, .unknown)
-        runtime.publish(.starting, output: output())
+        runtime.publish(.starting, output: output(), permission: .requesting)
         XCTAssertEqual(viewModel.permissionPresentation, .requesting)
-        runtime.publish(.inactive, output: output())
+        runtime.publish(.inactive, output: output(), permission: .granted)
         XCTAssertEqual(viewModel.permissionPresentation, .granted)
-        runtime.publish(.needsPermission, output: output())
+        runtime.publish(.needsPermission, output: output(), permission: .denied)
         XCTAssertEqual(viewModel.permissionPresentation, .denied)
 
         viewModel.openPermissionSettings()
@@ -406,7 +406,7 @@ final class ProductSurfaceTests: XCTestCase {
         )
 
         viewModel.requestPermission()
-        runtime.publish(.starting, output: output())
+        runtime.publish(.starting, output: output(), permission: .requesting)
         runtime.publish(
             .recovering(reason: "Create process tap failed (OSStatus -50). Retrying in 1s."),
             output: output(),
@@ -431,9 +431,17 @@ final class ProductSurfaceTests: XCTestCase {
 
             viewModel.requestPermission()
             XCTAssertEqual(focus.beginCount, 1)
-            runtime.publish(.starting, output: output())
-            runtime.publish(resolvedStatus, output: output())
-            runtime.publish(resolvedStatus, output: output())
+            runtime.publish(.starting, output: output(), permission: .requesting)
+            runtime.publish(
+                resolvedStatus,
+                output: output(),
+                permission: resolvedStatus == .processing ? .granted : .denied
+            )
+            runtime.publish(
+                resolvedStatus,
+                output: output(),
+                permission: resolvedStatus == .processing ? .granted : .denied
+            )
             XCTAssertEqual(focus.resolveCount, 1)
         }
     }
@@ -450,8 +458,8 @@ final class ProductSurfaceTests: XCTestCase {
 
         viewModel.requestPermission()
         viewModel.requestPermission()
-        runtime.publish(.starting, output: output())
-        runtime.publish(.needsPermission, output: output())
+        runtime.publish(.starting, output: output(), permission: .requesting)
+        runtime.publish(.needsPermission, output: output(), permission: .denied)
         XCTAssertEqual(focus.beginCount, 2)
         XCTAssertEqual(focus.resolveCount, 1)
     }
@@ -514,10 +522,12 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertTrue(persistence.isComplete)
 
         let probedRuntime = AudioRuntimeState(status: .inactive, currentOutput: output())
+        let probedPersistence = OnboardingPersistenceFake()
+        probedPersistence.isComplete = true
         let probed = OnboardingViewModel(
             runtime: probedRuntime,
             actions: RuntimeActionsFake(),
-            persistence: OnboardingPersistenceFake()
+            persistence: probedPersistence
         )
         probed.requestPermission()
         probedRuntime.publish(.starting, output: output())

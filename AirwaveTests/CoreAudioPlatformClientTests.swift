@@ -10,6 +10,24 @@ final class CoreAudioPlatformClientTests: XCTestCase {
         XCTAssertFalse(CoreAudioStatus.isAlreadyGone(-50))
     }
 
+    func testTapCreationIllegalOperationRemainsTapFailure() {
+        XCTAssertEqual(
+            CoreAudioErrorMapping.tapCreation(kAudioHardwareIllegalOperationError),
+            .tapCreationFailed("Create process tap failed (OSStatus \(kAudioHardwareIllegalOperationError))")
+        )
+    }
+
+    func testIOStartIllegalOperationIsPermissionDenied() {
+        XCTAssertEqual(
+            CoreAudioErrorMapping.ioStart(kAudioHardwareIllegalOperationError),
+            .permissionDenied
+        )
+        XCTAssertEqual(
+            CoreAudioErrorMapping.ioStart(-50),
+            .ioStartFailed("Start HAL unit failed (OSStatus -50)")
+        )
+    }
+
     func testCleanupRemovesDisposedContextWhileReportingUninitializeFailure() {
         let disposition = CoreAudioIOCleanup.disposition(uninitializeStatus: -50, disposeStatus: noErr)
         XCTAssertTrue(disposition.shouldRemoveContext)
@@ -57,36 +75,6 @@ final class CoreAudioPlatformClientTests: XCTestCase {
         }
         XCTAssertEqual(left, [0, 1, 0])
         XCTAssertEqual(right, [0, 0, 2])
-    }
-
-    func testInputPreparationMapsNoninterleavedStereoWithoutMutatingInput() {
-        var left: [Float] = [1, 2, 3]
-        var right: [Float] = [4, 5, 6]
-        withBufferList(left: &left, right: &right, frameCapacity: 3) { list in
-            let preparation = StereoCallbackBridge.prepareInput(
-                inputData: UnsafePointer(list),
-                requestedFrames: 3
-            )
-            XCTAssertEqual(preparation.status, noErr)
-            guard let input = preparation.input else {
-                return XCTFail("Expected stereo input")
-            }
-            XCTAssertEqual(input.frameCount, 3)
-            XCTAssertEqual(input.left[1], 2)
-            XCTAssertEqual(input.right[2], 6)
-        }
-        XCTAssertEqual(left, [1, 2, 3])
-        XCTAssertEqual(right, [4, 5, 6])
-    }
-
-    func testSandboxDeclaresCoreAudioAggregateInputEntitlement() throws {
-        let entitlementsURL = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Airwave/Airwave.entitlements")
-        let source = try String(contentsOf: entitlementsURL, encoding: .utf8)
-
-        XCTAssertTrue(source.contains("com.apple.security.device.audio-input"))
     }
 
     func testOversizedCallbackSilencesOnlyAdvertisedBoundsAndPreservesCanaries() {

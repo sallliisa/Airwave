@@ -218,8 +218,6 @@ final class OnboardingViewModel: ObservableObject {
     )
 
     @Published private(set) var currentStep: OnboardingStepV2
-    @Published private(set) var didRequestPermission = false
-    @Published private(set) var observedPermissionRequest = false
 
     let runtime: AudioRuntimeState
     private let actions: AudioRuntimeUserActions
@@ -239,20 +237,13 @@ final class OnboardingViewModel: ObservableObject {
         self.persistence = persistence
         self.focusRestorer = focusRestorer ?? PermissionWindowFocusRestorer.shared
         currentStep = persistence.checkpoint
-        runtime.$status
-            .sink { [weak self] status in
-                guard let self, self.didRequestPermission else { return }
-                if case .starting = status { self.observedPermissionRequest = true }
-                if case .recovering = status { self.observedPermissionRequest = true }
-                if self.observedPermissionRequest && self.permissionFocusRestorationPending {
-                    switch status {
-                    case .processing, .needsPermission, .inactive:
-                        self.permissionFocusRestorationPending = false
-                        self.focusRestorer.permissionRequestResolved()
-                    default:
-                        break
-                    }
-                }
+        runtime.$permissionStatus
+            .sink { [weak self] permissionStatus in
+                guard let self,
+                      self.permissionFocusRestorationPending,
+                      permissionStatus != .requesting else { return }
+                self.permissionFocusRestorationPending = false
+                self.focusRestorer.permissionRequestResolved()
             }
             .store(in: &cancellables)
     }
@@ -261,13 +252,12 @@ final class OnboardingViewModel: ObservableObject {
     var shouldShowSetupMenuItem: Bool { !persistence.isComplete }
     var isComplete: Bool { persistence.isComplete }
 
-    /// Both Settings and onboarding derive health from the current runtime
-    /// probe. Persisted onboarding completion is deliberately not permission.
+    /// First-run completion remains gated by live runtime readiness.
     var isConfigurationHealthy: Bool { canComplete }
-    var needsSetupAttention: Bool { !isConfigurationHealthy }
+    var needsSetupAttention: Bool { !persistence.isComplete }
 
     var recommendedVoluntaryEntryStep: OnboardingStepV2 {
-        if isConfigurationHealthy { return .welcome }
+        if persistence.isComplete { return .welcome }
         if runtime.status == .needsPermission { return .systemAudio }
         if let output = runtime.currentOutput,
            output.outputChannelCount != 2 || output.isVirtual || output.isAggregate {
@@ -286,14 +276,7 @@ final class OnboardingViewModel: ObservableObject {
         case .requesting:
             return .requesting
         case .unknown:
-            guard didRequestPermission else { return .unknown }
-            switch runtime.status {
-            case .starting, .recovering: return .requesting
-            case .processing: return .granted
-            case .inactive where runtime.currentOutput != nil: return .granted
-            case .needsPermission: return .denied
-            default: return .unknown
-            }
+            return .unknown
         }
     }
 
@@ -324,12 +307,9 @@ final class OnboardingViewModel: ObservableObject {
     }
 
     func requestPermission() {
-        didRequestPermission = true
-        observedPermissionRequest = false
         permissionFocusRestorationPending = true
         focusRestorer.beginPermissionRequest()
         actions.requestSystemAudioAccess()
-        objectWillChange.send()
     }
 
     func openPermissionSettings() { actions.openSystemAudioRecordingSettings() }
