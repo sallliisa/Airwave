@@ -153,7 +153,11 @@ struct SettingsView: View {
 
             VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
                 pageHeader
-                settingsPageContent
+                ZStack(alignment: .topLeading) {
+                    settingsPageContent
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .animation(settingsPageAnimation, value: page.wrappedValue)
 
                 #if DEBUG
                 if page.wrappedValue == .general {
@@ -161,15 +165,43 @@ struct SettingsView: View {
                 }
                 #endif
             }
-            .padding(.horizontal, 24)
-            .padding(.top, 80)
-            .padding(.bottom, 24)
-            .frame(maxWidth: 1000, alignment: .leading)
+            .padding(settingsContentPadding)
+            .frame(
+                maxWidth: settingsContentMaxWidth,
+                maxHeight: settingsContentMaxHeight,
+                alignment: .topLeading
+            )
             .frame(maxWidth: .infinity, alignment: .top)
 
         }
         .frame(width: 900, height: 600)
         .preferredColorScheme(.dark)
+    }
+
+    private var settingsContentPadding: EdgeInsets {
+        guard page.wrappedValue == .application else {
+            return EdgeInsets(top: 80, leading: 24, bottom: 24, trailing: 24)
+        }
+        return EdgeInsets(
+            top: AirwaveLayout.onboardingContentTopPadding,
+            leading: AirwaveLayout.onboardingContentHorizontalPadding,
+            bottom: AirwaveLayout.onboardingContentBottomPadding,
+            trailing: AirwaveLayout.onboardingContentHorizontalPadding
+        )
+    }
+
+    private var settingsContentMaxWidth: CGFloat {
+        page.wrappedValue == .application
+            ? AirwaveLayout.onboardingContentMaxWidth
+            : 1000
+    }
+
+    private var settingsContentMaxHeight: CGFloat? {
+        page.wrappedValue == .application ? .infinity : nil
+    }
+
+    private var settingsPageAnimation: Animation? {
+        reduceMotion ? nil : .easeOut(duration: 0.16)
     }
 
     @ViewBuilder
@@ -180,17 +212,9 @@ struct SettingsView: View {
         case .equalizer:
             EqualizerSettingsView()
                 .transition(.opacity)
-                .animation(
-                    reduceMotion ? nil : .easeOut(duration: 0.16),
-                    value: page.wrappedValue
-                )
         case .application:
             applicationPage
                 .transition(.opacity)
-                .animation(
-                    reduceMotion ? nil : .easeOut(duration: 0.16),
-                    value: page.wrappedValue
-                )
         }
     }
 
@@ -222,7 +246,7 @@ struct SettingsView: View {
 
     private var pageHeader: some View {
         VStack(alignment: .leading, spacing: 7) {
-            HStack(alignment: .firstTextBaseline, spacing: 14) {
+            HStack(alignment: .center, spacing: 14) {
                 if page.wrappedValue != .general {
                     AirwaveIconButton(
                         systemImage: "chevron.left",
@@ -231,7 +255,9 @@ struct SettingsView: View {
                         isProminent: false,
                         isEnabled: true
                     ) {
-                        page.wrappedValue = .general
+                        withAnimation(settingsPageAnimation) {
+                            page.wrappedValue = .general
+                        }
                     }
                 }
                 Text(pageTitle).font(.largeTitle.weight(.semibold))
@@ -263,11 +289,14 @@ struct SettingsView: View {
     }
 
     private var spatialProfileSection: some View {
-        VStack(alignment: .leading, spacing: AirwaveLayout.sectionContentSpacing) {
+        VStack(alignment: .leading, spacing: 0) {
             AirwaveSectionHeader(
                 title: "Spatial Profile",
                 subtitle: "Choose the HRIR preset Airwave uses for spatial audio."
             )
+            .padding(AirwaveLayout.cardPadding)
+
+            Divider()
 
             VStack(spacing: 0) {
                 AirwavePresetList(presets: hrirManager.presets, selectedID: hrirManager.activePreset?.id, onSelect: viewModel.selectPreset)
@@ -279,10 +308,9 @@ struct SettingsView: View {
                 AirwavePresetFilesRow(action: viewModel.openPresetsDirectory)
             }
             .frame(minHeight: 300, maxHeight: .infinity)
-            .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: AirwaveLayout.cardCornerRadius))
             .airwaveHRIRDropTarget(manager: hrirManager, onSelect: viewModel.selectPreset)
-
         }
+        .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: AirwaveLayout.cardCornerRadius))
         .frame(maxHeight: .infinity, alignment: .top)
     }
 
@@ -298,7 +326,9 @@ struct SettingsView: View {
                     title: "Equalizer",
                     subtitle: "Configure your sound preference."
                 ) {
-                    page.wrappedValue = .equalizer
+                    withAnimation(settingsPageAnimation) {
+                        page.wrappedValue = .equalizer
+                    }
                 }
 
                 AirwaveNavigationCard(
@@ -312,7 +342,9 @@ struct SettingsView: View {
                     title: "Application",
                     subtitle: "Preferences, updates, about."
                 ) {
-                    page.wrappedValue = .application
+                    withAnimation(settingsPageAnimation) {
+                        page.wrappedValue = .application
+                    }
                 }
             }
         }
