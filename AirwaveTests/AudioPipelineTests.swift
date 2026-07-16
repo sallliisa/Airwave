@@ -45,9 +45,35 @@ final class AudioPipelineTests: XCTestCase {
         XCTAssertTrue(platform.hasNoLiveResources)
     }
 
-    func testTapSampleRateMismatchStillFailsAndCleansUp() {
+    func test44100TapWith48000OutputIsAcceptedAndCleansUp() throws {
         let platform = RecordingAudioPlatformClient()
         platform.tapStreamFormat = .stereo(sampleRate: 44_100)
+        platform.aggregateStreamFormat = .stereo(sampleRate: 48_000)
+        let pipeline = AudioPipeline(platform: platform, processor: PassthroughProcessor())
+
+        XCTAssertNoThrow(try pipeline.start())
+        XCTAssertNoThrow(try pipeline.stop())
+        XCTAssertTrue(platform.hasNoLiveResources)
+    }
+
+    func test48000TapWith44100OutputIsAcceptedAndCleansUp() throws {
+        let platform = RecordingAudioPlatformClient()
+        platform.output = OutputDeviceDescriptor(
+            id: .init(2), uid: "bluetooth", name: "Bluetooth Output", transport: "bluetooth",
+            outputChannelCount: 2, nominalSampleRate: 44_100, isVirtual: false, isAggregate: false
+        )
+        platform.tapStreamFormat = .stereo(sampleRate: 48_000)
+        platform.aggregateStreamFormat = .stereo(sampleRate: 44_100)
+        let pipeline = AudioPipeline(platform: platform, processor: PassthroughProcessor())
+
+        XCTAssertNoThrow(try pipeline.start(on: platform.output))
+        XCTAssertNoThrow(try pipeline.stop())
+        XCTAssertTrue(platform.hasNoLiveResources)
+    }
+
+    func testUnsupportedTapSampleRateMismatchStillFailsAndCleansUp() {
+        let platform = RecordingAudioPlatformClient()
+        platform.tapStreamFormat = .stereo(sampleRate: 96_000)
         let pipeline = AudioPipeline(platform: platform, processor: PassthroughProcessor())
 
         XCTAssertThrowsError(try pipeline.start())

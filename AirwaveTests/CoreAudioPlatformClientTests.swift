@@ -61,6 +61,15 @@ final class CoreAudioPlatformClientTests: XCTestCase {
         )))
     }
 
+    func testSampleRateCompatibilityOnlyAllows44K1And48KConversions() {
+        XCTAssertTrue(AudioSampleRateCompatibility.isCompatible(44_100, with: 48_000))
+        XCTAssertTrue(AudioSampleRateCompatibility.isCompatible(48_000, with: 44_100))
+        XCTAssertTrue(AudioSampleRateCompatibility.isCompatible(96_000, with: 96_000))
+        XCTAssertFalse(AudioSampleRateCompatibility.isCompatible(48_000, with: 96_000))
+        XCTAssertFalse(AudioSampleRateCompatibility.isCompatible(44_100, with: 96_000))
+        XCTAssertFalse(AudioSampleRateCompatibility.isCompatible(.nan, with: 48_000))
+    }
+
     func testCallbackPreparationMapsAndSilencesStereoOutput() {
         var left: [Float] = [8, 8, 8]
         var right: [Float] = [9, 9, 9]

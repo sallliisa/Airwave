@@ -42,7 +42,31 @@ nonisolated struct AudioStreamFormat: Equatable, Sendable {
             && sampleType == .float32
             && expected.channelCount == 2
             && expected.sampleType == .float32
-            && abs(sampleRate - expected.sampleRate) < 0.5
+            && AudioSampleRateCompatibility.isCompatible(sampleRate, with: expected.sampleRate)
+    }
+}
+
+/// Sample-rate differences supported by the process-tap/aggregate path.
+///
+/// Matching rates remain compatible at any positive rate. The only supported
+/// conversion between different rates is the common 44.1 kHz/48 kHz pair;
+/// other mismatches must fail before the pipeline starts.
+nonisolated enum AudioSampleRateCompatibility {
+    static let tolerance = 0.5
+
+    static func isCompatible(_ actual: Double, with expected: Double) -> Bool {
+        guard actual.isFinite, expected.isFinite, actual > 0, expected > 0 else {
+            return false
+        }
+        if abs(actual - expected) < tolerance {
+            return true
+        }
+        return (isApproximately(actual, 44_100) && isApproximately(expected, 48_000))
+            || (isApproximately(actual, 48_000) && isApproximately(expected, 44_100))
+    }
+
+    private static func isApproximately(_ value: Double, _ target: Double) -> Bool {
+        abs(value - target) < tolerance
     }
 }
 
