@@ -1,4 +1,5 @@
 import XCTest
+import Combine
 @testable import Airwave
 
 @MainActor
@@ -115,6 +116,53 @@ final class AudioRuntimeControllerTests: XCTestCase {
         XCTAssertEqual(harness.pipelines.startedOutputs.count, 2)
     }
 
+    func testRetryNowDoesNotPublishRequestingPermissionState() {
+        let harness = Harness()
+        harness.pipelines.startErrors = [.permissionDenied, nil]
+        harness.controller.launch(presetReady: true)
+        XCTAssertEqual(harness.state.permissionStatus, .denied)
+        var history: [AudioRuntimeState.PermissionStatus] = []
+        let cancellable = harness.state.$permissionStatus.dropFirst().sink { history.append($0) }
+        defer { cancellable.cancel() }
+
+        harness.controller.retryNow()
+
+        XCTAssertFalse(history.contains(.requesting))
+        XCTAssertEqual(harness.state.permissionStatus, .granted)
+    }
+
+    func testExplicitPermissionRequestEndsUnknownAfterGenericFailure() {
+        let harness = Harness()
+        harness.controller.launch(presetReady: false, permissionGranted: false)
+        harness.pipelines.startErrors = [.deviceLost]
+        var history: [AudioRuntimeState.PermissionStatus] = []
+        let cancellable = harness.state.$permissionStatus.dropFirst().sink { history.append($0) }
+        defer { cancellable.cancel() }
+
+        harness.controller.requestSystemAudioAccess()
+
+        XCTAssertTrue(history.contains(.requesting))
+        XCTAssertEqual(history.last, .unknown)
+        XCTAssertEqual(harness.state.permissionStatus, .unknown)
+        XCTAssertNotEqual(harness.state.permissionStatus, .requesting)
+    }
+
+    func testExplicitPermissionRequestEndsDeniedAfterPermissionFailure() {
+        let harness = Harness()
+        harness.controller.launch(presetReady: false, permissionGranted: false)
+        harness.pipelines.startErrors = [.permissionDenied]
+        var history: [AudioRuntimeState.PermissionStatus] = []
+        let cancellable = harness.state.$permissionStatus.dropFirst().sink { history.append($0) }
+        defer { cancellable.cancel() }
+
+        harness.controller.requestSystemAudioAccess()
+
+        XCTAssertTrue(history.contains(.requesting))
+        XCTAssertEqual(history.last, .denied)
+        XCTAssertEqual(harness.state.permissionStatus, .denied)
+        XCTAssertNotEqual(harness.state.permissionStatus, .requesting)
+    }
+
     func testPresetReplacementStopsOldBeforeStartingNew() {
         let harness = Harness()
         harness.controller.launch(presetReady: true)
@@ -145,6 +193,18 @@ final class AudioRuntimeControllerTests: XCTestCase {
         XCTAssertEqual(harness.state.currentOutput, b)
         XCTAssertEqual(harness.pipelines.liveCount, 1)
         XCTAssertEqual(harness.pipelines.events.suffix(3), ["stop:1", "make:2", "start:2:USB DAC"])
+        XCTAssertEqual(harness.state.permissionStatus, .granted)
+    }
+
+    func testSameOutputCallbackDoesNotRecreateLivePipeline() {
+        let harness = Harness()
+        harness.controller.launch(presetReady: true)
+        let events = harness.pipelines.events
+
+        harness.platform.emit(harness.platform.output)
+
+        XCTAssertEqual(harness.pipelines.events, events)
+        XCTAssertEqual(harness.pipelines.liveCount, 1)
     }
 
     func testTeardownFailureDoesNotStartNewPipelineUntilCleanupRetrySucceeds() {
@@ -427,6 +487,29 @@ final class AudioRuntimeControllerTests: XCTestCase {
         XCTAssertEqual(harness.state.status, .processing)
         XCTAssertEqual(harness.state.permissionStatus, .granted)
         XCTAssertEqual(harness.pipelines.events, events)
+    }
+
+    func testRevalidateSystemAudioAccessDoesNotRestartAudioOrPublishRequesting() {
+        let graph = RuntimeEffectGraphFake(spatialReady: false)
+        let harness = Harness(effectGraph: graph)
+        harness.pipelines.startErrors = [.permissionDenied]
+
+        harness.controller.launch(effectReadiness: .init(
+            spatialReady: false,
+            equalizerDefinition: runtimeDefinition()
+        ))
+
+        XCTAssertEqual(harness.state.permissionStatus, .denied)
+        let events = harness.pipelines.events
+        var history: [AudioRuntimeState.PermissionStatus] = []
+        let cancellable = harness.state.$permissionStatus.dropFirst().sink { history.append($0) }
+        defer { cancellable.cancel() }
+
+        harness.controller.revalidateSystemAudioAccess()
+
+        XCTAssertEqual(harness.pipelines.events, events)
+        XCTAssertFalse(history.contains(.requesting))
+        XCTAssertEqual(harness.state.permissionStatus, .denied)
     }
 
     func testSpatialContinuesThroughInvalidEqualizerAndRecoversOnCompatibleOutput() {

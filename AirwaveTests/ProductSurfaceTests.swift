@@ -1,5 +1,6 @@
 import AppKit
 import XCTest
+import Combine
 @testable import Airwave
 
 @MainActor
@@ -378,6 +379,45 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertEqual(viewModel.permissionPresentation, .unknown)
     }
 
+    func testPermissionPresentationUsesPermissionStateWithoutRuntimeInference() {
+        let runtime = AudioRuntimeState(status: .starting)
+        let viewModel = OnboardingViewModel(
+            runtime: runtime,
+            actions: RuntimeActionsFake(),
+            persistence: OnboardingPersistenceFake()
+        )
+
+        runtime.setPermissionStatus(.unknown)
+        XCTAssertEqual(viewModel.permissionPresentation, .unknown)
+        runtime.setPermissionStatus(.requesting)
+        XCTAssertEqual(viewModel.permissionPresentation, .requesting)
+        runtime.setPermissionStatus(.unknown)
+        XCTAssertEqual(viewModel.permissionPresentation, .unknown)
+    }
+
+    func testExplicitPermissionFailureReturnsPresentationToUnknownAndRestoresFocus() {
+        let runtime = AudioRuntimeState(status: .inactive)
+        let focus = PermissionFocusRestorerFake()
+        let viewModel = OnboardingViewModel(
+            runtime: runtime,
+            actions: RuntimeActionsFake(),
+            persistence: OnboardingPersistenceFake(),
+            focusRestorer: focus
+        )
+
+        viewModel.requestPermission()
+        runtime.publish(.starting, output: output())
+        runtime.publish(
+            .recovering(reason: "Create process tap failed (OSStatus -50). Retrying in 1s."),
+            output: output(),
+            permission: .unknown
+        )
+
+        XCTAssertEqual(viewModel.permissionPresentation, .unknown)
+        XCTAssertEqual(focus.beginCount, 1)
+        XCTAssertEqual(focus.resolveCount, 1)
+    }
+
     func testPermissionFocusRestoresOnceAfterSuccessAndDenial() {
         for resolvedStatus in [AudioRuntimeState.Status.processing, .needsPermission] {
             let runtime = AudioRuntimeState(status: .inactive)
@@ -578,7 +618,93 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertTrue(unsupportedOutput.needsSetupAttention)
     }
 
-    func testInactiveWithoutLiveProbeNeedsSetupRegardlessOfPersistedCompletion() {
+    func testCompletedSetupNeverReopensAttentionForTransientRecoveryOrUnsupportedOutput() {
+        let cases: [(String, AudioRuntimeState)] = [
+            ("starting", AudioRuntimeState(status: .starting, currentOutput: output())),
+            ("recovering", AudioRuntimeState(
+                status: .recovering(reason: "Device lost. Retrying in 1s."),
+                currentOutput: output()
+            )),
+            ("unsupported output", AudioRuntimeState(
+                status: .nativePassthrough(reason: "Unsupported output"),
+                currentOutput: output(name: "BlackHole", virtual: true)
+            )),
+            ("missing output", AudioRuntimeState(status: .inactive))
+        ]
+
+        for (label, runtime) in cases {
+            let persistence = OnboardingPersistenceFake()
+            persistence.isComplete = true
+            persistence.checkpoint = .liveHealth
+            let viewModel = OnboardingViewModel(
+                runtime: runtime,
+                actions: RuntimeActionsFake(),
+                persistence: persistence
+            )
+
+            XCTAssertFalse(viewModel.needsSetupAttention, label)
+            XCTAssertFalse(viewModel.shouldShowSetupMenuItem, label)
+        }
+    }
+
+    func testIncompleteSetupStillShowsAttentionForTransientRecoveryOrUnsupportedOutput() {
+        let cases: [(String, AudioRuntimeState)] = [
+            ("starting", AudioRuntimeState(status: .starting, currentOutput: output())),
+            ("recovering", AudioRuntimeState(
+                status: .recovering(reason: "Device lost. Retrying in 1s."),
+                currentOutput: output()
+            )),
+            ("unsupported output", AudioRuntimeState(
+                status: .nativePassthrough(reason: "Unsupported output"),
+                currentOutput: output(name: "BlackHole", virtual: true)
+            )),
+            ("missing output", AudioRuntimeState(status: .inactive))
+        ]
+
+        for (label, runtime) in cases {
+            let viewModel = OnboardingViewModel(
+                runtime: runtime,
+                actions: RuntimeActionsFake(),
+                persistence: OnboardingPersistenceFake()
+            )
+
+            XCTAssertTrue(viewModel.needsSetupAttention, label)
+            XCTAssertTrue(viewModel.shouldShowSetupMenuItem, label)
+        }
+    }
+
+    func testCompletedVoluntarySetupAlwaysStartsAtWelcomeEvenWhenRuntimeNeedsAttention() {
+        let cases: [(String, AudioRuntimeState)] = [
+            ("permission denied", AudioRuntimeState(status: .needsPermission, currentOutput: output())),
+            ("inactive without current output", AudioRuntimeState(status: .inactive)),
+            ("unsupported output", AudioRuntimeState(
+                status: .nativePassthrough(reason: "Unsupported output"),
+                currentOutput: output(name: "BlackHole", virtual: true)
+            )),
+            ("recovering", AudioRuntimeState(
+                status: .recovering(reason: "Device lost. Retrying in 1s."),
+                currentOutput: output()
+            ))
+        ]
+
+        for (label, runtime) in cases {
+            let persistence = OnboardingPersistenceFake()
+            persistence.isComplete = true
+            persistence.checkpoint = .liveHealth
+            let viewModel = OnboardingViewModel(
+                runtime: runtime,
+                actions: RuntimeActionsFake(),
+                persistence: persistence
+            )
+
+            viewModel.prepareForPresentation(.voluntary)
+
+            XCTAssertEqual(viewModel.currentStep, .welcome, label)
+            XCTAssertFalse(viewModel.shouldShowSetupMenuItem, label)
+        }
+    }
+
+    func testIncompleteSetupNeedsAttentionWithoutLiveProbeButCompletedSetupDoesNot() {
         let freshViewModel = OnboardingViewModel(
             runtime: AudioRuntimeState(status: .inactive),
             actions: RuntimeActionsFake(), persistence: OnboardingPersistenceFake()
@@ -598,7 +724,8 @@ final class ProductSurfaceTests: XCTestCase {
 
         XCTAssertEqual(completedViewModel.permissionPresentation, .unknown)
         XCTAssertFalse(completedViewModel.canComplete)
-        XCTAssertTrue(completedViewModel.needsSetupAttention)
+        XCTAssertFalse(completedViewModel.needsSetupAttention)
+        XCTAssertFalse(completedViewModel.shouldShowSetupMenuItem)
     }
 
     func testMenuPresentationMapsEveryRuntimeStateAndOnlyRetryableStatesExposeRetry() {

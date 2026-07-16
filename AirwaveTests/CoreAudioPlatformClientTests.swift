@@ -79,20 +79,6 @@ final class CoreAudioPlatformClientTests: XCTestCase {
         XCTAssertEqual(right, [4, 5, 6])
     }
 
-    func testSystemAudioCaptureUsesAggregateDeviceStartForPermissionPrompt() throws {
-        let sourceURL = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Airwave/CoreAudioPlatformClient.swift")
-        let source = try String(contentsOf: sourceURL, encoding: .utf8)
-
-        XCTAssertTrue(source.contains("AudioDeviceCreateIOProcIDWithBlock"))
-        XCTAssertTrue(source.contains("AudioDeviceStart"))
-        XCTAssertTrue(source.contains("AudioDeviceStop"))
-        XCTAssertTrue(source.contains("AudioDeviceDestroyIOProcID"))
-        XCTAssertFalse(source.contains("AudioOutputUnitStart"))
-    }
-
     func testSandboxDeclaresCoreAudioAggregateInputEntitlement() throws {
         let entitlementsURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

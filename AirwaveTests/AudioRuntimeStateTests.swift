@@ -43,4 +43,19 @@ final class AudioRuntimeStateTests: XCTestCase {
         )
         XCTAssertEqual(runtime.permissionStatus, .unknown)
     }
+
+    func testRecoveringStateCanExitAnExplicitPermissionRequestToUnknown() {
+        let runtime = AudioRuntimeState(
+            status: .starting,
+            permissionStatus: .requesting
+        )
+
+        runtime.publish(
+            .recovering(reason: "Create process tap failed (OSStatus -50). Retrying in 1s."),
+            permission: .unknown
+        )
+
+        XCTAssertEqual(runtime.status, .recovering(reason: "Create process tap failed (OSStatus -50). Retrying in 1s."))
+        XCTAssertEqual(runtime.permissionStatus, .unknown)
+    }
 }
