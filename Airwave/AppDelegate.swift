@@ -179,7 +179,7 @@ enum SettingsPage: String, CaseIterable {
         switch self {
         case .general: "General"
         case .equalizer: "Equalizer"
-        case .devices: "Devices"
+        case .devices: "Registered Devices"
         case .application: "Application"
         }
     }
@@ -325,6 +325,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Logger.log("[AppDelegate] Airwave safe shell launched")
         ApplicationLifecycleCoordinator.shared.updateActivationPolicy()
         DeviceProfileRuntimeCoordinator.shared.launch()
+        OutputDeviceDiscoveryCoordinator.shared.launch()
 
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(willSleep),

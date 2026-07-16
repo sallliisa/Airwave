@@ -99,7 +99,7 @@ final class DeviceManagementCoordinator: ObservableObject {
             deviceUID: row.id,
             deviceName: row.deviceName,
             title: "Forget " + row.deviceName + "?",
-            message: "If this device is encountered again, Airwave will recreate a blank profile.",
+            message: "If this device remains available, its profile can be recreated from the device selector.",
             destructiveButtonTitle: "Forget Device"
         )
     }
@@ -126,7 +126,7 @@ final class DeviceManagementCoordinator: ObservableObject {
             changed = forgetOperation(confirmation.deviceUID)
             result = DeviceManagementResult(
                 text: changed
-                    ? "Forgot " + confirmation.deviceName + ". If it appears again, Airwave will recreate a blank profile."
+                    ? "Forgot " + confirmation.deviceName + ". Select it from the device selector to recreate its profile."
                     : "No changes were made for " + confirmation.deviceName + "."
             )
         }
@@ -156,11 +156,6 @@ struct DeviceManagementView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: AirwaveLayout.sectionContentSpacing) {
-            AirwaveSectionHeader(
-                title: "Remembered Devices",
-                subtitle: "Inspect and manage the HRIR and EQ profile saved for each output."
-            )
-
             if let result = coordinator.result {
                 HStack(spacing: 8) {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)

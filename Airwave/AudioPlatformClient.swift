@@ -119,6 +119,7 @@ nonisolated enum AudioRuntimeError: Error, Equatable {
 }
 
 typealias DefaultOutputChangeHandler = (OutputDeviceDescriptor?) -> Void
+typealias AvailableOutputChangeHandler = ([OutputDeviceDescriptor]) -> Void
 typealias AudioIOCallback = (
     _ inputLeft: UnsafePointer<Float>,
     _ inputRight: UnsafePointer<Float>?,
@@ -155,4 +156,10 @@ nonisolated protocol AudioPlatformClient: AnyObject {
     func destroyIO(_ io: AudioIOHandle) throws
 
     func openAudioCapturePermissionSettings()
+}
+
+nonisolated protocol OutputDeviceDiscovering: AnyObject {
+    func availableOutputDevices() throws -> [OutputDeviceDescriptor]
+    func observeAvailableOutputs(_ handler: @escaping AvailableOutputChangeHandler) throws
+    func stopObservingAvailableOutputs()
 }

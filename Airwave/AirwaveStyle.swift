@@ -12,10 +12,11 @@ enum AirwaveLayout {
     static let cardSpacing: CGFloat = 8
     static let cardPadding: CGFloat = 12
     static let cardCornerRadius: CGFloat = 8
-    static let onboardingContentHorizontalPadding: CGFloat = 30
-    static let onboardingContentTopPadding: CGFloat = 94
-    static let onboardingContentBottomPadding: CGFloat = 104
-    static let onboardingContentMaxWidth: CGFloat = 680
+    static let pageHeaderContentMinimumSpacing: CGFloat = 24
+    static let compactPageHorizontalPadding: CGFloat = 30
+    static let compactPageTopPadding: CGFloat = 94
+    static let compactPageBottomPadding: CGFloat = 104
+    static let compactPageMaxWidth: CGFloat = 680
     static let rowHorizontalPadding: CGFloat = 12
     static let rowVerticalPadding: CGFloat = 8
     static let menuGroupPadding: CGFloat = 4
@@ -23,6 +24,89 @@ enum AirwaveLayout {
     static let menuRowVerticalPadding: CGFloat = 6
     static let menuOuterPadding: CGFloat = 6
     static let menuDividerInset: CGFloat = 10
+}
+
+enum AirwavePageLayoutMode: Equatable {
+    case fullScreen
+    case compact
+
+    var contentPadding: EdgeInsets {
+        switch self {
+        case .fullScreen:
+            EdgeInsets(top: 80, leading: 24, bottom: 24, trailing: 24)
+        case .compact:
+            EdgeInsets(
+                top: AirwaveLayout.compactPageTopPadding,
+                leading: AirwaveLayout.compactPageHorizontalPadding,
+                bottom: AirwaveLayout.compactPageBottomPadding,
+                trailing: AirwaveLayout.compactPageHorizontalPadding
+            )
+        }
+    }
+
+    var maxContentWidth: CGFloat {
+        switch self {
+        case .fullScreen: 1000
+        case .compact: AirwaveLayout.compactPageMaxWidth
+        }
+    }
+}
+
+struct AirwavePageLayout<Content: View>: View {
+    let mode: AirwavePageLayoutMode
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        content()
+            .padding(mode.contentPadding)
+            .frame(maxWidth: mode.maxContentWidth, maxHeight: .infinity, alignment: .topLeading)
+            .frame(maxWidth: .infinity, alignment: .top)
+    }
+}
+
+struct AirwaveEqualHeightColumnsLayout: Layout {
+    let spacing: CGFloat
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) -> CGSize {
+        let columnWidth = proposal.width.map { max(0, ($0 - spacing * CGFloat(max(0, subviews.count - 1))) / CGFloat(max(1, subviews.count))) }
+        let sizes = subviews.map { subview in
+            subview.sizeThatFits(ProposedViewSize(width: columnWidth, height: nil))
+        }
+        let intrinsicWidth = sizes.reduce(0) { $0 + $1.width } + spacing * CGFloat(max(0, sizes.count - 1))
+        // The trailing column defines the card height on the Settings overview.
+        // The leading preset card receives this same proposal and scrolls its
+        // variable-height list content when needed.
+        let referenceHeight = sizes.last?.height ?? 0
+
+        return CGSize(
+            width: proposal.width ?? intrinsicWidth,
+            height: referenceHeight
+        )
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) {
+        guard !subviews.isEmpty else { return }
+
+        let columnWidth = max(0, (bounds.width - spacing * CGFloat(subviews.count - 1)) / CGFloat(subviews.count))
+        var x = bounds.minX
+        for subview in subviews {
+            subview.place(
+                at: CGPoint(x: x, y: bounds.minY),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(width: columnWidth, height: bounds.height)
+            )
+            x += columnWidth + spacing
+        }
+    }
 }
 
 struct AirwaveTopBar<Center: View, Trailing: View>: View {

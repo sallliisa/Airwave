@@ -23,7 +23,7 @@ stop old processing and wait for the latest target pair before starting.
 |---|---|---|---|---|---|
 | [001](001-device-profile-runtime.md) | Apply a persistent HRIR and EQ profile per supported output device | P1 | L | — | DONE |
 | [002](002-device-profile-management.md) | Add a dedicated device profile management page | P2 | M | 001 | DONE |
-| [003](003-discover-available-output-devices.md) | Discover and configure selectable output devices before switching macOS output | P1 | M | 001, 002 | TODO |
+| [003](003-discover-available-output-devices.md) | Discover and configure selectable output devices before switching macOS output | P1 | M | 001, 002 | DONE |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) |
 REJECTED (with one-line rationale)

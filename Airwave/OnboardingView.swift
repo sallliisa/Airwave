@@ -40,20 +40,18 @@ struct OnboardingView: View {
     }
 
     private var content: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
-                stepHeader
-                stepBody
+        AirwavePageLayout(mode: .compact) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: AirwaveLayout.pageHeaderContentMinimumSpacing) {
+                    stepHeader
+                    stepBody
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .id(viewModel.currentStep)
+                .transition(pageTransition)
             }
-            .padding(.horizontal, AirwaveLayout.onboardingContentHorizontalPadding)
-            .padding(.top, AirwaveLayout.onboardingContentTopPadding)
-            .padding(.bottom, AirwaveLayout.onboardingContentBottomPadding)
-            .frame(maxWidth: AirwaveLayout.onboardingContentMaxWidth, alignment: .leading)
-            .frame(maxWidth: .infinity)
-            .id(viewModel.currentStep)
-            .transition(pageTransition)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var currentPageNumber: Int {
