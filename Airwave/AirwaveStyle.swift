@@ -238,11 +238,11 @@ struct AirwaveNavigationCard: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 6) {
                     Text(title)
-                        .font(.title3.weight(.semibold))
+                        .font(.system(size: 12, weight: .semibold))
                     Text(subtitle)
-                        .font(.callout)
+                        .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                 }
@@ -250,15 +250,14 @@ struct AirwaveNavigationCard: View {
                 Spacer(minLength: 8)
 
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 15, weight: .medium))
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 14)
-            .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
+            .padding(AirwaveLayout.cardPadding)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(AirwavePressedButtonStyle())
         .background(
             isHovering ? AirwavePalette.hover : AirwavePalette.raised,
             in: RoundedRectangle(cornerRadius: AirwaveLayout.cardCornerRadius)

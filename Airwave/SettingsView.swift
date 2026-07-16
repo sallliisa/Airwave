@@ -224,15 +224,15 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .firstTextBaseline, spacing: 14) {
                 if page.wrappedValue != .general {
-                    Button {
+                    AirwaveIconButton(
+                        systemImage: "chevron.left",
+                        accessibilityLabel: "Back to Settings",
+                        help: "Back to Settings",
+                        isProminent: false,
+                        isEnabled: true
+                    ) {
                         page.wrappedValue = .general
-                    } label: {
-                        Label("Settings", systemImage: "chevron.left")
                     }
-                    .buttonStyle(.plain)
-                    .font(.callout.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel("Back to Settings")
                 }
                 Text(pageTitle).font(.largeTitle.weight(.semibold))
                 if page.wrappedValue == .general, onboardingNeedsAttention {

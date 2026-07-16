@@ -42,6 +42,10 @@ final class ProductSurfaceTests: XCTestCase {
             contentsOf: root.appendingPathComponent("Airwave/SettingsView.swift"),
             encoding: .utf8
         )
+        let style = try String(
+            contentsOf: root.appendingPathComponent("Airwave/AirwaveStyle.swift"),
+            encoding: .utf8
+        )
 
         XCTAssertEqual(appDelegate.components(separatedBy: "let content = SettingsWindowContent(state: contentState)").count - 1, 1)
         XCTAssertEqual(appDelegate.components(separatedBy: ".environmentObject(MenuBarViewModel.shared)").count - 1, 1)
@@ -51,10 +55,15 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertTrue(settings.contains("title: \"Equalizer\""))
         XCTAssertTrue(settings.contains("title: \"Setup\""))
         XCTAssertTrue(settings.contains("title: \"Application\""))
-        XCTAssertTrue(settings.contains("Back to Settings"))
+        XCTAssertTrue(settings.contains("AirwaveIconButton("))
+        XCTAssertTrue(settings.contains("systemImage: \"chevron.left\""))
         XCTAssertTrue(settings.contains("SettingsRightColumnHeightKey"))
         XCTAssertTrue(settings.contains("applicationPage"))
         XCTAssertFalse(settings.contains("Set Up Airwave Again"))
+        XCTAssertTrue(style.contains("AirwaveLayout.cardPadding"))
+        XCTAssertTrue(style.contains("font(.system(size: 12, weight: .semibold))"))
+        XCTAssertTrue(style.contains("font(.system(size: 11))"))
+        XCTAssertTrue(style.contains("AirwavePressedButtonStyle()"))
     }
 
     func testEqualizerSettingsLibraryRowsKeepNoneFirstAndPreserveManagerOrder() throws {
