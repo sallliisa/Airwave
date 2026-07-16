@@ -203,7 +203,7 @@ struct OnboardingView: View {
 
     private var liveHealthStep: some View {
         let presentation = readinessPresentation
-        return VStack(alignment: .leading, spacing: AirwaveLayout.cardSpacing) {
+        return VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
             statusCard(
                 icon: viewModel.canComplete ? "checkmark.seal.fill" : "exclamationmark.triangle.fill",
                 color: viewModel.canComplete ? .green : .orange,
