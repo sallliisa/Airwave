@@ -172,11 +172,13 @@ final class ApplicationLifecycleCoordinator: NSObject {
 enum SettingsPage: String, CaseIterable {
     case general
     case equalizer
+    case application
 
     var title: String {
         switch self {
         case .general: "General"
         case .equalizer: "Equalizer"
+        case .application: "Application"
         }
     }
 }

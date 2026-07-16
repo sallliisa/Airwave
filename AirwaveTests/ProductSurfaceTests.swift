@@ -14,6 +14,9 @@ final class ProductSurfaceTests: XCTestCase {
         state.selectSettingsPage(.equalizer)
         XCTAssertEqual(state.settingsPage, .equalizer)
 
+        state.selectSettingsPage(.application)
+        XCTAssertEqual(state.settingsPage, .application)
+
         state.show(.setup)
         XCTAssertEqual(state.mode, .setup)
         XCTAssertFalse(state.canReturnToSettings)
@@ -42,9 +45,16 @@ final class ProductSurfaceTests: XCTestCase {
 
         XCTAssertEqual(appDelegate.components(separatedBy: "let content = SettingsWindowContent(state: contentState)").count - 1, 1)
         XCTAssertEqual(appDelegate.components(separatedBy: ".environmentObject(MenuBarViewModel.shared)").count - 1, 1)
-        XCTAssertTrue(settings.contains("SettingsPage.allCases"))
         XCTAssertTrue(settings.contains("transition(.opacity)"))
         XCTAssertTrue(settings.contains("accessibilityReduceMotion"))
+        XCTAssertTrue(settings.contains("AirwaveNavigationCard"))
+        XCTAssertTrue(settings.contains("title: \"Equalizer\""))
+        XCTAssertTrue(settings.contains("title: \"Setup\""))
+        XCTAssertTrue(settings.contains("title: \"Application\""))
+        XCTAssertTrue(settings.contains("Back to Settings"))
+        XCTAssertTrue(settings.contains("SettingsRightColumnHeightKey"))
+        XCTAssertTrue(settings.contains("applicationPage"))
+        XCTAssertFalse(settings.contains("Set Up Airwave Again"))
     }
 
     func testEqualizerSettingsLibraryRowsKeepNoneFirstAndPreserveManagerOrder() throws {
