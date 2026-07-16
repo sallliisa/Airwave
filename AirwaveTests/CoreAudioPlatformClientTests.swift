@@ -61,13 +61,21 @@ final class CoreAudioPlatformClientTests: XCTestCase {
         )))
     }
 
-    func testSampleRateCompatibilityOnlyAllows44K1And48KConversions() {
-        XCTAssertTrue(AudioSampleRateCompatibility.isCompatible(44_100, with: 48_000))
-        XCTAssertTrue(AudioSampleRateCompatibility.isCompatible(48_000, with: 44_100))
-        XCTAssertTrue(AudioSampleRateCompatibility.isCompatible(96_000, with: 96_000))
-        XCTAssertFalse(AudioSampleRateCompatibility.isCompatible(48_000, with: 96_000))
-        XCTAssertFalse(AudioSampleRateCompatibility.isCompatible(44_100, with: 96_000))
-        XCTAssertFalse(AudioSampleRateCompatibility.isCompatible(.nan, with: 48_000))
+    func testSampleRateCompatibilityRequiresMatchingPositiveFiniteRates() {
+        let rates = [44_100.0, 48_000.0, 88_200.0, 96_000.0]
+        for rate in rates {
+            XCTAssertTrue(AudioSampleRateCompatibility.matches(rate, with: rate))
+        }
+        for actual in rates {
+            for expected in rates where actual != expected {
+                XCTAssertFalse(AudioSampleRateCompatibility.matches(actual, with: expected))
+            }
+        }
+        XCTAssertTrue(AudioSampleRateCompatibility.matches(48_000.49, with: 48_000))
+        XCTAssertFalse(AudioSampleRateCompatibility.matches(0, with: 48_000))
+        XCTAssertFalse(AudioSampleRateCompatibility.matches(-48_000, with: 48_000))
+        XCTAssertFalse(AudioSampleRateCompatibility.matches(.infinity, with: 48_000))
+        XCTAssertFalse(AudioSampleRateCompatibility.matches(.nan, with: 48_000))
     }
 
     func testCallbackPreparationMapsAndSilencesStereoOutput() {

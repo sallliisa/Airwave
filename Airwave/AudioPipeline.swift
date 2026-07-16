@@ -87,7 +87,7 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
             }
 
             let process = try platform.resolveOwnProcess()
-            let request = GlobalStereoTapRequest(excludedProcess: process)
+            let request = GlobalStereoTapRequest(excludedProcess: process, output: output)
             let createdTap = try platform.createGlobalStereoTap(request)
             tap = createdTap
 

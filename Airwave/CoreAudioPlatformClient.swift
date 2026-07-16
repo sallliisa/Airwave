@@ -265,14 +265,23 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient {
     }
 
     func createGlobalStereoTap(_ request: GlobalStereoTapRequest) throws -> AudioTapHandle {
-        guard request.isGlobal, request.channelCount == 2, request.isPrivate, request.mutedWhenTapped else {
+        guard request.isGlobal,
+              request.channelCount == 2,
+              request.isPrivate,
+              request.mutedWhenTapped,
+              !request.outputDeviceUID.isEmpty,
+              request.streamIndex >= 0 else {
             throw AudioRuntimeError.tapCreationFailed("Invalid global stereo tap request")
         }
-        let description = CATapDescription(stereoGlobalTapButExcludeProcesses: [AudioObjectID(request.excludedProcess.value)])
+        let description = CATapDescription(
+            excludingProcesses: [AudioObjectID(request.excludedProcess.value)],
+            deviceUID: request.outputDeviceUID,
+            stream: UInt(request.streamIndex)
+        )
         description.name = "Airwave Process Tap"
         description.uuid = instanceUUID
         description.isPrivate = true
-        description.muteBehavior = .mutedWhenTapped
+        description.muteBehavior = CATapMuteBehavior.mutedWhenTapped
 
         var tapID = AudioObjectID(kAudioObjectUnknown)
         let status = AudioHardwareCreateProcessTap(description, &tapID)
