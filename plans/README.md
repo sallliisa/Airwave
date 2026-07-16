@@ -41,7 +41,7 @@ status row.
 | 011 | Implement the realtime parametric EQ processor | P1 | L | 010 | DONE |
 | 012 | Compose EQ with the fail-open audio runtime | P1 | L | 011 | DONE |
 | 013 | Add the Equalizer Settings section and product validation | P1 | L | 012 | DONE |
-| 014 | Make setup sticky and permission recovery truthful | P0 | M | 004, 005 | IN PROGRESS |
+| 014 | Make setup sticky and permission recovery truthful | P0 | M | 004, 005 | BLOCKED (signed physical acceptance: host default 44.1 kHz vs tap 48 kHz) |
 
 Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED (<reason>)`, or
 `REJECTED (<reason>)`.
