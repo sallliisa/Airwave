@@ -25,8 +25,10 @@ nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
 
         do {
             try processor.setTarget(definition: definition)
+            processor.drainRetiredStates()
         } catch let error as ParametricEqualizerPreparationError {
             try? processor.setTarget(definition: nil)
+            processor.drainRetiredStates()
             throw map(error, definition: definition)
         }
     }
@@ -37,8 +39,10 @@ nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
         }
         do {
             try processor.setTarget(definition: definition)
+            processor.drainRetiredStates()
         } catch let error as ParametricEqualizerPreparationError {
             try? processor.setTarget(definition: nil)
+            processor.drainRetiredStates()
             throw map(error, definition: definition)
         }
     }

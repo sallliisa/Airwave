@@ -110,6 +110,58 @@ final class AudioEffectGraphTests: XCTestCase {
         XCTAssertNil(validResult.equalizerWarning)
     }
 
+    func testProductionEqualizerCanReenableAfterNoneSelection() throws {
+        let graph = AudioEffectGraph(
+            spatial: SpatialEffectSpy(isReady: false),
+            equalizer: EqualizerRuntimeEffect(),
+            maxFramesPerCallback: 4_096
+        )
+        let output = deviceOutput(sampleRate: 48_000)
+        let presetA = EqualizerDefinition(preampDB: 6)
+        let presetB = EqualizerDefinition(preampDB: -6)
+        let transitionFrames = 960
+        let positiveGain = Float(pow(10.0, 6.0 / 20.0))
+        let negativeGain = Float(pow(10.0, -6.0 / 20.0))
+
+        XCTAssertEqual(graph.prepare(for: output, equalizerDefinition: presetA).runnableEffects, [.equalizer])
+        XCTAssertEqual(
+            processConstant(graph, frameCount: transitionFrames).left.last!,
+            positiveGain,
+            accuracy: 1e-5
+        )
+
+        let noneResult = graph.updateEqualizer(definition: nil)
+        XCTAssertTrue(noneResult.noEffectCanRun)
+        XCTAssertEqual(
+            processConstant(graph, frameCount: transitionFrames).left.last!,
+            1,
+            accuracy: 1e-5
+        )
+
+        XCTAssertEqual(graph.updateEqualizer(definition: presetA).runnableEffects, [.equalizer])
+        XCTAssertEqual(
+            processConstant(graph, frameCount: transitionFrames).left.last!,
+            positiveGain,
+            accuracy: 1e-5
+        )
+
+        _ = graph.updateEqualizer(definition: nil)
+        _ = processConstant(graph, frameCount: transitionFrames)
+        XCTAssertEqual(graph.prepare(for: output, equalizerDefinition: presetA).runnableEffects, [.equalizer])
+        XCTAssertEqual(
+            processConstant(graph, frameCount: transitionFrames).left.last!,
+            positiveGain,
+            accuracy: 1e-5
+        )
+
+        XCTAssertEqual(graph.updateEqualizer(definition: presetB).runnableEffects, [.equalizer])
+        XCTAssertEqual(
+            processConstant(graph, frameCount: transitionFrames).left.last!,
+            negativeGain,
+            accuracy: 1e-5
+        )
+    }
+
     func testInvalidLiveTargetKeepsEqualizerInCallbackForUnityCrossfade() throws {
         let equalizer = EqualizerEffectSpy(multiplier: 2)
         let graph = AudioEffectGraph(
@@ -152,6 +204,18 @@ final class AudioEffectGraphTests: XCTestCase {
             }
         }
         return (outputLeft, outputRight)
+    }
+
+    private func processConstant(
+        _ graph: AudioEffectGraph,
+        frameCount: Int,
+        value: Float = 1
+    ) -> (left: [Float], right: [Float]) {
+        process(
+            graph,
+            left: [Float](repeating: value, count: frameCount),
+            right: [Float](repeating: value, count: frameCount)
+        )
     }
 
     private func render(

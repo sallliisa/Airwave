@@ -227,6 +227,53 @@ struct AirwaveSectionHeader: View {
     }
 }
 
+struct AirwaveNavigationCard: View {
+    let title: String
+    let subtitle: String
+    let action: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.title3.weight(.semibold))
+                    Text(subtitle)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+
+                Spacer(minLength: 8)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(
+            isHovering ? AirwavePalette.hover : AirwavePalette.raised,
+            in: RoundedRectangle(cornerRadius: AirwaveLayout.cardCornerRadius)
+        )
+        .onHover { hovering in
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.14)) {
+                isHovering = hovering
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title): \(subtitle)")
+        .accessibilityHint("Open \(title) settings")
+    }
+}
+
 private struct AirwaveHRIRDropModifier: ViewModifier {
     let manager: HRIRManager
     let onSelect: (HRIRPreset?) -> Void

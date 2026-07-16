@@ -153,16 +153,7 @@ struct SettingsView: View {
 
             VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
                 pageHeader
-                if page.wrappedValue == .general {
-                    generalPage
-                } else {
-                    EqualizerSettingsView()
-                        .transition(.opacity)
-                        .animation(
-                            reduceMotion ? nil : .easeOut(duration: 0.16),
-                            value: page.wrappedValue
-                        )
-                }
+                settingsPageContent
 
                 #if DEBUG
                 if page.wrappedValue == .general {
@@ -181,21 +172,34 @@ struct SettingsView: View {
         .preferredColorScheme(.dark)
     }
 
+    @ViewBuilder
+    private var settingsPageContent: some View {
+        switch page.wrappedValue {
+        case .general:
+            generalPage
+        case .equalizer:
+            EqualizerSettingsView()
+                .transition(.opacity)
+                .animation(
+                    reduceMotion ? nil : .easeOut(duration: 0.16),
+                    value: page.wrappedValue
+                )
+        case .application:
+            applicationPage
+                .transition(.opacity)
+                .animation(
+                    reduceMotion ? nil : .easeOut(duration: 0.16),
+                    value: page.wrappedValue
+                )
+        }
+    }
+
     private var generalPage: some View {
         HStack(alignment: .top, spacing: AirwaveLayout.cardSpacing) {
             spatialProfileSection
                 .frame(maxWidth: .infinity, alignment: .top)
                 .frame(height: rightColumnHeight > 0 ? rightColumnHeight : nil, alignment: .top)
-            VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
-                hrirResourcesSection
-                applicationSection
-            }
-            .frame(maxWidth: .infinity, alignment: .top)
-            .background {
-                GeometryReader { proxy in
-                    Color.clear.preference(key: SettingsRightColumnHeightKey.self, value: proxy.size.height)
-                }
-            }
+            rightColumn
         }
         .onPreferenceChange(SettingsRightColumnHeightKey.self) { height in
             guard abs(height - rightColumnHeight) > 0.5 else { return }
@@ -203,31 +207,58 @@ struct SettingsView: View {
         }
     }
 
+    private var rightColumn: some View {
+        VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
+            hrirResourcesSection
+            applicationSection
+        }
+        .frame(maxWidth: .infinity, alignment: .top)
+        .background {
+            GeometryReader { proxy in
+                Color.clear.preference(key: SettingsRightColumnHeightKey.self, value: proxy.size.height)
+            }
+        }
+    }
+
     private var pageHeader: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .firstTextBaseline, spacing: 14) {
-                Text("Settings").font(.largeTitle.weight(.semibold))
-                Picker("Settings section", selection: page) {
-                    ForEach(SettingsPage.allCases, id: \.self) { page in
-                        Text(page.title).tag(page)
+                if page.wrappedValue != .general {
+                    Button {
+                        page.wrappedValue = .general
+                    } label: {
+                        Label("Settings", systemImage: "chevron.left")
                     }
+                    .buttonStyle(.plain)
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Back to Settings")
                 }
-                .pickerStyle(.segmented)
-                .frame(width: 190)
-                .accessibilityLabel("Settings section navigation")
-                .accessibilityHint("Choose General or Equalizer settings")
-                .accessibilityAddTraits(.isHeader)
-                if onboardingNeedsAttention {
+                Text(pageTitle).font(.largeTitle.weight(.semibold))
+                if page.wrappedValue == .general, onboardingNeedsAttention {
                     Label("Reopen setup", systemImage: "exclamationmark.triangle.fill")
                         .font(.callout.weight(.medium))
                         .foregroundStyle(.orange)
                 }
             }
-            Text(page.wrappedValue == .general
-                 ? "Choose your spatial profile and application preferences."
-                 : "Import and inspect EqualizerAPO-style presets.")
+            Text(pageSubtitle)
                 .font(.callout)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    private var pageTitle: String {
+        page.wrappedValue == .general ? "Settings" : page.wrappedValue.title
+    }
+
+    private var pageSubtitle: String {
+        switch page.wrappedValue {
+        case .general:
+            "Choose your spatial profile and application preferences."
+        case .equalizer:
+            "Import and inspect EqualizerAPO-style presets."
+        case .application:
+            "Manage startup, updates, and app information."
         }
     }
 
@@ -262,6 +293,33 @@ struct SettingsView: View {
                 subtitle: "Startup, updates, setup, and app information."
             )
 
+            VStack(spacing: AirwaveLayout.cardSpacing) {
+                AirwaveNavigationCard(
+                    title: "Equalizer",
+                    subtitle: "Configure your sound preference."
+                ) {
+                    page.wrappedValue = .equalizer
+                }
+
+                AirwaveNavigationCard(
+                    title: "Setup",
+                    subtitle: "Revisit the Airwave setup wizard."
+                ) {
+                    showSetup()
+                }
+
+                AirwaveNavigationCard(
+                    title: "Application",
+                    subtitle: "Preferences, updates, about."
+                ) {
+                    page.wrappedValue = .application
+                }
+            }
+        }
+    }
+
+    private var applicationPage: some View {
+        VStack(alignment: .leading, spacing: AirwaveLayout.sectionContentSpacing) {
             VStack(spacing: 0) {
                 HStack(spacing: 10) {
                     Image(systemName: "play.circle.fill")
@@ -332,16 +390,6 @@ struct SettingsView: View {
 
                 Divider().padding(.leading, 30)
 
-                settingsActionRow(
-                    icon: "checklist",
-                    title: "Set Up Airwave Again",
-                    subtitle: "Review Airwave setup",
-                    buttonTitle: "Setup…",
-                    showsWarning: onboardingNeedsAttention
-                ) {
-                    showSetup()
-                }
-                Divider().padding(.leading, 30)
                 settingsActionRow(
                     icon: "info.circle.fill",
                     title: "About Airwave",
