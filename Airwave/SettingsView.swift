@@ -194,7 +194,13 @@ struct SettingsView: View {
 
             AirwavePageLayout(mode: pageLayoutMode) {
                 VStack(alignment: .leading, spacing: 0) {
-                    pageHeader
+                    ZStack(alignment: .topLeading) {
+                        pageHeader
+                            .id(page.wrappedValue)
+                            .transition(.opacity)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .animation(settingsPageAnimation, value: page.wrappedValue)
 
                     Color.clear.frame(height: AirwaveLayout.pageHeaderContentMinimumSpacing)
 
@@ -221,7 +227,8 @@ struct SettingsView: View {
 
     private var pageLayoutMode: AirwavePageLayoutMode {
         switch page.wrappedValue {
-        case .general, .equalizer: .fullScreen
+        case .general: .fullScreen
+        case .equalizer: .compact
         case .devices, .application: .compact
         }
     }
@@ -275,9 +282,7 @@ struct SettingsView: View {
                         isProminent: false,
                         isEnabled: true
                     ) {
-                        withAnimation(settingsPageAnimation) {
-                            page.wrappedValue = .general
-                        }
+                        page.wrappedValue = .general
                     }
                 }
                 Text(pageTitle).font(.largeTitle.weight(.semibold))
@@ -302,7 +307,7 @@ struct SettingsView: View {
         case .general:
             "Choose your spatial profile and application preferences."
         case .equalizer:
-            "Import and inspect EqualizerAPO-style presets."
+            "Import and choose an EqualizerAPO-style preset."
         case .devices:
             "Review, reset, or forget remembered output profiles."
         case .application:
@@ -320,21 +325,17 @@ struct SettingsView: View {
 
             Divider()
 
-            VStack(spacing: 0) {
-                AirwavePresetList(
-                    presets: hrirManager.presets,
-                    selectedID: profiles.editingProfile?.hrirPresetID,
-                    onSelect: { profiles.setHRIRPresetID($0?.id) }
-                )
-
-                AirwavePresetDropHint()
-
-                Divider()
-
-                AirwavePresetFilesRow(action: viewModel.openPresetsDirectory)
-            }
-            .frame(maxHeight: .infinity)
-            .airwaveHRIRDropTarget(manager: hrirManager)
+            AirwaveHRIRPicker(
+                manager: hrirManager,
+                selectedID: profiles.editingProfile?.hrirPresetID,
+                onSelect: { profiles.setHRIRPresetID($0?.id) },
+                onDelete: { preset in
+                    if profiles.editingProfile?.hrirPresetID == preset.id {
+                        profiles.setHRIRPresetID(nil)
+                    }
+                }
+            )
+            .frame(minHeight: 300, maxHeight: .infinity)
         }
         .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: AirwaveLayout.cardCornerRadius))
         .frame(maxHeight: .infinity, alignment: .top)
@@ -352,23 +353,20 @@ struct SettingsView: View {
                     title: "Equalizer",
                     subtitle: "Configure your sound preference."
                 ) {
-                    withAnimation(settingsPageAnimation) {
-                        page.wrappedValue = .equalizer
-                    }
+                    page.wrappedValue = .equalizer
                 }
 
                 AirwaveNavigationCard(
                     title: "Registered Devices",
                     subtitle: "Inspect and manage the HRIR and EQ profiles you have saved."
                 ) {
-                    withAnimation(settingsPageAnimation) {
-                        page.wrappedValue = .devices
-                    }
+                    page.wrappedValue = .devices
                 }
 
                 AirwaveNavigationCard(
                     title: "Setup",
-                    subtitle: "Revisit the Airwave setup wizard."
+                    subtitle: "Revisit the Airwave setup wizard.",
+                    showsWarning: onboardingNeedsAttention
                 ) {
                     showSetup()
                 }
@@ -377,9 +375,7 @@ struct SettingsView: View {
                     title: "Application",
                     subtitle: "Preferences, updates, about."
                 ) {
-                    withAnimation(settingsPageAnimation) {
-                        page.wrappedValue = .application
-                    }
+                    page.wrappedValue = .application
                 }
             }
         }

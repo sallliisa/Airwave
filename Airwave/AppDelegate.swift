@@ -321,6 +321,10 @@ private enum WindowFronting {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidBecomeActive(_ notification: Notification) {
+        AudioRuntimeController.shared.refreshSystemAudioAccess()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         Logger.log("[AppDelegate] Airwave safe shell launched")
         ApplicationLifecycleCoordinator.shared.updateActivationPolicy()

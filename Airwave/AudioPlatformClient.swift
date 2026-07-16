@@ -85,6 +85,11 @@ nonisolated struct AudioTapHandle: Hashable, Sendable { let value: UInt64 }
 nonisolated struct PrivateAggregateHandle: Hashable, Sendable { let value: UInt64 }
 nonisolated struct AudioIOHandle: Hashable, Sendable { let value: UInt64 }
 
+nonisolated enum AudioTapMuteBehavior: Equatable, Sendable {
+    case unmuted
+    case mutedWhenTapped
+}
+
 nonisolated struct GlobalStereoTapRequest: Equatable, Sendable {
     let excludedProcess: AudioProcessHandle
     let outputDeviceUID: String
@@ -92,16 +97,20 @@ nonisolated struct GlobalStereoTapRequest: Equatable, Sendable {
     let isGlobal: Bool
     let channelCount: Int
     let isPrivate: Bool
-    let mutedWhenTapped: Bool
+    let muteBehavior: AudioTapMuteBehavior
 
-    init(excludedProcess: AudioProcessHandle, output: OutputDeviceDescriptor) {
+    init(
+        excludedProcess: AudioProcessHandle,
+        output: OutputDeviceDescriptor,
+        muteBehavior: AudioTapMuteBehavior = .mutedWhenTapped
+    ) {
         self.excludedProcess = excludedProcess
         self.outputDeviceUID = output.uid
         self.streamIndex = 0
         self.isGlobal = true
         self.channelCount = 2
         self.isPrivate = true
-        self.mutedWhenTapped = true
+        self.muteBehavior = muteBehavior
     }
 }
 
@@ -118,6 +127,12 @@ nonisolated enum AudioRuntimeError: Error, Equatable {
     case cleanupFailed(String)
 }
 
+nonisolated enum SystemAudioPermissionStatus: Equatable, Sendable {
+    case unknown
+    case denied
+    case granted
+}
+
 typealias DefaultOutputChangeHandler = (OutputDeviceDescriptor?) -> Void
 typealias AvailableOutputChangeHandler = ([OutputDeviceDescriptor]) -> Void
 typealias AudioIOCallback = (
@@ -127,6 +142,14 @@ typealias AudioIOCallback = (
     _ outputRight: UnsafeMutablePointer<Float>,
     _ frameCount: Int
 ) -> Void
+
+nonisolated enum AudioCaptureVerificationEvent: Equatable, Sendable {
+    case tapReady
+    case permissionDenied
+    case renderFailed(OSStatus)
+}
+
+typealias AudioCaptureVerificationHandler = @Sendable (AudioCaptureVerificationEvent) -> Void
 
 /// Capability-oriented Core Audio boundary. It intentionally contains no route or volume writes.
 nonisolated protocol AudioPlatformClient: AnyObject {
@@ -149,13 +172,28 @@ nonisolated protocol AudioPlatformClient: AnyObject {
 
     func createIO(
         aggregate: PrivateAggregateHandle,
-        callback: @escaping AudioIOCallback
+        callback: @escaping AudioIOCallback,
+        verificationHandler: @escaping AudioCaptureVerificationHandler
     ) throws -> AudioIOHandle
     func startIO(_ io: AudioIOHandle) throws
     func stopIO(_ io: AudioIOHandle) throws
     func destroyIO(_ io: AudioIOHandle) throws
 
+    func systemAudioPermissionStatus() -> SystemAudioPermissionStatus
+    func requestSystemAudioPermission(
+        _ completion: @escaping @Sendable (SystemAudioPermissionStatus) -> Void
+    )
     func openAudioCapturePermissionSettings()
+}
+
+extension AudioPlatformClient {
+    func systemAudioPermissionStatus() -> SystemAudioPermissionStatus { .unknown }
+
+    func requestSystemAudioPermission(
+        _ completion: @escaping @Sendable (SystemAudioPermissionStatus) -> Void
+    ) {
+        completion(.unknown)
+    }
 }
 
 nonisolated protocol OutputDeviceDiscovering: AnyObject {

@@ -26,6 +26,51 @@ final class CoreAudioPlatformClientTests: XCTestCase {
             CoreAudioErrorMapping.ioStart(-50),
             .ioStartFailed("Start HAL unit failed (OSStatus -50)")
         )
+        XCTAssertEqual(CoreAudioErrorMapping.ioStart(kAudioDevicePermissionsError), .permissionDenied)
+    }
+
+    func testSuccessfulRenderReportsTapReady() {
+        XCTAssertEqual(AudioCaptureVerificationPolicy.event(forRenderStatus: noErr), .tapReady)
+    }
+
+    func testSystemAudioPermissionPreflightMappingAndMissingSPI() {
+        XCTAssertEqual(SystemAudioPermissionSPI.status(forPreflightResult: 0), .granted)
+        XCTAssertEqual(SystemAudioPermissionSPI.status(forPreflightResult: 1), .denied)
+        XCTAssertEqual(SystemAudioPermissionSPI.status(forPreflightResult: 2), .unknown)
+        XCTAssertEqual(SystemAudioPermissionSPI.status(forPreflightResult: -1), .unknown)
+        XCTAssertEqual(SystemAudioPermissionSPI.currentStatus(using: nil), .unknown)
+    }
+
+    func testPermissionRequestRequiresMatchingGrantedPreflight() {
+        XCTAssertEqual(
+            SystemAudioPermissionSPI.resolvedRequestStatus(
+                requestGranted: true,
+                preflightStatus: .granted
+            ),
+            .granted
+        )
+        XCTAssertEqual(
+            SystemAudioPermissionSPI.resolvedRequestStatus(
+                requestGranted: true,
+                preflightStatus: .denied
+            ),
+            .unknown
+        )
+        XCTAssertEqual(
+            SystemAudioPermissionSPI.resolvedRequestStatus(
+                requestGranted: false,
+                preflightStatus: .granted
+            ),
+            .denied
+        )
+    }
+
+    func testRenderVerificationSeparatesPermissionAndGenericFailures() {
+        XCTAssertEqual(
+            AudioCaptureVerificationPolicy.event(forRenderStatus: kAudioDevicePermissionsError),
+            .permissionDenied
+        )
+        XCTAssertEqual(AudioCaptureVerificationPolicy.event(forRenderStatus: -50), .renderFailed(-50))
     }
 
     func testCleanupRemovesDisposedContextWhileReportingUninitializeFailure() {

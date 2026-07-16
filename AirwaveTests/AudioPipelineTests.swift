@@ -27,8 +27,35 @@ final class AudioPipelineTests: XCTestCase {
         XCTAssertEqual(platform.tapRequests[0].streamIndex, 0)
         XCTAssertTrue(platform.tapRequests[0].isGlobal)
         XCTAssertTrue(platform.tapRequests[0].isPrivate)
-        XCTAssertTrue(platform.tapRequests[0].mutedWhenTapped)
+        XCTAssertEqual(platform.tapRequests[0].muteBehavior, .mutedWhenTapped)
         XCTAssertEqual(platform.tapRequests[0].channelCount, 2)
+        XCTAssertTrue(platform.hasNoLiveResources)
+    }
+
+    func testPipelineForwardsCaptureVerificationEvents() throws {
+        let platform = RecordingAudioPlatformClient()
+        let pipeline = AudioPipeline(platform: platform, processor: PassthroughProcessor())
+        var events: [AudioCaptureVerificationEvent] = []
+
+        try pipeline.start(on: platform.output) { events.append($0) }
+        platform.verificationHandler?(.tapReady)
+
+        XCTAssertEqual(events, [.tapReady])
+        try pipeline.stop()
+    }
+
+    func testUnmutedProbeReachesPlatformWithoutChangingLifecycle() throws {
+        let platform = RecordingAudioPlatformClient()
+        let pipeline = AudioPipeline(platform: platform, processor: PassthroughProcessor())
+
+        try pipeline.start(
+            on: platform.output,
+            muteBehavior: .unmuted,
+            verificationHandler: { _ in }
+        )
+
+        XCTAssertEqual(platform.tapRequests.map(\.muteBehavior), [.unmuted])
+        try pipeline.stop()
         XCTAssertTrue(platform.hasNoLiveResources)
     }
 
@@ -275,6 +302,7 @@ private final class RecordingAudioPlatformClient: AudioPlatformClient {
     var tapStreamFormat = AudioStreamFormat.stereo(sampleRate: 48_000)
     var aggregateStreamFormat = AudioStreamFormat.stereo(sampleRate: 48_000)
     private(set) var liveResources: Set<Resource> = []
+    private(set) var verificationHandler: AudioCaptureVerificationHandler?
     private var ioIsStarted = false
 
     var hasNoLiveResources: Bool { liveResources.isEmpty && !ioIsStarted }
@@ -315,10 +343,15 @@ private final class RecordingAudioPlatformClient: AudioPlatformClient {
         if failurePoint == .aggregateFormat { throw AudioRuntimeError.deviceLost }
         return aggregateStreamFormat
     }
-    func createIO(aggregate: PrivateAggregateHandle, callback: @escaping AudioIOCallback) throws -> AudioIOHandle {
+    func createIO(
+        aggregate: PrivateAggregateHandle,
+        callback: @escaping AudioIOCallback,
+        verificationHandler: @escaping AudioCaptureVerificationHandler
+    ) throws -> AudioIOHandle {
         events.append("createIO")
         if failurePoint == .createIO { throw AudioRuntimeError.ioCreationFailed("test") }
         liveResources.insert(.io)
+        self.verificationHandler = verificationHandler
         return io
     }
     func startIO(_ io: AudioIOHandle) throws {

@@ -1,6 +1,7 @@
 import AppKit
 import AudioToolbox
 import CoreAudio
+import Darwin
 import Foundation
 
 nonisolated enum CoreAudioStatus {
@@ -25,10 +26,80 @@ nonisolated enum CoreAudioErrorMapping {
     }
 
     static func ioStart(_ status: OSStatus) -> AudioRuntimeError {
-        if status == kAudioHardwareIllegalOperationError {
+        if isPermissionDenied(status) {
             return .permissionDenied
         }
         return .ioStartFailed(CoreAudioStatus.creationError(status, operation: "Start HAL unit"))
+    }
+
+    static func isPermissionDenied(_ status: OSStatus) -> Bool {
+        status == kAudioHardwareIllegalOperationError || status == kAudioDevicePermissionsError
+    }
+}
+
+nonisolated enum AudioCaptureVerificationPolicy {
+    static func event(forRenderStatus status: OSStatus) -> AudioCaptureVerificationEvent {
+        if status == noErr { return .tapReady }
+        if CoreAudioErrorMapping.isPermissionDenied(status) { return .permissionDenied }
+        return .renderFailed(status)
+    }
+}
+
+nonisolated enum SystemAudioPermissionSPI {
+    typealias PreflightFunction = @convention(c) (CFString, CFDictionary?) -> Int
+    typealias RequestFunction = @convention(c) (
+        CFString,
+        CFDictionary?,
+        @escaping @convention(block) (Bool) -> Void
+    ) -> Void
+
+    private static let service = "kTCCServiceAudioCapture" as CFString
+    private static let frameworkHandle = dlopen(
+        "/System/Library/PrivateFrameworks/TCC.framework/Versions/A/TCC",
+        RTLD_NOW
+    )
+    private static let preflight: PreflightFunction? = load("TCCAccessPreflight")
+    private static let request: RequestFunction? = load("TCCAccessRequest")
+
+    static func currentStatus(using preflight: PreflightFunction? = preflight) -> SystemAudioPermissionStatus {
+        guard let preflight else { return .unknown }
+        return status(forPreflightResult: preflight(service, nil))
+    }
+
+    static func status(forPreflightResult result: Int) -> SystemAudioPermissionStatus {
+        switch result {
+        case 0: .granted
+        case 1: .denied
+        default: .unknown
+        }
+    }
+
+    static func resolvedRequestStatus(
+        requestGranted: Bool,
+        preflightStatus: SystemAudioPermissionStatus
+    ) -> SystemAudioPermissionStatus {
+        guard requestGranted else { return .denied }
+        return preflightStatus == .granted ? .granted : .unknown
+    }
+
+    static func requestAccess(
+        _ completion: @escaping @Sendable (SystemAudioPermissionStatus) -> Void
+    ) {
+        guard let request else {
+            completion(.unknown)
+            return
+        }
+        request(service, nil) { granted in
+            completion(resolvedRequestStatus(
+                requestGranted: granted,
+                preflightStatus: currentStatus()
+            ))
+        }
+    }
+
+    private static func load<T>(_ symbol: String) -> T? {
+        guard let frameworkHandle, let address = dlsym(frameworkHandle, symbol) else { return nil }
+        return unsafeBitCast(address, to: T.self)
     }
 }
 
@@ -136,13 +207,20 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
     fileprivate final class IOContext {
         let unit: AudioUnit
         let callback: AudioIOCallback
+        let verificationHandler: AudioCaptureVerificationHandler
         let inputLeft: UnsafeMutablePointer<Float>
         let inputRight: UnsafeMutablePointer<Float>
         let inputListStorage: UnsafeMutableRawPointer
+        var verificationReported = false
 
-        init(unit: AudioUnit, callback: @escaping AudioIOCallback) {
+        init(
+            unit: AudioUnit,
+            callback: @escaping AudioIOCallback,
+            verificationHandler: @escaping AudioCaptureVerificationHandler
+        ) {
             self.unit = unit
             self.callback = callback
+            self.verificationHandler = verificationHandler
             inputLeft = .allocate(capacity: StereoCallbackBridge.maximumFrames)
             inputRight = .allocate(capacity: StereoCallbackBridge.maximumFrames)
             let byteCount = MemoryLayout<AudioBufferList>.size + MemoryLayout<AudioBuffer>.size
@@ -319,7 +397,6 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
         guard request.isGlobal,
               request.channelCount == 2,
               request.isPrivate,
-              request.mutedWhenTapped,
               !request.outputDeviceUID.isEmpty,
               request.streamIndex >= 0 else {
             throw AudioRuntimeError.tapCreationFailed("Invalid global stereo tap request")
@@ -332,7 +409,12 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
         description.name = "Airwave Process Tap"
         description.uuid = instanceUUID
         description.isPrivate = true
-        description.muteBehavior = CATapMuteBehavior.mutedWhenTapped
+        switch request.muteBehavior {
+        case .unmuted:
+            description.muteBehavior = .unmuted
+        case .mutedWhenTapped:
+            description.muteBehavior = .mutedWhenTapped
+        }
 
         var tapID = AudioObjectID(kAudioObjectUnknown)
         let status = AudioHardwareCreateProcessTap(description, &tapID)
@@ -414,7 +496,11 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
         )
     }
 
-    func createIO(aggregate: PrivateAggregateHandle, callback: @escaping AudioIOCallback) throws -> AudioIOHandle {
+    func createIO(
+        aggregate: PrivateAggregateHandle,
+        callback: @escaping AudioIOCallback,
+        verificationHandler: @escaping AudioCaptureVerificationHandler
+    ) throws -> AudioIOHandle {
         let aggregateID = AudioObjectID(aggregate.value)
         guard aggregateIDs.contains(aggregateID) else { throw AudioRuntimeError.ioCreationFailed("Unknown aggregate") }
         var description = AudioComponentDescription(
@@ -446,7 +532,7 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
             var maximumFrames = UInt32(StereoCallbackBridge.maximumFrames)
             try setUnit(unit, property: kAudioUnitProperty_MaximumFramesPerSlice, scope: kAudioUnitScope_Global, element: 0, value: &maximumFrames)
 
-            let context = IOContext(unit: unit, callback: callback)
+            let context = IOContext(unit: unit, callback: callback, verificationHandler: verificationHandler)
             var render = AURenderCallbackStruct(
                 inputProc: coreAudioRenderCallback,
                 inputProcRefCon: Unmanaged.passUnretained(context).toOpaque()
@@ -499,6 +585,16 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
     func openAudioCapturePermissionSettings() {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture") else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    func systemAudioPermissionStatus() -> SystemAudioPermissionStatus {
+        SystemAudioPermissionSPI.currentStatus()
+    }
+
+    func requestSystemAudioPermission(
+        _ completion: @escaping @Sendable (SystemAudioPermissionStatus) -> Void
+    ) {
+        SystemAudioPermissionSPI.requestAccess(completion)
     }
 
     private func getSystemObjectValue<T>(selector: AudioObjectPropertySelector) throws -> T {
@@ -671,7 +767,17 @@ nonisolated private func coreAudioRenderCallback(
     let inputList = context.inputListStorage.assumingMemoryBound(to: AudioBufferList.self)
     var flags: AudioUnitRenderActionFlags = []
     let status = AudioUnitRender(context.unit, &flags, inTimeStamp, 1, inNumberFrames, inputList)
-    guard status == noErr else { return status }
+    guard status == noErr else {
+        if !context.verificationReported {
+            context.verificationReported = true
+            context.verificationHandler(AudioCaptureVerificationPolicy.event(forRenderStatus: status))
+        }
+        return status
+    }
+    if !context.verificationReported {
+        context.verificationReported = true
+        context.verificationHandler(AudioCaptureVerificationPolicy.event(forRenderStatus: status))
+    }
     context.callback(
         UnsafePointer<Float>(context.inputLeft),
         UnsafePointer<Float>(context.inputRight),

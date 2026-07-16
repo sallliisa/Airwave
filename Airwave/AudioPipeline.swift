@@ -29,8 +29,29 @@ extension HRIRManager: StereoAudioProcessing {
 }
 
 nonisolated protocol AudioPipelineControlling: AnyObject {
-    func start(on output: OutputDeviceDescriptor) throws
+    func start(
+        on output: OutputDeviceDescriptor,
+        muteBehavior: AudioTapMuteBehavior,
+        verificationHandler: @escaping AudioCaptureVerificationHandler
+    ) throws
     func stop() throws
+}
+
+extension AudioPipelineControlling {
+    func start(
+        on output: OutputDeviceDescriptor,
+        verificationHandler: @escaping AudioCaptureVerificationHandler
+    ) throws {
+        try start(
+            on: output,
+            muteBehavior: .mutedWhenTapped,
+            verificationHandler: verificationHandler
+        )
+    }
+
+    func start(on output: OutputDeviceDescriptor) throws {
+        try start(on: output, muteBehavior: .mutedWhenTapped, verificationHandler: { _ in })
+    }
 }
 
 extension RealtimeAudioProcessor: StereoAudioProcessing {
@@ -75,10 +96,18 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
     }
 
     func start() throws {
-        try start(on: platform.defaultOutputDevice())
+        try start(on: platform.defaultOutputDevice(), muteBehavior: .mutedWhenTapped, verificationHandler: { _ in })
     }
 
     func start(on output: OutputDeviceDescriptor) throws {
+        try start(on: output, muteBehavior: .mutedWhenTapped, verificationHandler: { _ in })
+    }
+
+    func start(
+        on output: OutputDeviceDescriptor,
+        muteBehavior: AudioTapMuteBehavior,
+        verificationHandler: @escaping AudioCaptureVerificationHandler
+    ) throws {
         guard tap == nil, aggregate == nil, io == nil else { return }
 
         do {
@@ -87,7 +116,11 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
             }
 
             let process = try platform.resolveOwnProcess()
-            let request = GlobalStereoTapRequest(excludedProcess: process, output: output)
+            let request = GlobalStereoTapRequest(
+                excludedProcess: process,
+                output: output,
+                muteBehavior: muteBehavior
+            )
             let createdTap = try platform.createGlobalStereoTap(request)
             tap = createdTap
 
@@ -105,15 +138,19 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
                 throw AudioRuntimeError.formatMismatch(expected: tapFormat, actual: aggregateFormat)
             }
 
-            let createdIO = try platform.createIO(aggregate: createdAggregate) { [processor] inLeft, inRight, outLeft, outRight, frames in
-                processor.process(
-                    inputLeft: inLeft,
-                    inputRight: inRight,
-                    outputLeft: outLeft,
-                    outputRight: outRight,
-                    frameCount: frames
-                )
-            }
+            let createdIO = try platform.createIO(
+                aggregate: createdAggregate,
+                callback: { [processor] inLeft, inRight, outLeft, outRight, frames in
+                    processor.process(
+                        inputLeft: inLeft,
+                        inputRight: inRight,
+                        outputLeft: outLeft,
+                        outputRight: outRight,
+                        frameCount: frames
+                    )
+                },
+                verificationHandler: verificationHandler
+            )
             io = createdIO
             try platform.startIO(createdIO)
             ioStarted = true
