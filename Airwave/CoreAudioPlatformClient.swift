@@ -132,7 +132,7 @@ nonisolated enum StereoCallbackBridge {
     }
 }
 
-nonisolated final class CoreAudioPlatformClient: AudioPlatformClient {
+nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDeviceDiscovering {
     fileprivate final class IOContext {
         let unit: AudioUnit
         let callback: AudioIOCallback
@@ -177,27 +177,69 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient {
     private var nextIOHandle: UInt64 = 1
     private var defaultOutputHandler: DefaultOutputChangeHandler?
     private var defaultOutputListenerInstalled = false
+    private var availableOutputHandler: AvailableOutputChangeHandler?
+    private var availableOutputListenerInstalled = false
 
     func defaultOutputDevice() throws -> OutputDeviceDescriptor {
         let deviceID: AudioObjectID = try getSystemObjectValue(selector: kAudioHardwarePropertyDefaultOutputDevice)
         guard deviceID != kAudioObjectUnknown else { throw AudioRuntimeError.noOutputDevice }
-        let uid: String = try getObjectCFString(deviceID, selector: kAudioDevicePropertyDeviceUID)
-        let name: String = try getObjectCFString(deviceID, selector: kAudioObjectPropertyName)
-        let transport: UInt32 = try getObjectValue(deviceID, selector: kAudioDevicePropertyTransportType)
-        let sampleRate: Float64 = try getObjectValue(deviceID, selector: kAudioDevicePropertyNominalSampleRate)
-        let channels = try channelCount(deviceID, scope: kAudioObjectPropertyScopeOutput)
-        let isAggregate = transport == kAudioDeviceTransportTypeAggregate
-        let isVirtual = transport == kAudioDeviceTransportTypeVirtual || isAggregate
-        return OutputDeviceDescriptor(
-            id: .init(UInt64(deviceID)),
-            uid: uid,
-            name: name,
-            transport: fourCC(transport),
-            outputChannelCount: channels,
-            nominalSampleRate: sampleRate,
-            isVirtual: isVirtual,
-            isAggregate: isAggregate
+        return try descriptor(for: deviceID)
+    }
+
+    func availableOutputDevices() throws -> [OutputDeviceDescriptor] {
+        let deviceIDs = try availableDeviceIDs()
+        var descriptorsByUID: [String: OutputDeviceDescriptor] = [:]
+        for deviceID in deviceIDs {
+            do {
+                let descriptor = try descriptor(for: deviceID)
+                guard descriptor.isSupportedProfileOutput else { continue }
+                descriptorsByUID[descriptor.uid] = descriptor
+            } catch {
+                Logger.log("[CoreAudio] Skipping unavailable device \(deviceID): \(error)")
+            }
+        }
+        return descriptorsByUID.values.sorted(by: Self.sortDescriptors)
+    }
+
+    func observeAvailableOutputs(_ handler: @escaping AvailableOutputChangeHandler) throws {
+        stopObservingAvailableOutputs()
+        availableOutputHandler = handler
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
         )
+        let status = AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            .main,
+            availableOutputListener
+        )
+        guard status == noErr else {
+            availableOutputHandler = nil
+            throw AudioRuntimeError.deviceLost
+        }
+        availableOutputListenerInstalled = true
+    }
+
+    func stopObservingAvailableOutputs() {
+        guard availableOutputListenerInstalled else {
+            availableOutputHandler = nil
+            return
+        }
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        AudioObjectRemovePropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            .main,
+            availableOutputListener
+        )
+        availableOutputListenerInstalled = false
+        availableOutputHandler = nil
     }
 
     func observeDefaultOutput(_ handler: @escaping DefaultOutputChangeHandler) throws {
@@ -239,6 +281,15 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient {
     private lazy var defaultOutputListener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
         guard let self else { return }
         self.defaultOutputHandler?(try? self.defaultOutputDevice())
+    }
+
+    private lazy var availableOutputListener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+        guard let self else { return }
+        guard let outputs = try? self.availableOutputDevices() else {
+            Logger.log("[CoreAudio] Unable to refresh available output devices")
+            return
+        }
+        self.availableOutputHandler?(outputs)
     }
 
     func resolveOwnProcess() throws -> AudioProcessHandle {
@@ -452,6 +503,55 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient {
 
     private func getSystemObjectValue<T>(selector: AudioObjectPropertySelector) throws -> T {
         try getObjectValue(AudioObjectID(kAudioObjectSystemObject), selector: selector)
+    }
+
+    private func availableDeviceIDs() throws -> [AudioObjectID] {
+        let systemObject = AudioObjectID(kAudioObjectSystemObject)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var size: UInt32 = 0
+        let sizeStatus = AudioObjectGetPropertyDataSize(systemObject, &address, 0, nil, &size)
+        guard sizeStatus == noErr else { throw AudioRuntimeError.deviceLost }
+        guard size > 0 else { return [] }
+        let byteCount = Int(size)
+        let storage = UnsafeMutableRawPointer.allocate(
+            byteCount: byteCount,
+            alignment: MemoryLayout<AudioObjectID>.alignment
+        )
+        defer { storage.deallocate() }
+        let dataStatus = AudioObjectGetPropertyData(systemObject, &address, 0, nil, &size, storage)
+        guard dataStatus == noErr else { throw AudioRuntimeError.deviceLost }
+        let count = byteCount / MemoryLayout<AudioObjectID>.stride
+        let pointer = storage.assumingMemoryBound(to: AudioObjectID.self)
+        return Array(UnsafeBufferPointer(start: pointer, count: count))
+    }
+
+    private func descriptor(for deviceID: AudioObjectID) throws -> OutputDeviceDescriptor {
+        let uid: String = try getObjectCFString(deviceID, selector: kAudioDevicePropertyDeviceUID)
+        let name: String = try getObjectCFString(deviceID, selector: kAudioObjectPropertyName)
+        let transport: UInt32 = try getObjectValue(deviceID, selector: kAudioDevicePropertyTransportType)
+        let sampleRate: Float64 = try getObjectValue(deviceID, selector: kAudioDevicePropertyNominalSampleRate)
+        let channels = try channelCount(deviceID, scope: kAudioObjectPropertyScopeOutput)
+        let isAggregate = transport == kAudioDeviceTransportTypeAggregate
+        let isVirtual = transport == kAudioDeviceTransportTypeVirtual || isAggregate
+        return OutputDeviceDescriptor(
+            id: .init(UInt64(deviceID)),
+            uid: uid,
+            name: name,
+            transport: fourCC(transport),
+            outputChannelCount: channels,
+            nominalSampleRate: sampleRate,
+            isVirtual: isVirtual,
+            isAggregate: isAggregate
+        )
+    }
+
+    private static func sortDescriptors(_ lhs: OutputDeviceDescriptor, _ rhs: OutputDeviceDescriptor) -> Bool {
+        let comparison = lhs.name.localizedCaseInsensitiveCompare(rhs.name)
+        return comparison == .orderedSame ? lhs.uid < rhs.uid : comparison == .orderedAscending
     }
 
     private func getObjectValue<T>(_ objectID: AudioObjectID, selector: AudioObjectPropertySelector) throws -> T {

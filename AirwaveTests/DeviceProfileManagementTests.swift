@@ -21,11 +21,11 @@ final class DeviceProfileManagementTests: XCTestCase {
         let importedPreset = try XCTUnwrap(imported.first)
         XCTAssertEqual(importedPreset.displayName, "Warm")
 
-        context.profiles.observe(profileDevice(id: 1, uid: "remembered", name: "Remembered"))
+        seedProfile(context.profiles, profileDevice(id: 1, uid: "remembered", name: "Remembered"))
         context.profiles.setHRIRPresetID(hrirID, for: "remembered")
         context.profiles.setEqualizerPresetID(importedPreset.id, for: "remembered")
         context.date = context.date.addingTimeInterval(1)
-        context.profiles.observe(profileDevice(id: 2, uid: "current", name: "Current", transport: "USB"))
+        seedProfile(context.profiles, profileDevice(id: 2, uid: "current", name: "Current", transport: "USB"))
 
         let coordinator = context.coordinator()
         XCTAssertEqual(coordinator.rows.map(\.deviceName), ["Current", "Remembered"])
@@ -40,9 +40,9 @@ final class DeviceProfileManagementTests: XCTestCase {
 
     func testActionEnabledStatesMatchProfileAndCurrentStatus() throws {
         let context = try ManagementContext()
-        context.profiles.observe(profileDevice(id: 1, uid: "blank", name: "Blank"))
+        seedProfile(context.profiles, profileDevice(id: 1, uid: "blank", name: "Blank"))
         context.date = context.date.addingTimeInterval(1)
-        context.profiles.observe(profileDevice(id: 2, uid: "current", name: "Current"))
+        seedProfile(context.profiles, profileDevice(id: 2, uid: "current", name: "Current"))
 
         let rows = context.coordinator().rows
         let current = try XCTUnwrap(rows.first { $0.id == "current" })
@@ -55,10 +55,10 @@ final class DeviceProfileManagementTests: XCTestCase {
 
     func testResetConfirmationCancelAndConfirmUseExpectedCopyAndOneManagerCall() throws {
         let context = try ManagementContext()
-        context.profiles.observe(profileDevice(id: 1, uid: "remembered", name: "Studio DAC"))
+        seedProfile(context.profiles, profileDevice(id: 1, uid: "remembered", name: "Studio DAC"))
         context.profiles.setHRIRPresetID(UUID())
         context.date = context.date.addingTimeInterval(1)
-        context.profiles.observe(profileDevice(id: 2, uid: "current", name: "Current"))
+        seedProfile(context.profiles, profileDevice(id: 2, uid: "current", name: "Current"))
         var resetCalls: [String] = []
         let coordinator = context.coordinator(resetOperation: { uid in
             resetCalls.append(uid)
@@ -86,9 +86,9 @@ final class DeviceProfileManagementTests: XCTestCase {
 
     func testForgetConfirmationAndResultUseExpectedCopyAndManagerCall() throws {
         let context = try ManagementContext()
-        context.profiles.observe(profileDevice(id: 1, uid: "remembered", name: "Studio DAC"))
+        seedProfile(context.profiles, profileDevice(id: 1, uid: "remembered", name: "Studio DAC"))
         context.date = context.date.addingTimeInterval(1)
-        context.profiles.observe(profileDevice(id: 2, uid: "current", name: "Current"))
+        seedProfile(context.profiles, profileDevice(id: 2, uid: "current", name: "Current"))
         var forgetCalls: [String] = []
         let coordinator = context.coordinator(forgetOperation: { uid in
             forgetCalls.append(uid)
@@ -101,20 +101,20 @@ final class DeviceProfileManagementTests: XCTestCase {
             deviceUID: "remembered",
             deviceName: "Studio DAC",
             title: "Forget Studio DAC?",
-            message: "If this device is encountered again, Airwave will recreate a blank profile.",
+            message: "If this device remains available, its profile can be recreated from the device selector.",
             destructiveButtonTitle: "Forget Device"
         ))
         XCTAssertTrue(coordinator.confirmPendingAction())
         XCTAssertEqual(forgetCalls, ["remembered"])
         XCTAssertEqual(
             coordinator.result?.text,
-            "Forgot Studio DAC. If it appears again, Airwave will recreate a blank profile."
+            "Forgot Studio DAC. Select it from the device selector to recreate its profile."
         )
     }
 
     func testCurrentForgetIsDisabledAndCannotCreateConfirmation() throws {
         let context = try ManagementContext()
-        context.profiles.observe(profileDevice(id: 1, uid: "current", name: "Current"))
+        seedProfile(context.profiles, profileDevice(id: 1, uid: "current", name: "Current"))
         let coordinator = context.coordinator()
 
         XCTAssertFalse(try XCTUnwrap(coordinator.rows.first).canForget)
@@ -194,4 +194,13 @@ private func profileDevice(
         outputChannelCount: channels, nominalSampleRate: 48_000,
         isVirtual: virtual, isAggregate: aggregate
     )
+}
+
+@MainActor
+private func seedProfile(_ manager: DeviceProfileManager, _ output: OutputDeviceDescriptor) {
+    manager.updateAvailableOutputs([output])
+    manager.selectEditingDevice(uid: output.uid)
+    manager.setHRIRPresetID(UUID(), for: output.uid)
+    manager.setHRIRPresetID(nil, for: output.uid)
+    manager.observeCurrentOutput(output)
 }

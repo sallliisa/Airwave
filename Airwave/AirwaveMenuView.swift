@@ -191,7 +191,7 @@ struct AirwaveMenuView: View {
 
             Divider().padding(.horizontal, AirwaveLayout.menuDividerInset)
 
-            MenuActionRow(title: "Quit Airwave and Stop Processing", systemImage: "power") { viewModel.quitApp() }
+            MenuActionRow(title: "Quit Airwave") { viewModel.quitApp() }
                 .padding(.vertical, AirwaveLayout.menuGroupPadding)
         }
         .frame(width: 280)

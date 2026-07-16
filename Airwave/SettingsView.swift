@@ -1,13 +1,6 @@
 import AppKit
 import SwiftUI
 
-private struct SettingsRightColumnHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
-
 private struct SettingsWindowAccessor: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
@@ -33,6 +26,7 @@ struct SettingsWindowContent: View {
     @ObservedObject private var profiles = DeviceProfileManager.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var onboardingNavigationDirection: OnboardingNavigationDirection = .forward
+    @State private var isQuitConfirmationPresented = false
 
     var body: some View {
         ZStack {
@@ -53,6 +47,17 @@ struct SettingsWindowContent: View {
         .frame(width: SettingsWindowPresenter.contentSize.width, height: SettingsWindowPresenter.contentSize.height)
         .background(SettingsWindowAccessor())
         .clipped()
+        .confirmationDialog(
+            "Quit Airwave?",
+            isPresented: $isQuitConfirmationPresented
+        ) {
+            Button("Quit Airwave", role: .destructive) {
+                ApplicationLifecycleCoordinator.shared.requestExplicitQuit()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Audio processing will stop and Airwave will quit.")
+        }
     }
 
     @ViewBuilder
@@ -106,16 +111,16 @@ struct SettingsWindowContent: View {
 
     private var deviceMenu: some View {
         Group {
-            if let editing = profiles.editingProfile {
+            if let editing = profiles.editingTarget {
                 Menu {
-                    ForEach(profiles.sortedProfiles) { profile in
+                    ForEach(profiles.targets) { target in
                         Button {
-                            profiles.selectEditingDevice(uid: profile.deviceUID)
+                            profiles.selectEditingDevice(uid: target.deviceUID)
                         } label: {
                             HStack {
-                                if profile.deviceUID == profiles.editingDeviceUID { Image(systemName: "checkmark") }
-                                Text(profile.deviceName)
-                                if profile.deviceUID == profiles.currentDeviceUID { Text("Current") }
+                                if target.deviceUID == profiles.editingDeviceUID { Image(systemName: "checkmark") }
+                                Text(target.deviceName)
+                                if target.isCurrent { Text("Current") }
                             }
                         }
                     }
@@ -145,13 +150,14 @@ struct SettingsWindowContent: View {
                 .foregroundStyle(.secondary)
         case .settings:
             Button {
-                ApplicationLifecycleCoordinator.shared.requestExplicitQuit()
+                isQuitConfirmationPresented = true
             } label: {
-                Label("Quit Airwave and Stop Processing", systemImage: "power")
+                Image(systemName: "power")
             }
             .buttonStyle(.plain)
             .font(.system(size: 12, weight: .medium))
             .foregroundStyle(.red)
+            .accessibilityLabel("Quit Airwave and stop processing")
             .help("Quit Airwave and stop audio processing")
         }
     }
@@ -181,59 +187,43 @@ struct SettingsView: View {
     @ObservedObject private var updateManager = UpdateManager.shared
     @EnvironmentObject private var viewModel: MenuBarViewModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var rightColumnHeight: CGFloat = 0
 
     var body: some View {
         ZStack {
             AirwavePalette.canvas.ignoresSafeArea()
 
-            VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
-                pageHeader
-                ZStack(alignment: .topLeading) {
-                    settingsPageContent
-                }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .animation(settingsPageAnimation, value: page.wrappedValue)
+            AirwavePageLayout(mode: pageLayoutMode) {
+                VStack(alignment: .leading, spacing: 0) {
+                    pageHeader
 
-                #if DEBUG
-                if page.wrappedValue == .general {
-                    debugSection
+                    Color.clear.frame(height: AirwaveLayout.pageHeaderContentMinimumSpacing)
+
+                    VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
+                        ZStack(alignment: .topLeading) {
+                            settingsPageContent
+                        }
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .animation(settingsPageAnimation, value: page.wrappedValue)
+
+                        #if DEBUG
+                        if page.wrappedValue == .general {
+                            debugSection
+                        }
+                        #endif
+                    }
                 }
-                #endif
             }
-            .padding(settingsContentPadding)
-            .frame(
-                maxWidth: settingsContentMaxWidth,
-                maxHeight: settingsContentMaxHeight,
-                alignment: .topLeading
-            )
-            .frame(maxWidth: .infinity, alignment: .top)
 
         }
         .frame(width: 900, height: 600)
         .preferredColorScheme(.dark)
     }
 
-    private var settingsContentPadding: EdgeInsets {
-        guard page.wrappedValue == .application || page.wrappedValue == .devices else {
-            return EdgeInsets(top: 80, leading: 24, bottom: 24, trailing: 24)
+    private var pageLayoutMode: AirwavePageLayoutMode {
+        switch page.wrappedValue {
+        case .general, .equalizer: .fullScreen
+        case .devices, .application: .compact
         }
-        return EdgeInsets(
-            top: AirwaveLayout.onboardingContentTopPadding,
-            leading: AirwaveLayout.onboardingContentHorizontalPadding,
-            bottom: AirwaveLayout.onboardingContentBottomPadding,
-            trailing: AirwaveLayout.onboardingContentHorizontalPadding
-        )
-    }
-
-    private var settingsContentMaxWidth: CGFloat {
-        page.wrappedValue == .application || page.wrappedValue == .devices
-            ? AirwaveLayout.onboardingContentMaxWidth
-            : 1000
-    }
-
-    private var settingsContentMaxHeight: CGFloat? {
-        page.wrappedValue == .application || page.wrappedValue == .devices ? .infinity : nil
     }
 
     private var settingsPageAnimation: Animation? {
@@ -258,29 +248,20 @@ struct SettingsView: View {
     }
 
     private var generalPage: some View {
-        HStack(alignment: .top, spacing: AirwaveLayout.cardSpacing) {
+        AirwaveEqualHeightColumnsLayout(spacing: AirwaveLayout.cardSpacing) {
             spatialProfileSection
-                .frame(maxWidth: .infinity, alignment: .top)
-                .frame(height: rightColumnHeight > 0 ? rightColumnHeight : nil, alignment: .top)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             rightColumn
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .onPreferenceChange(SettingsRightColumnHeightKey.self) { height in
-            guard abs(height - rightColumnHeight) > 0.5 else { return }
-            rightColumnHeight = height
-        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private var rightColumn: some View {
         VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
-            hrirResourcesSection
             applicationSection
         }
         .frame(maxWidth: .infinity, alignment: .top)
-        .background {
-            GeometryReader { proxy in
-                Color.clear.preference(key: SettingsRightColumnHeightKey.self, value: proxy.size.height)
-            }
-        }
     }
 
     private var pageHeader: some View {
@@ -352,7 +333,7 @@ struct SettingsView: View {
 
                 AirwavePresetFilesRow(action: viewModel.openPresetsDirectory)
             }
-            .frame(minHeight: 300, maxHeight: .infinity)
+            .frame(maxHeight: .infinity)
             .airwaveHRIRDropTarget(manager: hrirManager)
         }
         .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: AirwaveLayout.cardCornerRadius))
@@ -377,8 +358,8 @@ struct SettingsView: View {
                 }
 
                 AirwaveNavigationCard(
-                    title: "Devices",
-                    subtitle: "Review and manage remembered output profiles."
+                    title: "Registered Devices",
+                    subtitle: "Inspect and manage the HRIR and EQ profiles you have saved."
                 ) {
                     withAnimation(settingsPageAnimation) {
                         page.wrappedValue = .devices
@@ -484,33 +465,6 @@ struct SettingsView: View {
                     action: viewModel.showAbout
                 )
             }
-            .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: AirwaveLayout.cardCornerRadius))
-        }
-    }
-
-    private var hrirResourcesSection: some View {
-        VStack(alignment: .leading, spacing: AirwaveLayout.sectionContentSpacing) {
-            AirwaveSectionHeader(
-                title: "HRIR Resources",
-                subtitle: "Find more compatible spatial profiles."
-            )
-
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("Get HRIR Presets").font(.system(size: 12, weight: .semibold))
-                    Spacer()
-                    Link(destination: URL(string: "https://airtable.com/embed/appac4r1cu9UpBNAN/shrpUAbtyZxhDDMjg/tblopH2GznvFipWjq/viwnouWPGDuYEd8Go")!) {
-                        Label("Open HRTF Database", systemImage: "link")
-                    }
-                    .font(.system(size: 11))
-                }
-                Text("Airwave works with HRIR presets compatible with HeSuVi.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-            .padding(AirwaveLayout.cardPadding)
-            .frame(maxWidth: .infinity, alignment: .leading)
             .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: AirwaveLayout.cardCornerRadius))
         }
     }

@@ -66,33 +66,36 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
         generation += 1
         let requestedGeneration = generation
         hrir.deactivatePreset()
-        guard output.isSupportedProfileOutput, let profile = profiles.observe(output) else {
+        guard output.isSupportedProfileOutput else {
+            profiles.observeCurrentOutput(nil)
             completion(.init(spatialReady: false, equalizerDefinition: nil))
             return
         }
+        profiles.observeCurrentOutput(output)
 
-        var resolvedProfile = profile
-        if let id = resolvedProfile.equalizerPresetID, equalizer.preset(id: id) == nil {
+        var hrirPresetID = profiles.currentProfile?.hrirPresetID
+        var equalizerPresetID = profiles.currentProfile?.equalizerPresetID
+        if let id = equalizerPresetID, equalizer.preset(id: id) == nil {
             isSanitizing = true
             profiles.clearMissingEqualizerPresetIDs([id])
             isSanitizing = false
-            resolvedProfile.equalizerPresetID = nil
+            equalizerPresetID = nil
         }
         if hrir.initialLibrarySyncReady,
-           let id = resolvedProfile.hrirPresetID,
+           let id = hrirPresetID,
            !hrir.presets.contains(where: { $0.id == id }) {
             isSanitizing = true
             profiles.clearMissingHRIRPresetIDs([id])
             isSanitizing = false
-            resolvedProfile.hrirPresetID = nil
+            hrirPresetID = nil
         }
 
-        let definition = equalizer.preset(id: resolvedProfile.equalizerPresetID)?.definition
-        if resolvedProfile.hrirPresetID != nil && !hrir.initialLibrarySyncReady {
+        let definition = equalizer.preset(id: equalizerPresetID)?.definition
+        if hrirPresetID != nil && !hrir.initialLibrarySyncReady {
             pendingPreparation = (output, completion)
             return
         }
-        guard let hrirID = resolvedProfile.hrirPresetID,
+        guard let hrirID = hrirPresetID,
               let preset = hrir.presets.first(where: { $0.id == hrirID }) else {
             completion(.init(spatialReady: false, equalizerDefinition: definition))
             return
@@ -125,7 +128,7 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
 
     func outputBecameUnsupportedOrUnavailable() {
         cancelPreparation()
-        _ = profiles.observe(nil)
+        profiles.observeCurrentOutput(nil)
     }
 
     private func profileChanged(_ change: DeviceProfileChange) {
