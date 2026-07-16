@@ -6,9 +6,10 @@ conditions, run every verification gate, and update the status row.
 
 ## Architecture decision
 
-Airwave will persist one complete `{HRIR, EQ}` profile per supported physical
+Airwave will persist one complete `{HRIR, EQ}` profile per configured physical
 stereo output, keyed by Core Audio device UID. There is no Global profile or
-inheritance. New devices start at None/None, so unseen outputs remain native.
+inheritance. Available unsaved devices have an effective None/None pair and
+remain transient until the first non-None effect choice.
 
 `DeviceProfileManager` owns persistence and UI editing state.
 `DeviceProfileRuntimeCoordinator` resolves and prepares the pair.
@@ -22,6 +23,7 @@ stop old processing and wait for the latest target pair before starting.
 |---|---|---|---|---|---|
 | [001](001-device-profile-runtime.md) | Apply a persistent HRIR and EQ profile per supported output device | P1 | L | — | DONE |
 | [002](002-device-profile-management.md) | Add a dedicated device profile management page | P2 | M | 001 | DONE |
+| [003](003-discover-available-output-devices.md) | Discover and configure selectable output devices before switching macOS output | P1 | M | 001, 002 | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) |
 REJECTED (with one-line rationale)
@@ -33,6 +35,9 @@ REJECTED (with one-line rationale)
 - 002 must follow 001 because Reset and Forget depend on the manager's atomic
   persistence and typed change events. It intentionally does not modify audio
   runtime code.
+- 003 follows the completed profile/runtime and management work. It adds a
+  transient Core Audio inventory beside persisted profiles, lazily materializes
+  a profile on the first non-None effect choice, and keeps Devices saved-only.
 
 ## Verification baseline
 
@@ -41,7 +46,7 @@ REJECTED (with one-line rationale)
 - The scheme's implicit test configuration selected Release locally and failed
   because the app module lacked `-enable-testing`. These plans use the verified
   explicit Debug command. Fixing scheme/CI configuration is unrelated and must
-  not be folded into either feature plan.
+  not be folded into these feature plans.
 
 ## Findings considered and rejected
 
@@ -51,8 +56,12 @@ REJECTED (with one-line rationale)
   because a device profile is intentionally one complete pair.
 - Reusable named templates in v1: deferred; useful for repeated configuration,
   but not required for safe device filtering.
-- Enumerate all connected outputs: deferred; current + remembered devices meets
-  the product need without expanding the Core Audio boundary.
+- Persist every enumerated output immediately: rejected because merely attaching
+  a dock, display, or temporary USB device should not create permanent profile
+  state. Plan 003 keeps availability transient until the first effect choice.
+- Show transient outputs in Devices management: rejected for plan 003 because
+  Reset and Forget operate on persisted state; the existing Settings selector
+  is the configuration surface for available unsaved outputs.
 - Identify devices by name/transport: rejected; names collide and change. UID is
   the only persistent identity.
 - Start EQ while HRIR loads: rejected because it creates a two-stage audible
