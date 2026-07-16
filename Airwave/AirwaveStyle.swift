@@ -7,7 +7,7 @@ enum AirwavePalette {
 }
 
 enum AirwaveLayout {
-    static let sectionSpacing: CGFloat = 24
+    static let sectionSpacing: CGFloat = 16
     static let sectionContentSpacing: CGFloat = 12
     static let cardSpacing: CGFloat = 8
     static let cardPadding: CGFloat = 12
