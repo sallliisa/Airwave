@@ -42,31 +42,22 @@ nonisolated struct AudioStreamFormat: Equatable, Sendable {
             && sampleType == .float32
             && expected.channelCount == 2
             && expected.sampleType == .float32
-            && AudioSampleRateCompatibility.isCompatible(sampleRate, with: expected.sampleRate)
+            && AudioSampleRateCompatibility.matches(sampleRate, with: expected.sampleRate)
     }
 }
 
-/// Sample-rate differences supported by the process-tap/aggregate path.
+/// Sample-rate compatibility for the process-tap/aggregate path.
 ///
-/// Matching rates remain compatible at any positive rate. The only supported
-/// conversion between different rates is the common 44.1 kHz/48 kHz pair;
-/// other mismatches must fail before the pipeline starts.
+/// The device-bound tap and physical output must use the same rate. AUHAL may
+/// convert PCM layout, but no realtime sample-rate conversion is provided.
 nonisolated enum AudioSampleRateCompatibility {
     static let tolerance = 0.5
 
-    static func isCompatible(_ actual: Double, with expected: Double) -> Bool {
+    static func matches(_ actual: Double, with expected: Double) -> Bool {
         guard actual.isFinite, expected.isFinite, actual > 0, expected > 0 else {
             return false
         }
-        if abs(actual - expected) < tolerance {
-            return true
-        }
-        return (isApproximately(actual, 44_100) && isApproximately(expected, 48_000))
-            || (isApproximately(actual, 48_000) && isApproximately(expected, 44_100))
-    }
-
-    private static func isApproximately(_ value: Double, _ target: Double) -> Bool {
-        abs(value - target) < tolerance
+        return abs(actual - expected) < tolerance
     }
 }
 
@@ -77,13 +68,17 @@ nonisolated struct AudioIOHandle: Hashable, Sendable { let value: UInt64 }
 
 nonisolated struct GlobalStereoTapRequest: Equatable, Sendable {
     let excludedProcess: AudioProcessHandle
+    let outputDeviceUID: String
+    let streamIndex: Int
     let isGlobal: Bool
     let channelCount: Int
     let isPrivate: Bool
     let mutedWhenTapped: Bool
 
-    init(excludedProcess: AudioProcessHandle) {
+    init(excludedProcess: AudioProcessHandle, output: OutputDeviceDescriptor) {
         self.excludedProcess = excludedProcess
+        self.outputDeviceUID = output.uid
+        self.streamIndex = 0
         self.isGlobal = true
         self.channelCount = 2
         self.isPrivate = true

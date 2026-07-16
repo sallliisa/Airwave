@@ -22,7 +22,9 @@ final class AudioPipelineTests: XCTestCase {
             "createAggregate:Built-in Output", "aggregateFormat", "createIO", "startIO",
             "stopIO", "destroyIO", "destroyAggregate", "destroyTap"
         ])
-        XCTAssertEqual(platform.tapRequests, [GlobalStereoTapRequest(excludedProcess: platform.process)])
+        XCTAssertEqual(platform.tapRequests, [GlobalStereoTapRequest(excludedProcess: platform.process, output: platform.output)])
+        XCTAssertEqual(platform.tapRequests[0].outputDeviceUID, platform.output.uid)
+        XCTAssertEqual(platform.tapRequests[0].streamIndex, 0)
         XCTAssertTrue(platform.tapRequests[0].isGlobal)
         XCTAssertTrue(platform.tapRequests[0].isPrivate)
         XCTAssertTrue(platform.tapRequests[0].mutedWhenTapped)
@@ -45,18 +47,24 @@ final class AudioPipelineTests: XCTestCase {
         XCTAssertTrue(platform.hasNoLiveResources)
     }
 
-    func test44100TapWith48000OutputIsAcceptedAndCleansUp() throws {
+    func test44100BluetoothTapTargetsOutputAndCompletesLifecycle() throws {
         let platform = RecordingAudioPlatformClient()
+        platform.output = OutputDeviceDescriptor(
+            id: .init(2), uid: "bluetooth", name: "Bluetooth Output", transport: "bluetooth",
+            outputChannelCount: 2, nominalSampleRate: 44_100, isVirtual: false, isAggregate: false
+        )
         platform.tapStreamFormat = .stereo(sampleRate: 44_100)
-        platform.aggregateStreamFormat = .stereo(sampleRate: 48_000)
+        platform.aggregateStreamFormat = .stereo(sampleRate: 44_100)
         let pipeline = AudioPipeline(platform: platform, processor: PassthroughProcessor())
 
-        XCTAssertNoThrow(try pipeline.start())
+        XCTAssertNoThrow(try pipeline.start(on: platform.output))
         XCTAssertNoThrow(try pipeline.stop())
+        XCTAssertEqual(platform.tapRequests[0].outputDeviceUID, "bluetooth")
+        XCTAssertEqual(platform.tapRequests[0].streamIndex, 0)
         XCTAssertTrue(platform.hasNoLiveResources)
     }
 
-    func test48000TapWith44100OutputIsAcceptedAndCleansUp() throws {
+    func testCrossRateTapAndOutputFailsBeforeAggregateCreation() {
         let platform = RecordingAudioPlatformClient()
         platform.output = OutputDeviceDescriptor(
             id: .init(2), uid: "bluetooth", name: "Bluetooth Output", transport: "bluetooth",
@@ -66,9 +74,26 @@ final class AudioPipelineTests: XCTestCase {
         platform.aggregateStreamFormat = .stereo(sampleRate: 44_100)
         let pipeline = AudioPipeline(platform: platform, processor: PassthroughProcessor())
 
-        XCTAssertNoThrow(try pipeline.start(on: platform.output))
-        XCTAssertNoThrow(try pipeline.stop())
+        XCTAssertThrowsError(try pipeline.start(on: platform.output))
+        XCTAssertFalse(platform.events.contains(where: { $0.hasPrefix("createAggregate") }))
         XCTAssertTrue(platform.hasNoLiveResources)
+    }
+
+    func testMatchingNativeRatesCompleteLifecycle() {
+        for sampleRate in [44_100.0, 48_000.0, 88_200.0, 96_000.0] {
+            let platform = RecordingAudioPlatformClient()
+            platform.output = OutputDeviceDescriptor(
+                id: .init(UInt64(sampleRate)), uid: "output-\(sampleRate)", name: "Output \(sampleRate)", transport: "built-in",
+                outputChannelCount: 2, nominalSampleRate: sampleRate, isVirtual: false, isAggregate: false
+            )
+            platform.tapStreamFormat = .stereo(sampleRate: sampleRate)
+            platform.aggregateStreamFormat = .stereo(sampleRate: sampleRate)
+            let pipeline = AudioPipeline(platform: platform, processor: PassthroughProcessor())
+
+            XCTAssertNoThrow(try pipeline.start(on: platform.output), "rate \(sampleRate)")
+            XCTAssertNoThrow(try pipeline.stop(), "rate \(sampleRate)")
+            XCTAssertTrue(platform.hasNoLiveResources, "rate \(sampleRate)")
+        }
     }
 
     func testUnsupportedTapSampleRateMismatchStillFailsAndCleansUp() {
