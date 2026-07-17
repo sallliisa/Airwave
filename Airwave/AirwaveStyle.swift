@@ -9,6 +9,11 @@ enum AirwavePalette {
     static let hover = Color.white.opacity(0.08)
 }
 
+enum AirwaveResourceLinks {
+    static let hrir = URL(string: "https://airtable.com/embed/appac4r1cu9UpBNAN/shrpUAbtyZxhDDMjg/tblopH2GznvFipWjq/viwnouWPGDuYEd8Go")!
+    static let equalizer = URL(string: "https://autoeq.app/")!
+}
+
 enum AirwaveLayout {
     static let sectionSpacing: CGFloat = 16
     static let sectionContentSpacing: CGFloat = 12
@@ -494,6 +499,7 @@ struct AirwaveSectionHeader: View {
 }
 
 struct AirwaveNavigationCard: View {
+    let systemImage: String
     let title: String
     let subtitle: String
     var showsWarning = false
@@ -505,7 +511,12 @@ struct AirwaveNavigationCard: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 6) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 20)
+
+                VStack(alignment: .leading, spacing: 3) {
                     Text(title)
                         .font(.system(size: 12, weight: .semibold))
                     Text(subtitle)
@@ -581,10 +592,15 @@ struct AirwaveHRIRPicker: View {
                 Button("Import…") { coordinator.presentImportPanel() }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
-                Button("Show in Finder") { coordinator.showInFinder() }
+                Button("Manage…") { coordinator.showInFinder() }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .help("Reveal the managed HRIR Presets folder")
+                Link("Get more HRIRs…", destination: AirwaveResourceLinks.hrir)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.tint)
+                    .font(.system(size: 11, weight: .medium))
+                    .help("Open the HeSuVi HRTF Database")
                 Spacer(minLength: 0)
                 Button("Delete", role: .destructive) {
                     pendingDelete = selectedPreset

@@ -260,6 +260,15 @@ struct PersistedCaptureFailure: Codable, Equatable {
     let kind: Kind
     let reason: String?
 
+    var presentation: CaptureAccessPresentation {
+        switch kind {
+        case .permissionRequired:
+            return .permissionRequired
+        case .failed:
+            return .failed(reason: reason ?? "Audio capture test failed safely.")
+        }
+    }
+
     var guidance: CaptureFailureGuidance {
         switch kind {
         case .permissionRequired:
@@ -387,7 +396,8 @@ final class OnboardingViewModel: ObservableObject {
 
     var captureAccessPresentation: CaptureAccessPresentation {
         switch runtime.captureAccess {
-        case .unverified: return .unverified
+        case .unverified:
+            return persistence.persistedCaptureFailure?.presentation ?? .unverified
         case .checking: return .checking
         case .verified: return .verified
         case .permissionRequired: return .permissionRequired
@@ -398,7 +408,18 @@ final class OnboardingViewModel: ObservableObject {
     // SettingsView keeps its existing call-site label; value still comes from one capture state.
     var permissionPresentation: CaptureAccessPresentation { captureAccessPresentation }
 
-    var canComplete: Bool { runtime.isSetupHealthy }
+    func canComplete(allowingUnknownCapture: Bool) -> Bool {
+        guard runtime.currentOutput?.isSupportedProfileOutput == true else { return false }
+
+        switch runtime.captureAccess {
+        case .verified:
+            return true
+        case .unverified:
+            return allowingUnknownCapture && captureFailureGuidance == nil
+        case .checking, .permissionRequired, .failed:
+            return false
+        }
+    }
 
     func advance() {
         guard let index = OnboardingStepV2.allCases.firstIndex(of: currentStep),
@@ -451,8 +472,8 @@ final class OnboardingViewModel: ObservableObject {
     }
 
     @discardableResult
-    func complete() -> Bool {
-        guard canComplete else { return false }
+    func complete(allowingUnknownCapture: Bool) -> Bool {
+        guard canComplete(allowingUnknownCapture: allowingUnknownCapture) else { return false }
         persistence.isComplete = true
         persistence.isDeferred = false
         persistence.checkpoint = .liveHealth

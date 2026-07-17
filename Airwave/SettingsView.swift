@@ -93,7 +93,7 @@ struct SettingsWindowContent: View {
                 permission: onboarding.permissionPresentation,
                 hasCaptureFailureGuidance: onboarding.captureFailureGuidance != nil,
                 hasPreset: profiles.currentProfile?.hrirPresetID != nil,
-                isReady: onboarding.canComplete,
+                isReady: onboarding.runtime.isSetupHealthy,
                 onSelect: { step in
                     onboardingNavigationDirection = onboardingIndex(of: step) > onboardingIndex(of: onboarding.currentStep)
                         ? .forward
@@ -130,6 +130,8 @@ struct SettingsWindowContent: View {
                         Text(editing.deviceName)
                         Image(systemName: "chevron.down").font(.caption2)
                     }
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
                     .foregroundStyle(.primary)
                 }
                 .buttonStyle(.plain)
@@ -154,6 +156,8 @@ struct SettingsWindowContent: View {
                 isQuitConfirmationPresented = true
             } label: {
                 Image(systemName: "power")
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .font(.system(size: 12, weight: .medium))
@@ -308,9 +312,9 @@ struct SettingsView: View {
         case .general:
             "Choose your spatial profile and application preferences."
         case .equalizer:
-            "Import and choose an EqualizerAPO-style preset."
+            "Import and choose an EqualizerAPO-format preset."
         case .devices:
-            "Review, reset, or forget remembered output profiles."
+            "Review, reset, or forget registered devices."
         case .application:
             "Manage startup, updates, and app information."
         }
@@ -351,21 +355,24 @@ struct SettingsView: View {
 
             VStack(spacing: AirwaveLayout.cardSpacing) {
                 AirwaveNavigationCard(
+                    systemImage: "slider.horizontal.3",
                     title: "Equalizer",
-                    subtitle: "Configure your sound preference."
+                    subtitle: "Import and choose an EqualizerAPO-format preset."
                 ) {
                     page.wrappedValue = .equalizer
                 }
 
                 AirwaveNavigationCard(
+                    systemImage: "headphones",
                     title: "Registered Devices",
-                    subtitle: "Inspect and manage the HRIR and EQ profiles you have saved."
+                    subtitle: "Review, reset, or forget registered devices."
                 ) {
                     page.wrappedValue = .devices
                 }
 
                 AirwaveNavigationCard(
-                    title: "Setup",
+                    systemImage: "sparkles",
+                    title: "Setup & Troubleshooting",
                     subtitle: "Revisit the Airwave setup wizard.",
                     showsWarning: onboardingNeedsAttention
                 ) {
@@ -373,8 +380,9 @@ struct SettingsView: View {
                 }
 
                 AirwaveNavigationCard(
+                    systemImage: "gearshape",
                     title: "Application",
-                    subtitle: "Preferences, updates, about."
+                    subtitle: "Manage startup, updates, and app information."
                 ) {
                     page.wrappedValue = .application
                 }
