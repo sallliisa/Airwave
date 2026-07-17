@@ -9,6 +9,8 @@
     ·
     <a href="https://github.com/sallliisa/Airwave/issues">Support</a>
   </p>
+
+  <img src="docs/images/Bento.png" alt="Airwave Bento Infographics" />
 </div>
 
 ## What Airwave does
