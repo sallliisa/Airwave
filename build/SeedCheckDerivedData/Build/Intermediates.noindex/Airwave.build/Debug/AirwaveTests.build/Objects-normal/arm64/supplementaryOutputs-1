@@ -1,0 +1,23 @@
+{
+  "/Users/gamer/Documents/projects/Airwave/AirwaveTests/AudioRuntimeStateTests.swift" : {
+    "const-values" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/AirwaveTests.build/Objects-normal/arm64/AudioRuntimeStateTests.swiftconstvalues",
+    "dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/AirwaveTests.build/Objects-normal/arm64/AudioRuntimeStateTests.d",
+    "diagnostics" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/AirwaveTests.build/Objects-normal/arm64/AudioRuntimeStateTests.dia",
+    "object" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/AirwaveTests.build/Objects-normal/arm64/AudioRuntimeStateTests.o",
+    "swift-dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/AirwaveTests.build/Objects-normal/arm64/AudioRuntimeStateTests.swiftdeps"
+  },
+  "/Users/gamer/Documents/projects/Airwave/AirwaveTests/ConvolutionEngineTests.swift" : {
+    "const-values" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/AirwaveTests.build/Objects-normal/arm64/ConvolutionEngineTests.swiftconstvalues",
+    "dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/AirwaveTests.build/Objects-normal/arm64/ConvolutionEngineTests.d",
+    "diagnostics" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/AirwaveTests.build/Objects-normal/arm64/ConvolutionEngineTests.dia",
+    "object" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/AirwaveTests.build/Objects-normal/arm64/ConvolutionEngineTests.o",
+    "swift-dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/AirwaveTests.build/Objects-normal/arm64/ConvolutionEngineTests.swiftdeps"
+  },
+  "/Users/gamer/Documents/projects/Airwave/AirwaveTests/RealtimeAudioProcessorTests.swift" : {
+    "const-values" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/AirwaveTests.build/Objects-normal/arm64/RealtimeAudioProcessorTests.swiftconstvalues",
+    "dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/AirwaveTests.build/Objects-normal/arm64/RealtimeAudioProcessorTests.d",
+    "diagnostics" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/AirwaveTests.build/Objects-normal/arm64/RealtimeAudioProcessorTests.dia",
+    "object" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/AirwaveTests.build/Objects-normal/arm64/RealtimeAudioProcessorTests.o",
+    "swift-dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/AirwaveTests.build/Objects-normal/arm64/RealtimeAudioProcessorTests.swiftdeps"
+  }
+}

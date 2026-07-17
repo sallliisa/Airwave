@@ -5,6 +5,43 @@ import XCTest
 
 @MainActor
 final class DeviceProfileManagementTests: XCTestCase {
+    func testBundledHRTFsSeedAndRemainAvailableOffline() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let sourceDirectory = root.appendingPathComponent("source", isDirectory: true)
+        let managed = root.appendingPathComponent("managed", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sourceFiles = try ["Neutral", "Room", "Stage"].map { name in
+            let url = sourceDirectory.appendingPathComponent("\(name).wav")
+            try writeTestWAV(to: url)
+            return url
+        }
+
+        let catalog = BundledPresetCatalog(hrirFiles: sourceFiles)
+        let manager = HRIRManager(
+            presetsDirectory: managed,
+            startWatcher: false,
+            bundledPresetCatalog: catalog
+        )
+        waitForInitialHRIRSync(manager)
+
+        XCTAssertEqual(Set(manager.presets.map(\.name)), ["Neutral", "Room", "Stage"])
+        XCTAssertTrue(manager.presets.allSatisfy { $0.channelCount == 2 && $0.sampleRate == 48_000 })
+
+        let deleted = try XCTUnwrap(manager.presets.first { $0.name == "Room" })
+        manager.deletePreset(deleted)
+        let relaunched = HRIRManager(
+            presetsDirectory: managed,
+            startWatcher: false,
+            bundledPresetCatalog: catalog
+        )
+        waitForInitialHRIRSync(relaunched)
+
+        XCTAssertNil(relaunched.presets.first { $0.name == "Room" })
+        XCTAssertEqual(Set(relaunched.presets.map(\.name)), ["Neutral", "Stage"])
+    }
+
     func testRowsResolveNamesAndKeepCurrentFirstOrdering() throws {
         let context = try ManagementContext()
         let hrirID = UUID()
@@ -155,6 +192,14 @@ final class DeviceProfileManagementTests: XCTestCase {
     func testEmptyStateHasNoRowsAndUsefulGuidanceModelInput() throws {
         let context = try ManagementContext()
         XCTAssertTrue(context.coordinator().rows.isEmpty)
+    }
+}
+
+@MainActor
+private func waitForInitialHRIRSync(_ manager: HRIRManager) {
+    let deadline = Date().addingTimeInterval(2)
+    while !manager.initialLibrarySyncReady && Date() < deadline {
+        RunLoop.main.run(until: Date().addingTimeInterval(0.01))
     }
 }
 

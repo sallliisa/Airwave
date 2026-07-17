@@ -213,7 +213,7 @@ struct OnboardingView: View {
 
     private var hrirStep: some View {
         VStack(alignment: .leading, spacing: AirwaveLayout.sectionContentSpacing) {
-            Text("Choose the HRIR preset Airwave uses for spatial audio.")
+            Text("Choose the HRIR preset used by Airwave for processing. You can play audio in the background to audition it in real time")
 
             AirwaveHRIRPicker(
                 manager: hrirManager,

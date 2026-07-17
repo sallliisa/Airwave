@@ -1,0 +1,30 @@
+{
+  "/Users/gamer/Documents/projects/Airwave/Airwave/UpdateManager.swift" : {
+    "const-values" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/UpdateManager.swiftconstvalues",
+    "dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/UpdateManager.d",
+    "diagnostics" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/UpdateManager.dia",
+    "object" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/UpdateManager.o",
+    "swift-dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/UpdateManager.swiftdeps"
+  },
+  "/Users/gamer/Documents/projects/Airwave/Airwave/VirtualSpeaker.swift" : {
+    "const-values" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/VirtualSpeaker.swiftconstvalues",
+    "dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/VirtualSpeaker.d",
+    "diagnostics" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/VirtualSpeaker.dia",
+    "object" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/VirtualSpeaker.o",
+    "swift-dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/VirtualSpeaker.swiftdeps"
+  },
+  "/Users/gamer/Documents/projects/Airwave/Airwave/WAVLoader.swift" : {
+    "const-values" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/WAVLoader.swiftconstvalues",
+    "dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/WAVLoader.d",
+    "diagnostics" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/WAVLoader.dia",
+    "object" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/WAVLoader.o",
+    "swift-dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/WAVLoader.swiftdeps"
+  },
+  "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/DerivedSources/GeneratedAssetSymbols.swift" : {
+    "const-values" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/GeneratedAssetSymbols.swiftconstvalues",
+    "dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/GeneratedAssetSymbols.d",
+    "diagnostics" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/GeneratedAssetSymbols.dia",
+    "object" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/GeneratedAssetSymbols.o",
+    "swift-dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/GeneratedAssetSymbols.swiftdeps"
+  }
+}

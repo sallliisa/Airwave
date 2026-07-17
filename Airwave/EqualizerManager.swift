@@ -71,6 +71,7 @@ final class EqualizerManager: ObservableObject {
     private let securityScope: any EqualizerSecurityScopeAccessing
     private let manifestWriter: any EqualizerManifestWriting
     private let manifestURL: URL
+    private let bundledPresetCatalog: BundledPresetCatalog
 
     init(
         managedDirectory: URL? = nil,
@@ -78,12 +79,14 @@ final class EqualizerManager: ObservableObject {
         defaults _: UserDefaults = .standard,
         securityScope: any EqualizerSecurityScopeAccessing = DefaultEqualizerSecurityScope(),
         manifestWriter: any EqualizerManifestWriting = DefaultEqualizerManifestWriter(),
-        runtimeEffect: EqualizerRuntimeEffect = EqualizerRuntimeEffect()
+        runtimeEffect: EqualizerRuntimeEffect = EqualizerRuntimeEffect(),
+        bundledPresetCatalog: BundledPresetCatalog? = nil
     ) {
         self.fileManager = fileManager
         self.securityScope = securityScope
         self.manifestWriter = manifestWriter
         self.runtimeEffect = runtimeEffect
+        self.bundledPresetCatalog = bundledPresetCatalog ?? BundledPresetCatalog.fromMainBundle()
         let applicationSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         self.managedDirectory = (managedDirectory ?? applicationSupport
             .appendingPathComponent("Airwave", isDirectory: true)
@@ -92,7 +95,20 @@ final class EqualizerManager: ObservableObject {
         self.manifestURL = self.managedDirectory.appendingPathComponent("manifest.json")
 
         try? fileManager.createDirectory(at: self.managedDirectory, withIntermediateDirectories: true)
+        seedBundledPresets()
         reload()
+    }
+
+    private func seedBundledPresets() {
+        BundledPresetSeeder.seed(
+            files: bundledPresetCatalog.equalizerFiles,
+            into: managedDirectory,
+            markerURL: managedDirectory.appendingPathComponent(".bundled-presets.json"),
+            fileManager: fileManager
+        ) { source in
+            let data = try Data(contentsOf: source)
+            _ = try EqualizerAPOParser.parse(data: data, filename: source.lastPathComponent)
+        }
     }
 
     func reload() {

@@ -350,7 +350,7 @@ struct AirwavePresetList: View {
                 AirwaveEmptyLibraryState(
                     systemImage: "waveform",
                     title: "No HRIR presets",
-                    description: "Import a compatible WAV file to choose a spatial profile."
+                    description: "Airwave normally ships Neutral, Room, and Stage. Import a compatible WAV file to add another spatial profile."
                 )
             } else {
                 ScrollView {

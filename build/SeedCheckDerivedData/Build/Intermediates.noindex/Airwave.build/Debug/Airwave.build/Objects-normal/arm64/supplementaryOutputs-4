@@ -1,0 +1,37 @@
+{
+  "/Users/gamer/Documents/projects/Airwave/Airwave/DeviceProfileManager.swift" : {
+    "const-values" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/DeviceProfileManager.swiftconstvalues",
+    "dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/DeviceProfileManager.d",
+    "diagnostics" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/DeviceProfileManager.dia",
+    "object" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/DeviceProfileManager.o",
+    "swift-dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/DeviceProfileManager.swiftdeps"
+  },
+  "/Users/gamer/Documents/projects/Airwave/Airwave/DeviceProfileRuntimeCoordinator.swift" : {
+    "const-values" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/DeviceProfileRuntimeCoordinator.swiftconstvalues",
+    "dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/DeviceProfileRuntimeCoordinator.d",
+    "diagnostics" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/DeviceProfileRuntimeCoordinator.dia",
+    "object" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/DeviceProfileRuntimeCoordinator.o",
+    "swift-dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/DeviceProfileRuntimeCoordinator.swiftdeps"
+  },
+  "/Users/gamer/Documents/projects/Airwave/Airwave/EqualizerAPOParser.swift" : {
+    "const-values" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/EqualizerAPOParser.swiftconstvalues",
+    "dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/EqualizerAPOParser.d",
+    "diagnostics" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/EqualizerAPOParser.dia",
+    "object" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/EqualizerAPOParser.o",
+    "swift-dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/EqualizerAPOParser.swiftdeps"
+  },
+  "/Users/gamer/Documents/projects/Airwave/Airwave/EqualizerManager.swift" : {
+    "const-values" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/EqualizerManager.swiftconstvalues",
+    "dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/EqualizerManager.d",
+    "diagnostics" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/EqualizerManager.dia",
+    "object" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/EqualizerManager.o",
+    "swift-dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/EqualizerManager.swiftdeps"
+  },
+  "/Users/gamer/Documents/projects/Airwave/Airwave/EqualizerPreset.swift" : {
+    "const-values" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/EqualizerPreset.swiftconstvalues",
+    "dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/EqualizerPreset.d",
+    "diagnostics" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/EqualizerPreset.dia",
+    "object" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/EqualizerPreset.o",
+    "swift-dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SeedCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/EqualizerPreset.swiftdeps"
+  }
+}

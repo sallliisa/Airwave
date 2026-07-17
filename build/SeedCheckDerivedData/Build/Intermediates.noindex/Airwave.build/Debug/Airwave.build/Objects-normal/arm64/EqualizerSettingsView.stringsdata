@@ -1,0 +1,168 @@
+{
+  "source": "/Users/gamer/Documents/projects/Airwave/Airwave/EqualizerSettingsView.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "Replace existing preset?",
+        "location": {
+          "startingColumn": 23,
+          "startingLine": 216
+        }
+      },
+      {
+        "comment": "",
+        "key": "Replace %lld existing presets?",
+        "location": {
+          "startingColumn": 23,
+          "startingLine": 217
+        }
+      },
+      {
+        "comment": "",
+        "key": "Delete %@?",
+        "location": {
+          "startingColumn": 17,
+          "startingLine": 235
+        }
+      },
+      {
+        "comment": "",
+        "key": "Drop EqualizerAPO .txt presets",
+        "location": {
+          "startingColumn": 27,
+          "startingLine": 196
+        }
+      },
+      {
+        "comment": "",
+        "key": "Replace",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 227
+        }
+      },
+      {
+        "comment": "",
+        "key": "Keep Existing",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 228
+        }
+      },
+      {
+        "comment": "",
+        "key": "Files with the same name can replace the managed copy. Other valid files will still import.",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 232
+        }
+      },
+      {
+        "comment": "",
+        "key": "Delete",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 242
+        }
+      },
+      {
+        "comment": "",
+        "key": "Cancel",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 246
+        }
+      },
+      {
+        "comment": "",
+        "key": "This deletes the managed copy of %@ from Airwave’s Equalizer Presets folder.",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 248
+        }
+      },
+      {
+        "comment": "",
+        "key": "Dismiss",
+        "location": {
+          "startingColumn": 32,
+          "startingLine": 256
+        }
+      },
+      {
+        "comment": "",
+        "key": "Selected",
+        "location": {
+          "startingColumn": 70,
+          "startingLine": 312
+        }
+      },
+      {
+        "comment": "",
+        "key": "Not selected",
+        "location": {
+          "startingColumn": 83,
+          "startingLine": 312
+        }
+      },
+      {
+        "comment": "",
+        "key": "Import…",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 324
+        }
+      },
+      {
+        "comment": "",
+        "key": "Manage…",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 327
+        }
+      },
+      {
+        "comment": "",
+        "key": "Reveal the managed Equalizer Presets folder",
+        "location": {
+          "startingColumn": 27,
+          "startingLine": 330
+        }
+      },
+      {
+        "comment": "",
+        "key": "Get more equalizer presets…",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 331
+        }
+      },
+      {
+        "comment": "",
+        "key": "Open AutoEq",
+        "location": {
+          "startingColumn": 27,
+          "startingLine": 335
+        }
+      },
+      {
+        "comment": "",
+        "key": "Delete",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 337
+        }
+      },
+      {
+        "comment": "",
+        "key": "Delete the selected managed preset",
+        "location": {
+          "startingColumn": 23,
+          "startingLine": 343
+        }
+      }
+    ]
+  },
+  "version": 1
+}

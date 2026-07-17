@@ -23,8 +23,10 @@ jobs:
           scripts/test-release-version.sh
           scripts/verify-2.0-metadata.sh
       - name: Build
-        run: DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project Airwave.xcodeproj -scheme Airwave -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build
+        run: DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project Airwave.xcodeproj -scheme Airwave -configuration Debug -destination 'platform=macOS' -derivedDataPath build/DebugDerivedData CODE_SIGNING_ALLOWED=NO build
+      - name: Verify bundled presets
+        run: scripts/verify-bundled-presets.sh "$PWD/build/DebugDerivedData/Build/Products/Debug/Airwave.app"
       - name: Test
-        run: DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project Airwave.xcodeproj -scheme Airwave -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO test
+        run: DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project Airwave.xcodeproj -scheme Airwave -destination 'platform=macOS' -derivedDataPath build/DebugDerivedData CODE_SIGNING_ALLOWED=NO test
       - name: Analyze
-        run: DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project Airwave.xcodeproj -scheme Airwave -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO analyze
+        run: DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project Airwave.xcodeproj -scheme Airwave -configuration Debug -destination 'platform=macOS' -derivedDataPath build/DebugDerivedData CODE_SIGNING_ALLOWED=NO analyze
