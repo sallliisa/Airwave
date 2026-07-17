@@ -115,6 +115,15 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertFalse(source.contains(["macOS", "Permission"].joined(separator: " ")))
     }
 
+    func testOnboardingHRIRDescriptionCanWrap() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("Airwave/OnboardingView.swift"), encoding: .utf8)
+
+        XCTAssertTrue(source.contains(".frame(maxWidth: .infinity, alignment: .leading)"))
+        XCTAssertTrue(source.contains(".fixedSize(horizontal: false, vertical: true)"))
+        XCTAssertTrue(source.contains(".frame(height: 260, alignment: .top)"))
+    }
+
     func testCaptureControlsGuidanceAndStatusCardOrder() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let source = try String(contentsOf: root.appendingPathComponent("Airwave/OnboardingView.swift"), encoding: .utf8)
