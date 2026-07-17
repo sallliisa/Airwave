@@ -360,7 +360,8 @@ struct OnboardingView: View {
             captureAccess: viewModel.captureAccessPresentation,
             hasPreset: profiles.currentProfile?.hrirPresetID != nil,
             runtimeStatus: runtime.status,
-            isReady: viewModel.canComplete
+            isReady: viewModel.canComplete,
+            hasCaptureFailureGuidance: viewModel.captureFailureGuidance != nil
         )
     }
 
@@ -395,6 +396,7 @@ struct OnboardingView: View {
 struct OnboardingProgressIndicator: View {
     let currentStep: OnboardingStepV2
     let permission: CaptureAccessPresentation
+    let hasCaptureFailureGuidance: Bool
     let hasPreset: Bool
     let isReady: Bool
     let onSelect: (OnboardingStepV2) -> Void
@@ -417,15 +419,16 @@ struct OnboardingProgressIndicator: View {
 
     private func status(for step: OnboardingStepV2) -> ProgressStatus {
         switch step {
-        case .welcome: .complete
+        case .welcome: return .complete
         case .systemAudio:
+            if hasCaptureFailureGuidance { return .attention }
             switch permission {
-            case .verified: .complete
-            case .permissionRequired, .failed: .attention
-            case .checking, .unverified: .unknown
+            case .verified: return .complete
+            case .permissionRequired, .failed: return .attention
+            case .checking, .unverified: return .unknown
             }
-        case .hrirPreset: .complete
-        case .liveHealth: isReady ? .complete : .incomplete
+        case .hrirPreset: return .complete
+        case .liveHealth: return isReady ? .complete : .incomplete
         }
     }
 }

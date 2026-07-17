@@ -91,6 +91,7 @@ struct SettingsWindowContent: View {
             OnboardingProgressIndicator(
                 currentStep: onboarding.currentStep,
                 permission: onboarding.permissionPresentation,
+                hasCaptureFailureGuidance: onboarding.captureFailureGuidance != nil,
                 hasPreset: profiles.currentProfile?.hrirPresetID != nil,
                 isReady: onboarding.canComplete,
                 onSelect: { step in
