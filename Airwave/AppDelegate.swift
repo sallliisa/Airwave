@@ -358,6 +358,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillResignActive(_ notification: Notification) {
+        AudioRuntimeController.shared.applicationWillResignActive()
         ApplicationLifecycleCoordinator.shared.applicationWillResignActive()
     }
 

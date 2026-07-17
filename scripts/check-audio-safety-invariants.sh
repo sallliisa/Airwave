@@ -5,9 +5,9 @@ root=${1:-$(cd "$(dirname "$0")/.." && pwd)}
 fail() { echo "audio safety invariant failed: $*" >&2; exit 1; }
 
 source_root="$root/Airwave"
-forbidden_source='AudioObjectSetPropertyData|AudioHardwareServiceSetPropertyData|AudioDeviceSetProperty|kAudioDevicePropertyVolume|kAudioDevicePropertyMute|kAudioHardwareServiceDeviceProperty_VirtualMasterVolume|NSMicrophoneUsageDescription'
+forbidden_source='AudioObjectSetPropertyData|AudioHardwareServiceSetPropertyData|AudioDeviceSetProperty|kAudioDevicePropertyVolume|kAudioDevicePropertyMute|kAudioHardwareServiceDeviceProperty_VirtualMasterVolume|NSMicrophoneUsageDescription|TCC\.framework|TCCAccessPreflight|TCCAccessRequest|kTCCServiceAudioCapture|dlopen|dlsym'
 if grep -REn "$forbidden_source" "$source_root" --include='*.swift' --include='*.plist'; then
-  fail "production source contains route/volume mutation API or microphone metadata"
+  fail "production source contains forbidden private TCC, route/volume mutation API, or microphone metadata"
 fi
 
 if grep -REni 'install (BlackHole|a virtual audio)|requires (BlackHole|a virtual audio)|create (an )?aggregate device|manual aggregate device setup' \

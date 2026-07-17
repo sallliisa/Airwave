@@ -1,1014 +1,203 @@
 import XCTest
-import Combine
 @testable import Airwave
 
 @MainActor
 final class AudioRuntimeControllerTests: XCTestCase {
-    func testLaunchWithoutPresetWaitsForExplicitPermissionRequest() {
-        let harness = Harness()
-        harness.platform.permissionStatus = .unknown
-        harness.controller.launch(presetReady: false)
+    func testLaunchWithEffectStartsOnlyUnmutedPassiveVerification() {
+        let h = Harness(effect: true)
+        h.pipelines.automaticEvent = nil
+        h.controller.launch(presetReady: true)
 
-        XCTAssertEqual(harness.pipelines.startedOutputs.count, 0)
-        XCTAssertEqual(harness.pipelines.liveCount, 0)
-        XCTAssertEqual(harness.state.status, .needsPermission)
-        XCTAssertEqual(harness.state.permissionStatus, .unknown)
+        XCTAssertEqual(h.pipelines.purposes, [.verification(includeOwnProcess: false)])
+        XCTAssertEqual(h.pipelines.muteBehaviors, [.unmuted])
+        XCTAssertEqual(h.state.captureAccess, .checking)
     }
 
-    func testTapProbeFailureIsTerminalUntilExplicitVerificationRetry() {
-        let harness = Harness()
-        harness.platform.permissionStatus = .unknown
-        harness.pipelines.startErrors = [.deviceLost, nil]
-        harness.controller.launch(presetReady: false)
-        harness.controller.requestSystemAudioAccess()
+    func testExplicitTestUsesAllProcessProbeAndOnePlayer() {
+        let h = Harness()
+        h.controller.launch(presetReady: false)
+        h.controller.requestSystemAudioAccess()
+        h.controller.requestSystemAudioAccess()
 
-        guard case .failed = harness.state.tapHealth else {
-            return XCTFail("Expected terminal tap health failure")
-        }
-        XCTAssertEqual(harness.scheduler.pendingDelays, [])
-
-        harness.controller.requestSystemAudioAccess()
-
-        XCTAssertEqual(harness.state.status, .inactive)
-        XCTAssertEqual(harness.state.permissionStatus, .granted)
-        XCTAssertEqual(harness.state.tapHealth, .ready)
-        XCTAssertEqual(harness.pipelines.startedOutputs.count, 2)
-        XCTAssertEqual(harness.pipelines.liveCount, 0)
+        XCTAssertEqual(h.pipelines.purposes, [.verification(includeOwnProcess: true)])
+        XCTAssertEqual(h.pipelines.liveCount, 1)
+        XCTAssertEqual(h.state.captureAccess, .checking)
+        h.scheduler.runNext()
+        XCTAssertEqual(h.player.playCount, 1)
     }
 
-    func testRepeatedVerificationClicksKeepSingleLiveProbe() {
-        let harness = Harness()
-        harness.platform.permissionStatus = .unknown
-        harness.pipelines.automaticVerificationEvent = nil
-        harness.controller.launch(presetReady: false)
+    func testSignalPromotesToProcessingOnlyAfterVerification() {
+        let h = Harness(effect: true)
+        h.pipelines.automaticEvent = nil
+        h.controller.launch(presetReady: true)
 
-        harness.controller.requestSystemAudioAccess()
-        harness.controller.requestSystemAudioAccess()
+        XCTAssertEqual(h.pipelines.muteBehaviors, [.unmuted])
+        h.pipelines.emit(.signalDetected)
 
-        XCTAssertEqual(harness.pipelines.liveCount, 1)
-        XCTAssertEqual(harness.scheduler.activeTaskCount, 1)
-        XCTAssertEqual(harness.state.permissionStatus, .granted)
-        XCTAssertEqual(harness.state.tapHealth, .checking)
+        XCTAssertEqual(h.pipelines.purposes, [.verification(includeOwnProcess: false), .processing])
+        XCTAssertEqual(h.pipelines.muteBehaviors, [.unmuted, .mutedWhenTapped])
+        XCTAssertEqual(h.state.captureAccess, .verified)
+        XCTAssertEqual(h.state.status, .processing)
     }
 
-    func testReadyLaunchStartsExactlyOnceAndPublishesOutput() {
-        let harness = Harness()
-        harness.controller.launch(presetReady: true)
+    func testSilentExplicitTestTimesOutWithoutVerification() {
+        let h = Harness()
+        h.controller.launch(presetReady: false)
+        h.controller.requestSystemAudioAccess()
+        h.scheduler.runNext()
+        h.scheduler.runNext()
 
-        XCTAssertEqual(harness.pipelines.startedOutputs, [harness.platform.output])
-        XCTAssertEqual(harness.state.status, .processing)
-        XCTAssertEqual(harness.state.currentOutput, harness.platform.output)
-        XCTAssertEqual(harness.pipelines.liveCount, 1)
-        XCTAssertEqual(harness.pipelines.muteBehaviors, [.mutedWhenTapped])
+        guard case .failed(let reason) = h.state.captureAccess else { return XCTFail("expected failed capture state") }
+        XCTAssertTrue(reason.contains("timed out"))
+        XCTAssertEqual(h.pipelines.liveCount, 0)
+        XCTAssertGreaterThanOrEqual(h.player.stopCount, 1)
     }
 
-    func testDeniedAndUnknownPreflightNeverStartMutedPipeline() {
-        for permission: SystemAudioPermissionStatus in [.denied, .unknown] {
-            let harness = Harness()
-            harness.platform.permissionStatus = permission
+    func testPermissionFailureDoesNotClaimGenericFailure() {
+        let h = Harness()
+        h.pipelines.startError = .permissionDenied
+        h.controller.launch(presetReady: true)
 
-            harness.controller.launch(presetReady: true)
-
-            XCTAssertEqual(harness.state.status, .needsPermission)
-            XCTAssertEqual(harness.pipelines.startedOutputs, [])
-            XCTAssertEqual(harness.pipelines.muteBehaviors, [])
-        }
+        XCTAssertEqual(h.state.captureAccess, .permissionRequired)
+        XCTAssertEqual(h.state.status, .needsPermission)
     }
 
-    func testUnknownPermissionRequestFailsActionablyWithoutStartingTap() {
-        let harness = Harness()
-        harness.platform.permissionStatus = .unknown
-        harness.platform.requestedPermissionStatus = .unknown
-        harness.controller.launch(presetReady: false)
+    func testGenericFailureIsFailedAndStaleSignalCannotVerify() {
+        let h = Harness()
+        h.pipelines.automaticEvent = nil
+        h.controller.launch(presetReady: true)
+        let old = h.pipelines.handlers[0]
+        h.platform.emit(nil)
+        old(.signalDetected)
 
-        harness.controller.requestSystemAudioAccess()
-
-        XCTAssertEqual(harness.state.permissionStatus, .unknown)
-        XCTAssertEqual(harness.state.status, .needsPermission)
-        guard case .failed = harness.state.tapHealth else {
-            return XCTFail("Expected authoritative verification failure")
-        }
-        XCTAssertEqual(harness.pipelines.startedOutputs, [])
+        guard case .failed = h.state.captureAccess else { return XCTFail("expected failed capture state") }
+        XCTAssertNotEqual(h.state.captureAccess, .verified)
     }
 
-    func testReturningActiveAfterRevocationStopsMutedPipeline() {
-        let harness = Harness()
-        harness.controller.launch(presetReady: true)
-        XCTAssertEqual(harness.pipelines.liveCount, 1)
-
-        harness.platform.permissionStatus = .denied
-        harness.controller.refreshSystemAudioAccess()
-
-        XCTAssertEqual(harness.state.permissionStatus, .denied)
-        XCTAssertEqual(harness.state.status, .needsPermission)
-        XCTAssertEqual(harness.pipelines.liveCount, 0)
-    }
-
-    func testStalePermissionCallbackCannotOverwriteNewerRequest() {
-        let harness = Harness()
-        harness.platform.permissionStatus = .unknown
-        harness.platform.completesPermissionRequestsAutomatically = false
-        harness.controller.launch(presetReady: false)
-
-        harness.controller.requestSystemAudioAccess()
-        let stale = harness.platform.permissionRequestCompletions[0]
-        stale(.unknown)
-        harness.controller.requestSystemAudioAccess()
-        let current = harness.platform.permissionRequestCompletions[1]
-        stale(.granted)
-
-        XCTAssertEqual(harness.state.permissionStatus, .checking)
-        XCTAssertEqual(harness.pipelines.startedOutputs, [])
-
-        current(.denied)
-        XCTAssertEqual(harness.state.permissionStatus, .denied)
-    }
-
-    func testSleepCancelsPendingPermissionRequestAndWakeRepreflights() {
-        let harness = Harness()
-        harness.platform.permissionStatus = .unknown
-        harness.platform.completesPermissionRequestsAutomatically = false
-        harness.controller.launch(presetReady: false)
-        harness.controller.requestSystemAudioAccess()
-        let stale = harness.platform.permissionRequestCompletions[0]
-
-        harness.controller.willSleep()
-        XCTAssertEqual(harness.state.permissionStatus, .unknown)
-        XCTAssertEqual(harness.state.tapHealth, .idle)
-
-        harness.platform.permissionStatus = .denied
-        harness.controller.didWake()
-        stale(.granted)
-
-        XCTAssertEqual(harness.state.permissionStatus, .denied)
-        XCTAssertEqual(harness.pipelines.startedOutputs, [])
-    }
-
-    func testInactivePresetWaitsAndKnownPermissionDenialDoesNotAcquireResources() {
-        let missing = Harness()
-        missing.platform.permissionStatus = .unknown
-        missing.controller.launch(presetReady: false)
-        XCTAssertEqual(missing.state.status, .needsPermission)
-        XCTAssertEqual(missing.pipelines.liveCount, 0)
-        XCTAssertEqual(missing.pipelines.startedOutputs.count, 0)
-
-        let denied = Harness()
-        denied.controller.launch(presetReady: false, permissionGranted: false)
-        XCTAssertEqual(denied.state.status, .needsPermission)
-        XCTAssertEqual(denied.pipelines.liveCount, 0)
-    }
-
-    func testPermissionRequestDenialNeverStartsProbe() {
-        let harness = Harness()
-        harness.platform.permissionStatus = .unknown
-        harness.platform.requestedPermissionStatus = .denied
-        harness.controller.launch(presetReady: false)
-
-        harness.controller.requestSystemAudioAccess()
-
-        XCTAssertEqual(harness.state.permissionStatus, .denied)
-        XCTAssertEqual(harness.state.status, .needsPermission)
-        XCTAssertEqual(harness.state.tapHealth, .idle)
-        XCTAssertEqual(harness.pipelines.startedOutputs.count, 0)
-        XCTAssertEqual(harness.pipelines.liveCount, 0)
-    }
-
-    func testSelectingNoneStopsProcessingAndBecomesHealthyInactive() {
-        let harness = Harness()
-        harness.controller.launch(presetReady: true)
-        XCTAssertEqual(harness.state.status, .processing)
-
-        harness.controller.presetDidChange(isReady: false)
-
-        XCTAssertEqual(harness.state.status, .inactive)
-        XCTAssertEqual(harness.state.currentOutput, harness.platform.output)
-        XCTAssertEqual(harness.pipelines.liveCount, 0)
-    }
-
-    func testPermissionErrorStopsCandidateAndDoesNotSpin() {
-        let harness = Harness()
-        harness.pipelines.startErrors = [.permissionDenied]
-        harness.controller.launch(presetReady: true)
-
-        XCTAssertEqual(harness.state.status, .needsPermission)
-        XCTAssertEqual(harness.pipelines.liveCount, 0)
-        XCTAssertEqual(harness.scheduler.pendingDelays, [])
-    }
-
-    func testTapVerificationPreservesAuthoritativeGrant() {
-        let harness = Harness()
-        harness.pipelines.automaticVerificationEvent = nil
-
-        harness.controller.launch(presetReady: true)
-
-        XCTAssertEqual(harness.state.status, .starting)
-        XCTAssertEqual(harness.state.permissionStatus, .granted)
-        XCTAssertEqual(harness.pipelines.liveCount, 1)
-        XCTAssertEqual(harness.scheduler.pendingDelays, [5])
-
-        harness.pipelines.emit(.tapReady)
-
-        XCTAssertEqual(harness.state.status, .processing)
-        XCTAssertEqual(harness.state.permissionStatus, .granted)
-        XCTAssertEqual(harness.scheduler.pendingDelays, [30])
-    }
-
-    func testRenderPermissionFailurePublishesDeniedAndStopsPipeline() {
-        let harness = Harness()
-        harness.pipelines.automaticVerificationEvent = nil
-        harness.controller.launch(presetReady: true)
-
-        harness.pipelines.emit(.permissionDenied)
-
-        XCTAssertEqual(harness.state.status, .needsPermission)
-        XCTAssertEqual(harness.state.permissionStatus, .denied)
-        XCTAssertEqual(harness.pipelines.liveCount, 0)
-        XCTAssertEqual(harness.scheduler.pendingDelays, [])
-    }
-
-    func testSilentVerificationTimeoutStaysUnverifiedAndStopsPipeline() {
-        let harness = Harness()
-        harness.pipelines.automaticVerificationEvent = nil
-        harness.controller.launch(presetReady: true)
-
-        harness.scheduler.lastTask?.runEvenIfCancelled()
-
-        XCTAssertEqual(
-            harness.state.status,
-            .nativePassthrough(reason: "Audio tap did not start responding. Retry setup.")
-        )
-        XCTAssertEqual(harness.state.permissionStatus, .granted)
-        XCTAssertEqual(harness.pipelines.liveCount, 0)
-        XCTAssertEqual(harness.scheduler.pendingDelays, [])
-    }
-
-    func testGenericRenderFailurePreservesGrantedPermissionAndFailsTapHealth() {
-        let harness = Harness()
-        harness.pipelines.automaticVerificationEvent = nil
-        harness.controller.launch(presetReady: true)
-
-        harness.pipelines.emit(.renderFailed(-50))
-
-        XCTAssertEqual(harness.state.permissionStatus, .granted)
-        XCTAssertEqual(harness.pipelines.liveCount, 0)
-        XCTAssertEqual(harness.scheduler.pendingDelays, [])
-        guard case .failed = harness.state.tapHealth else {
-            return XCTFail("Expected terminal tap health failure")
-        }
-    }
-
-    func testTapLifecycleSetupFailuresBecomeTerminalHealthFailures() {
-        let failures: [AudioRuntimeError] = [
-            .tapCreationFailed("tap"),
-            .aggregateCreationFailed("aggregate"),
-            .formatMismatch(expected: .stereo(sampleRate: 48_000), actual: .stereo(sampleRate: 44_100)),
-            .ioCreationFailed("io"),
-            .ioStartFailed("start")
-        ]
-
-        for failure in failures {
-            let harness = Harness()
-            harness.pipelines.startErrors = [failure]
-            harness.controller.launch(presetReady: true)
-
-            guard case .failed = harness.state.tapHealth else {
-                return XCTFail("Expected failed tap health for \(failure)")
-            }
-            XCTAssertEqual(harness.scheduler.pendingDelays, [])
-            XCTAssertEqual(harness.pipelines.liveCount, 0)
-        }
-    }
-
-    func testPermissionDeniedThenExplicitRetryCanStartSuccessfully() {
-        let harness = Harness()
-        harness.pipelines.startErrors = [.permissionDenied, nil]
-        harness.controller.launch(presetReady: true)
-        XCTAssertEqual(harness.state.status, .needsPermission)
-
-        harness.controller.requestSystemAudioAccess()
-
-        XCTAssertEqual(harness.state.status, .processing)
-        XCTAssertEqual(harness.pipelines.liveCount, 1)
-        XCTAssertEqual(harness.pipelines.startedOutputs.count, 2)
-        XCTAssertEqual(harness.scheduler.pendingDelays, [30])
-    }
-
-    func testPermissionDeniedThenExplicitRetryDeniedAgainDoesNotSpin() {
-        let harness = Harness()
-        harness.pipelines.defaultError = .permissionDenied
-        harness.controller.launch(presetReady: true)
-
-        harness.controller.requestSystemAudioAccess()
-
-        XCTAssertEqual(harness.state.status, .needsPermission)
-        XCTAssertEqual(harness.pipelines.liveCount, 0)
-        XCTAssertEqual(harness.scheduler.pendingDelays, [])
-        XCTAssertEqual(harness.pipelines.startedOutputs.count, 2)
-    }
-
-    func testRetryNowDoesNotPublishRequestingPermissionState() {
-        let harness = Harness()
-        harness.pipelines.startErrors = [.permissionDenied, nil]
-        harness.controller.launch(presetReady: true)
-        XCTAssertEqual(harness.state.permissionStatus, .denied)
-        var history: [AudioRuntimeState.PermissionStatus] = []
-        let cancellable = harness.state.$permissionStatus.dropFirst().sink { history.append($0) }
-        defer { cancellable.cancel() }
-
-        harness.controller.retryNow()
-
-        XCTAssertFalse(history.contains(.checking))
-        XCTAssertEqual(harness.state.permissionStatus, .denied)
-    }
-
-    func testExplicitPermissionRequestPreservesTCCGrantWhenTapSetupFails() {
-        let harness = Harness()
-        harness.controller.launch(presetReady: false, permissionGranted: false)
-        harness.pipelines.startErrors = [.deviceLost]
-        var history: [AudioRuntimeState.PermissionStatus] = []
-        let cancellable = harness.state.$permissionStatus.dropFirst().sink { history.append($0) }
-        defer { cancellable.cancel() }
-
-        harness.controller.requestSystemAudioAccess()
-
-        XCTAssertTrue(history.contains(.checking))
-        XCTAssertEqual(history.last, .granted)
-        XCTAssertEqual(harness.state.permissionStatus, .granted)
-        XCTAssertNotEqual(harness.state.permissionStatus, .checking)
-    }
-
-    func testExplicitPermissionRequestEndsDeniedAfterPermissionFailure() {
-        let harness = Harness()
-        harness.controller.launch(presetReady: false, permissionGranted: false)
-        harness.pipelines.startErrors = [.permissionDenied]
-        var history: [AudioRuntimeState.PermissionStatus] = []
-        let cancellable = harness.state.$permissionStatus.dropFirst().sink { history.append($0) }
-        defer { cancellable.cancel() }
-
-        harness.controller.requestSystemAudioAccess()
-
-        XCTAssertTrue(history.contains(.checking))
-        XCTAssertEqual(history.last, .denied)
-        XCTAssertEqual(harness.state.permissionStatus, .denied)
-        XCTAssertNotEqual(harness.state.permissionStatus, .checking)
-    }
-
-    func testPresetReplacementStopsOldBeforeStartingNew() {
-        let harness = Harness()
-        harness.controller.launch(presetReady: true)
-
-        harness.controller.presetDidChange(isReady: true)
-
-        XCTAssertEqual(harness.pipelines.liveCount, 1)
-        XCTAssertEqual(harness.pipelines.events.suffix(3), ["stop:1", "make:2", "start:2:Built-in Output"])
-    }
-
-    func testPresetFailureReturnsToNativePassthroughWithNoResources() {
-        let harness = Harness()
-        harness.controller.launch(presetReady: true)
-
-        harness.controller.presetActivationFailed("Bad HRIR")
-
-        XCTAssertEqual(harness.state.status, .nativePassthrough(reason: "Bad HRIR"))
-        XCTAssertEqual(harness.pipelines.liveCount, 0)
-    }
-
-    func testOutputAtoBStopsOldBeforeStartingB() {
-        let harness = Harness()
-        harness.controller.launch(presetReady: true)
-        let b = device(id: 2, name: "USB DAC")
-
-        harness.platform.emit(b)
-
-        XCTAssertEqual(harness.state.currentOutput, b)
-        XCTAssertEqual(harness.pipelines.liveCount, 1)
-        XCTAssertEqual(harness.pipelines.events.suffix(3), ["stop:1", "make:2", "start:2:USB DAC"])
-        XCTAssertEqual(harness.state.permissionStatus, .granted)
-    }
-
-    func testProfilePreparationWaitsForPairBeforeStarting() {
-        let harness = Harness()
-        let preparer = RuntimeProfilePreparerFake()
-        harness.controller.setProfilePreparer(preparer)
-
-        harness.controller.launch(presetReady: false)
-
-        XCTAssertEqual(preparer.preparedOutputs, [harness.platform.output])
-        XCTAssertEqual(harness.pipelines.startedOutputs, [])
-        XCTAssertEqual(harness.state.status, .starting)
-
-        preparer.complete(outputUID: harness.platform.output.uid, readiness: .init(spatialReady: true, equalizerDefinition: nil))
-
-        XCTAssertEqual(harness.pipelines.startedOutputs, [harness.platform.output])
-        XCTAssertEqual(harness.pipelines.muteBehaviors, [.mutedWhenTapped])
-        XCTAssertEqual(harness.pipelines.liveCount, 1)
-        XCTAssertEqual(harness.state.status, .processing)
-    }
-
-    func testStaleProfilePreparationCannotStartOldOutput() {
-        let harness = Harness()
-        let preparer = RuntimeProfilePreparerFake()
-        harness.controller.setProfilePreparer(preparer)
-        harness.controller.launch(presetReady: false)
-        let b = device(id: 2, name: "B")
-        let c = device(id: 3, name: "C")
-
-        harness.platform.emit(b)
-        harness.platform.emit(c)
-        preparer.complete(outputUID: b.uid, readiness: .init(spatialReady: true, equalizerDefinition: nil))
-
-        XCTAssertEqual(harness.pipelines.startedOutputs, [])
-
-        preparer.complete(outputUID: c.uid, readiness: .init(spatialReady: true, equalizerDefinition: nil))
-
-        XCTAssertEqual(harness.pipelines.startedOutputs, [c])
-        XCTAssertEqual(harness.pipelines.liveCount, 1)
-    }
-
-    func testEmptyProfilePreparationUsesUnmutedGrantedProbe() {
-        let harness = Harness()
-        let preparer = RuntimeProfilePreparerFake()
-        harness.controller.setProfilePreparer(preparer)
-        harness.controller.launch(presetReady: false)
-
-        preparer.complete(outputUID: harness.platform.output.uid, readiness: .init(spatialReady: false, equalizerDefinition: nil))
-
-        XCTAssertEqual(harness.pipelines.startedOutputs, [harness.platform.output])
-        XCTAssertEqual(harness.pipelines.muteBehaviors, [.unmuted])
-        XCTAssertEqual(harness.pipelines.liveCount, 0)
-        XCTAssertEqual(harness.state.status, .inactive)
-    }
-
-    func testOutputLossDuringProfilePreparationCancelsWithoutStarting() {
-        let harness = Harness()
-        let preparer = RuntimeProfilePreparerFake()
-        harness.controller.setProfilePreparer(preparer)
-        harness.controller.launch(presetReady: false)
-
-        harness.platform.emit(nil)
-        preparer.complete(outputUID: harness.platform.output.uid, readiness: .init(spatialReady: true, equalizerDefinition: nil))
-
-        XCTAssertGreaterThanOrEqual(preparer.cancelCount, 1)
-        XCTAssertEqual(preparer.unavailableCount, 1)
-        XCTAssertEqual(harness.pipelines.startedOutputs, [])
-    }
-
-    func testSleepCancelsPreparationAndWakeStartsOnlyLatestPair() {
-        let harness = Harness()
-        let preparer = RuntimeProfilePreparerFake()
-        harness.controller.setProfilePreparer(preparer)
-        harness.controller.launch(presetReady: false)
-
-        harness.controller.willSleep()
-        preparer.complete(outputUID: harness.platform.output.uid, readiness: .init(spatialReady: true, equalizerDefinition: nil))
-        XCTAssertEqual(harness.pipelines.startedOutputs, [])
-
-        harness.controller.didWake()
-        preparer.complete(outputUID: harness.platform.output.uid, readiness: .init(spatialReady: true, equalizerDefinition: nil))
-
-        XCTAssertEqual(preparer.cancelCount, 1)
-        XCTAssertEqual(harness.pipelines.startedOutputs, [harness.platform.output])
-        XCTAssertEqual(harness.pipelines.liveCount, 1)
-    }
-
-    func testCleanupFailureDefersNewProfilePreparationUntilRetry() {
-        let harness = Harness()
-        let preparer = RuntimeProfilePreparerFake()
-        harness.controller.setProfilePreparer(preparer)
-        harness.controller.launch(presetReady: false)
-        preparer.complete(outputUID: harness.platform.output.uid, readiness: .init(spatialReady: true, equalizerDefinition: nil))
-        harness.pipelines.stopFailuresRemaining = 1
-        let a = harness.platform.output
-        let b = device(id: 2, name: "B")
-
-        harness.platform.emit(b)
-
-        XCTAssertEqual(preparer.preparedOutputs, [a])
-        XCTAssertEqual(harness.scheduler.pendingDelays, [1])
-
-        harness.scheduler.runNext()
-
-        XCTAssertEqual(preparer.preparedOutputs, [a, b])
-    }
-
-    func testSameOutputCallbackDoesNotRecreateLivePipeline() {
-        let harness = Harness()
-        harness.controller.launch(presetReady: true)
-        let events = harness.pipelines.events
-
-        harness.platform.emit(harness.platform.output)
-
-        XCTAssertEqual(harness.pipelines.events, events)
-        XCTAssertEqual(harness.pipelines.liveCount, 1)
-    }
-
-    func testTeardownFailureDoesNotStartNewPipelineUntilCleanupRetrySucceeds() {
-        let harness = Harness()
-        harness.controller.launch(presetReady: true)
-        harness.pipelines.stopFailuresRemaining = 1
-        let b = device(id: 2, name: "B")
-
-        harness.platform.emit(b)
-
-        XCTAssertEqual(harness.pipelines.liveCount, 1)
-        XCTAssertEqual(harness.pipelines.startedOutputs.count, 1)
-        XCTAssertEqual(harness.scheduler.pendingDelays, [1])
-
-        harness.scheduler.runNext()
-
-        XCTAssertEqual(harness.pipelines.liveCount, 1)
-        XCTAssertEqual(harness.pipelines.startedOutputs.last, b)
-        XCTAssertEqual(harness.pipelines.events.suffix(3), ["stop:1", "make:2", "start:2:B"])
-    }
-
-    func testRapidAtoBtoCLeavesOnlyC() {
-        let harness = Harness()
-        let a = harness.platform.output
-        harness.controller.launch(presetReady: true)
-        let b = device(id: 2, name: "B")
-        let c = device(id: 3, name: "C")
-
-        harness.platform.emit(b)
-        harness.platform.emit(c)
-
-        XCTAssertEqual(harness.state.currentOutput, c)
-        XCTAssertEqual(harness.pipelines.startedOutputs, [a, b, c])
-        XCTAssertEqual(harness.pipelines.liveCount, 1)
-    }
-
-    func testDisconnectThenReconnectWithNewIDCancelsStaleRetry() {
-        let harness = Harness()
-        harness.controller.launch(presetReady: true)
-        harness.platform.emit(nil)
-        let staleRetry = harness.scheduler.lastTask
-        let replacement = device(id: 9, name: "Replacement")
-
-        harness.platform.emit(replacement)
-        staleRetry?.runEvenIfCancelled()
-
-        XCTAssertEqual(harness.state.currentOutput, replacement)
-        XCTAssertEqual(harness.pipelines.liveCount, 1)
-        XCTAssertEqual(harness.pipelines.startedOutputs.last, replacement)
-    }
-
-    func testVirtualAggregateAndMonoBlockWithoutRetryOrTap() {
-        for output in [
-            device(id: 2, name: "BlackHole", virtual: true),
-            device(id: 3, name: "Aggregate", aggregate: true),
-            device(id: 4, name: "Mono", channels: 1)
-        ] {
-            let harness = Harness(output: output)
-            harness.controller.launch(presetReady: true)
-            guard case .nativePassthrough(let reason) = harness.state.status else {
-                return XCTFail("Expected native passthrough")
-            }
-            XCTAssertTrue(reason.contains("macOS Settings"))
-            XCTAssertEqual(harness.pipelines.startedOutputs, [])
-            XCTAssertEqual(harness.scheduler.pendingDelays, [])
-        }
-    }
-
-    func testRetryBackoffCapsAtFifteenSecondsWithoutStorm() {
-        let harness = Harness()
-        harness.pipelines.defaultError = .deviceLost
-        harness.controller.launch(presetReady: true)
-
-        var observed: [TimeInterval] = []
-        for _ in 0..<7 {
-            observed.append(harness.scheduler.pendingDelays.last!)
-            harness.scheduler.runNext()
-        }
-
-        XCTAssertEqual(observed, [1, 2, 4, 8, 15, 15, 15])
-        XCTAssertEqual(harness.scheduler.activeTaskCount, 1)
-        XCTAssertEqual(harness.pipelines.liveCount, 0)
-    }
-
-    func testStableProcessingResetsBackoffAfterThirtySeconds() {
-        let harness = Harness()
-        harness.pipelines.startErrors = [.deviceLost, nil]
-        harness.controller.launch(presetReady: true)
-        XCTAssertEqual(harness.scheduler.pendingDelays, [1])
-        harness.scheduler.runNext()
-        XCTAssertEqual(harness.state.status, .processing)
-
-        harness.scheduler.run(delay: 30)
-        harness.platform.emit(nil)
-
-        XCTAssertEqual(harness.scheduler.pendingDelays.last, 1)
-    }
-
-    func testSleepTerminateReleaseEverythingAndWakeStartsOnce() {
-        let harness = Harness()
-        harness.controller.launch(presetReady: true)
-
-        harness.controller.willSleep()
-        XCTAssertEqual(harness.pipelines.liveCount, 0)
-        XCTAssertFalse(harness.state.status.isProcessing)
-
-        harness.controller.didWake()
-        XCTAssertEqual(harness.pipelines.liveCount, 1)
-        XCTAssertEqual(harness.pipelines.startedOutputs.count, 2)
-
-        harness.controller.terminate()
-        XCTAssertEqual(harness.pipelines.liveCount, 0)
-        XCTAssertEqual(harness.platform.stopObservationCount, 1)
-    }
-
-    func testEffectReadinessMatrixStartsOnlyRunnableEffects() {
-        let none = Harness(effectGraph: RuntimeEffectGraphFake(spatialReady: false))
-        none.controller.launch(effectReadiness: .init(spatialReady: false, equalizerDefinition: nil))
-        XCTAssertEqual(none.pipelines.startedOutputs.count, 1)
-        XCTAssertEqual(none.pipelines.muteBehaviors, [.unmuted])
-        XCTAssertEqual(none.pipelines.liveCount, 0)
-        XCTAssertEqual(none.state.status, .inactive)
-
-        let spatial = Harness(effectGraph: RuntimeEffectGraphFake(spatialReady: true))
-        spatial.controller.launch(effectReadiness: .init(spatialReady: true, equalizerDefinition: nil))
-        XCTAssertEqual(spatial.pipelines.liveCount, 1)
-
-        let equalizer = Harness(effectGraph: RuntimeEffectGraphFake(spatialReady: false))
-        equalizer.controller.launch(effectReadiness: .init(spatialReady: false, equalizerDefinition: runtimeDefinition()))
-        XCTAssertEqual(equalizer.pipelines.liveCount, 1)
-
-        let both = Harness(effectGraph: RuntimeEffectGraphFake(spatialReady: true))
-        both.controller.launch(effectReadiness: .init(spatialReady: true, equalizerDefinition: runtimeDefinition()))
-        XCTAssertEqual(both.pipelines.liveCount, 1)
-    }
-
-    func testEqualizerTargetChangeDoesNotRecreatePipelineResources() {
-        let graph = RuntimeEffectGraphFake(spatialReady: false)
-        let harness = Harness(effectGraph: graph)
-        harness.controller.launch(effectReadiness: .init(spatialReady: false, equalizerDefinition: runtimeDefinition(gain: 3)))
-        let events = harness.pipelines.events
-
-        harness.controller.updateReadiness(
-            .init(spatialReady: false, equalizerDefinition: runtimeDefinition(gain: -3)),
-            invalidation: .equalizerTarget
-        )
-
-        XCTAssertEqual(harness.pipelines.events, events)
-        XCTAssertEqual(graph.updatedDefinitions.count, 1)
-        XCTAssertEqual(harness.pipelines.liveCount, 1)
-    }
-
-    func testRemovingEqualizerWhileSpatialRemainsKeepsPipelineLive() {
-        let graph = RuntimeEffectGraphFake(spatialReady: true)
-        let harness = Harness(effectGraph: graph)
-        harness.controller.launch(effectReadiness: .init(
-            spatialReady: true,
-            equalizerDefinition: runtimeDefinition()
-        ))
-        let events = harness.pipelines.events
-
-        harness.controller.updateReadiness(
-            .init(spatialReady: true, equalizerDefinition: nil),
-            invalidation: .equalizerTarget
-        )
-
-        XCTAssertEqual(harness.pipelines.events, events)
-        XCTAssertEqual(harness.pipelines.liveCount, 1)
-        XCTAssertEqual(harness.state.status, .processing)
-    }
-
-    func testSoleEqualizerStopIsDelayedAndCancelledBySelection() {
-        let graph = RuntimeEffectGraphFake(spatialReady: false)
-        let harness = Harness(effectGraph: graph)
-        harness.controller.launch(effectReadiness: .init(spatialReady: false, equalizerDefinition: runtimeDefinition()))
-
-        harness.controller.updateReadiness(
-            .init(spatialReady: false, equalizerDefinition: nil),
-            invalidation: .equalizerTarget
-        )
-        XCTAssertEqual(harness.pipelines.liveCount, 1)
-        XCTAssertEqual(harness.scheduler.pendingDelays, [0.020])
-
-        harness.controller.updateReadiness(
-            .init(spatialReady: false, equalizerDefinition: runtimeDefinition(gain: -3)),
-            invalidation: .equalizerTarget
-        )
-        XCTAssertEqual(harness.scheduler.pendingDelays, [30])
-        XCTAssertEqual(harness.pipelines.liveCount, 1)
-
-        harness.controller.updateReadiness(
-            .init(spatialReady: false, equalizerDefinition: nil),
-            invalidation: .equalizerTarget
-        )
-        harness.scheduler.runNext()
-        XCTAssertEqual(harness.pipelines.liveCount, 0)
-        XCTAssertEqual(harness.state.status, .inactive)
-    }
-
-    func testInvalidEqualizerContinuesSpatialAndDoesNotScheduleRetry() {
-        let graph = RuntimeEffectGraphFake(spatialReady: true)
-        graph.warning = AudioEffectWarning(filterLine: 9, reason: "above Nyquist")
-        let harness = Harness(effectGraph: graph)
-        harness.controller.launch(effectReadiness: .init(spatialReady: true, equalizerDefinition: runtimeDefinition()))
-
-        XCTAssertEqual(harness.pipelines.liveCount, 1)
-        XCTAssertEqual(harness.scheduler.pendingDelays, [30])
-        XCTAssertEqual(harness.state.warningMessage, "Equalizer line 9: above Nyquist")
-    }
-
-    func testInvalidEqualizerWithoutSpatialFallsBackNativelyWithoutRetry() {
-        let graph = RuntimeEffectGraphFake(spatialReady: false)
-        graph.warning = AudioEffectWarning(filterLine: 9, reason: "above Nyquist")
-        let harness = Harness(effectGraph: graph)
-        harness.controller.launch(effectReadiness: .init(spatialReady: false, equalizerDefinition: runtimeDefinition()))
-
-        XCTAssertEqual(harness.pipelines.startedOutputs, [])
-        XCTAssertEqual(harness.pipelines.liveCount, 0)
-        XCTAssertEqual(harness.scheduler.pendingDelays, [])
-        guard case .nativePassthrough(let reason) = harness.state.status else {
-            return XCTFail("Expected native passthrough")
-        }
-        XCTAssertTrue(reason.contains("Nyquist"))
-    }
-
-    func testInvalidEqualizerOnlyRecoversOnValidSelectionWithoutRetry() {
-        let graph = RuntimeEffectGraphFake(spatialReady: false)
-        graph.warning = AudioEffectWarning(filterLine: 9, reason: "above Nyquist")
-        let harness = Harness(effectGraph: graph)
-        harness.controller.launch(effectReadiness: .init(spatialReady: false, equalizerDefinition: runtimeDefinition()))
-        XCTAssertEqual(harness.pipelines.startedOutputs, [])
-
-        graph.warning = nil
-        harness.controller.updateReadiness(
-            .init(spatialReady: false, equalizerDefinition: runtimeDefinition(gain: -3)),
-            invalidation: .equalizerTarget
-        )
-
-        XCTAssertEqual(harness.pipelines.startedOutputs.count, 1)
-        XCTAssertEqual(harness.pipelines.liveCount, 1)
-        XCTAssertEqual(harness.scheduler.pendingDelays, [30])
-        XCTAssertNil(harness.state.warningMessage)
-    }
-
-    func testSpatialContinuesThroughInvalidEqualizerAndRecoversOnCompatibleOutput() {
-        let graph = RuntimeEffectGraphFake(spatialReady: true)
-        graph.warning = AudioEffectWarning(filterLine: 9, reason: "above Nyquist")
-        let harness = Harness(effectGraph: graph)
-        harness.controller.launch(effectReadiness: .init(spatialReady: true, equalizerDefinition: runtimeDefinition()))
-        XCTAssertEqual(harness.pipelines.liveCount, 1)
-        XCTAssertNotNil(harness.state.warningMessage)
-
-        graph.warning = nil
-        harness.platform.emit(device(id: 2, name: "Compatible DAC"))
-
-        XCTAssertEqual(harness.pipelines.startedOutputs.count, 2)
-        XCTAssertEqual(harness.pipelines.liveCount, 1)
-        XCTAssertNil(harness.state.warningMessage)
-        XCTAssertEqual(harness.scheduler.pendingDelays, [30])
-    }
-
-    func testAppDelegateLaunchesTheDeviceProfileCoordinator() throws {
-        let sourceURL = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Airwave/AppDelegate.swift")
-        let source = try String(contentsOf: sourceURL, encoding: .utf8)
-
-        XCTAssertTrue(source.contains("DeviceProfileRuntimeCoordinator.shared.launch()"))
-        XCTAssertFalse(source.contains("hrir.$activePreset"))
-        XCTAssertFalse(source.contains("eq.$selectedDefinition"))
+    func testOutputChangeSleepAndTerminationReleaseResources() {
+        let h = Harness(effect: true)
+        h.controller.launch(presetReady: true)
+        XCTAssertEqual(h.pipelines.liveCount, 1)
+
+        h.platform.emit(output(id: 2, name: "USB"))
+        XCTAssertEqual(h.pipelines.liveCount, 1)
+        h.controller.willSleep()
+        XCTAssertEqual(h.pipelines.liveCount, 0)
+        h.controller.didWake()
+        XCTAssertEqual(h.pipelines.liveCount, 1)
+        h.controller.terminate()
+        XCTAssertEqual(h.pipelines.liveCount, 0)
+        XCTAssertGreaterThanOrEqual(h.player.stopCount, 1)
     }
 }
 
 @MainActor
 private final class Harness {
     let state = AudioRuntimeState()
-    let platform: RuntimePlatformFake
-    let pipelines = PipelineRecorder()
-    let scheduler = ManualRuntimeScheduler()
-    let controller: AudioRuntimeController
+    let platform = PlatformFake()
+    let pipelines = PipelineFactoryFake()
+    let scheduler = SchedulerFake()
+    let player = PlayerFake()
+    private(set) lazy var controller: AudioRuntimeController = AudioRuntimeController(
+        state: state,
+        platform: platform,
+        pipelineFactory: { [weak self] in self?.pipelines.make() ?? PipelineFake(owner: PipelineFactoryFake()) },
+        scheduler: scheduler,
+        stimulusPlayer: player
+    )
 
-    init(
-        output: OutputDeviceDescriptor = device(id: 1, name: "Built-in Output"),
-        effectGraph: AudioEffectGraphControlling? = nil
-    ) {
-        platform = RuntimePlatformFake(output: output)
-        controller = AudioRuntimeController(
-            state: state,
-            platform: platform,
-            pipelineFactory: { [pipelines] in pipelines.make() },
-            scheduler: scheduler,
-            effectGraph: effectGraph
-        )
+    init(effect: Bool = false) {
+        pipelines.automaticEvent = effect ? .signalDetected : nil
     }
 }
 
-private final class RuntimeEffectGraphFake: AudioEffectGraphControlling {
-    let spatialReady: Bool
-    var warning: AudioEffectWarning?
-    private(set) var updatedDefinitions: [EqualizerDefinition?] = []
-
-    init(spatialReady: Bool) {
-        self.spatialReady = spatialReady
-    }
-
-    func prepare(for output: OutputDeviceDescriptor, equalizerDefinition: EqualizerDefinition?) -> AudioEffectPreparationResult {
-        var effects = Set<AudioEffectKind>()
-        if spatialReady { effects.insert(.spatial) }
-        if equalizerDefinition != nil, warning == nil { effects.insert(.equalizer) }
-        return AudioEffectPreparationResult(runnableEffects: effects, equalizerWarning: warning)
-    }
-
-    func updateEqualizer(definition: EqualizerDefinition?) -> AudioEffectPreparationResult {
-        updatedDefinitions.append(definition)
-        var effects = Set<AudioEffectKind>()
-        if spatialReady { effects.insert(.spatial) }
-        if definition != nil, warning == nil { effects.insert(.equalizer) }
-        return AudioEffectPreparationResult(runnableEffects: effects, equalizerWarning: warning)
-    }
-}
-
-private func runtimeDefinition(gain: Double = 6) -> EqualizerDefinition {
-    EqualizerDefinition(preampDB: gain, filters: [])
-}
-
-@MainActor
-private final class PipelineRecorder {
-    var events: [String] = []
-    var startedOutputs: [OutputDeviceDescriptor] = []
+private final class PipelineFactoryFake {
+    var automaticEvent: AudioCaptureVerificationEvent?
+    var startError: AudioRuntimeError?
+    var purposes: [AudioPipelinePurpose] = []
     var muteBehaviors: [AudioTapMuteBehavior] = []
-    var startErrors: [AudioRuntimeError?] = []
-    var defaultError: AudioRuntimeError?
-    var stopFailuresRemaining = 0
+    var handlers: [AudioCaptureVerificationHandler] = []
     var liveCount = 0
-    var automaticVerificationEvent: AudioCaptureVerificationEvent? = .tapReady
-    private(set) var verificationHandlers: [AudioCaptureVerificationHandler] = []
-    private var nextID = 0
 
-    func make() -> AudioPipelineControlling {
-        nextID += 1
-        events.append("make:\(nextID)")
-        return PipelineFake(id: nextID, recorder: self)
+    func make() -> PipelineFake {
+        PipelineFake(owner: self)
     }
 
-    func nextError() -> AudioRuntimeError? {
-        if !startErrors.isEmpty { return startErrors.removeFirst() }
-        return defaultError
-    }
-
-    func record(_ handler: @escaping AudioCaptureVerificationHandler) {
-        verificationHandlers.append(handler)
-    }
-
-    func emit(_ event: AudioCaptureVerificationEvent, at index: Int? = nil) {
-        verificationHandlers[index ?? (verificationHandlers.count - 1)](event)
-    }
+    func emit(_ event: AudioCaptureVerificationEvent) { handlers.last?(event) }
 }
 
-@MainActor
 private final class PipelineFake: AudioPipelineControlling {
-    let id: Int
-    unowned let recorder: PipelineRecorder
-    var live = false
+    private weak var owner: PipelineFactoryFake?
 
-    init(id: Int, recorder: PipelineRecorder) { self.id = id; self.recorder = recorder }
+    init(owner: PipelineFactoryFake) { self.owner = owner }
 
-    nonisolated func start(
-        on output: OutputDeviceDescriptor,
-        muteBehavior: AudioTapMuteBehavior,
-        verificationHandler: @escaping AudioCaptureVerificationHandler
-    ) throws {
-        try MainActor.assumeIsolated {
-            recorder.events.append("start:\(id):\(output.name)")
-            recorder.startedOutputs.append(output)
-            recorder.muteBehaviors.append(muteBehavior)
-            if let error = recorder.nextError() { throw error }
-            live = true
-            recorder.liveCount += 1
-            recorder.record(verificationHandler)
-            if let event = recorder.automaticVerificationEvent { verificationHandler(event) }
-        }
+    func start(on output: OutputDeviceDescriptor, muteBehavior: AudioTapMuteBehavior, verificationHandler: @escaping AudioCaptureVerificationHandler) throws {
+        try start(on: output, purpose: muteBehavior == .unmuted ? .verification(includeOwnProcess: true) : .processing, verificationHandler: verificationHandler)
     }
 
-    nonisolated func stop() throws {
-        try MainActor.assumeIsolated {
-            guard live else { return }
-            recorder.events.append("stop:\(id)")
-            if recorder.stopFailuresRemaining > 0 {
-                recorder.stopFailuresRemaining -= 1
-                throw AudioRuntimeError.cleanupFailed("test")
-            }
-            live = false
-            recorder.liveCount -= 1
-        }
+    func start(on output: OutputDeviceDescriptor, purpose: AudioPipelinePurpose, verificationHandler: @escaping AudioCaptureVerificationHandler) throws {
+        guard let owner else { return }
+        if let error = owner.startError { owner.startError = nil; throw error }
+        owner.purposes.append(purpose)
+        owner.muteBehaviors.append(purpose == .processing ? .mutedWhenTapped : .unmuted)
+        owner.handlers.append(verificationHandler)
+        owner.liveCount += 1
+        if let event = owner.automaticEvent { verificationHandler(event) }
     }
+
+    func stop() throws { if let owner, owner.liveCount > 0 { owner.liveCount -= 1 } }
 }
 
-private final class RuntimePlatformFake: AudioPlatformClient {
-    var output: OutputDeviceDescriptor
-    var observer: DefaultOutputChangeHandler?
-    var stopObservationCount = 0
-    var permissionStatus: SystemAudioPermissionStatus = .granted
-    var requestedPermissionStatus: SystemAudioPermissionStatus = .granted
-    var permissionRequestCompletions: [@Sendable (SystemAudioPermissionStatus) -> Void] = []
-    var completesPermissionRequestsAutomatically = true
+private final class PlatformFake: AudioPlatformClient {
+    private var outputHandler: DefaultOutputChangeHandler?
+    var current = output()
 
-    init(output: OutputDeviceDescriptor) { self.output = output }
-    func defaultOutputDevice() throws -> OutputDeviceDescriptor { output }
-    func observeDefaultOutput(_ handler: @escaping DefaultOutputChangeHandler) throws { observer = handler }
-    func stopObservingDefaultOutput() { stopObservationCount += 1; observer = nil }
-    func emit(_ output: OutputDeviceDescriptor?) { if let output { self.output = output }; observer?(output) }
-    func resolveOwnProcess() throws -> AudioProcessHandle { fatalError() }
-    func createGlobalStereoTap(_ request: GlobalStereoTapRequest) throws -> AudioTapHandle { fatalError() }
-    func destroyTap(_ tap: AudioTapHandle) throws { fatalError() }
-    func createPrivateAggregate(tap: AudioTapHandle, output: OutputDeviceDescriptor) throws -> PrivateAggregateHandle { fatalError() }
-    func destroyPrivateAggregate(_ aggregate: PrivateAggregateHandle) throws { fatalError() }
-    func streamFormat(for tap: AudioTapHandle) throws -> AudioStreamFormat { fatalError() }
-    func streamFormat(for aggregate: PrivateAggregateHandle) throws -> AudioStreamFormat { fatalError() }
-    func createIO(
-        aggregate: PrivateAggregateHandle,
-        callback: @escaping AudioIOCallback,
-        verificationHandler: @escaping AudioCaptureVerificationHandler
-    ) throws -> AudioIOHandle { fatalError() }
-    func startIO(_ io: AudioIOHandle) throws { fatalError() }
-    func stopIO(_ io: AudioIOHandle) throws { fatalError() }
-    func destroyIO(_ io: AudioIOHandle) throws { fatalError() }
-    func systemAudioPermissionStatus() -> SystemAudioPermissionStatus { permissionStatus }
-    func requestSystemAudioPermission(
-        _ completion: @escaping @Sendable (SystemAudioPermissionStatus) -> Void
-    ) {
-        permissionRequestCompletions.append(completion)
-        if completesPermissionRequestsAutomatically {
-            permissionStatus = requestedPermissionStatus
-            completion(requestedPermissionStatus)
-        }
-    }
+    func defaultOutputDevice() throws -> OutputDeviceDescriptor { current }
+    func observeDefaultOutput(_ handler: @escaping DefaultOutputChangeHandler) throws { outputHandler = handler }
+    func stopObservingDefaultOutput() { outputHandler = nil }
+    func resolveOwnProcess() throws -> AudioProcessHandle { .init(value: 1) }
+    func createGlobalStereoTap(_ request: GlobalStereoTapRequest) throws -> AudioTapHandle { .init(value: 1) }
+    func destroyTap(_ tap: AudioTapHandle) throws {}
+    func createPrivateAggregate(tap: AudioTapHandle, output: OutputDeviceDescriptor) throws -> PrivateAggregateHandle { .init(value: 1) }
+    func destroyPrivateAggregate(_ aggregate: PrivateAggregateHandle) throws {}
+    func streamFormat(for tap: AudioTapHandle) throws -> AudioStreamFormat { .stereo(sampleRate: 48_000) }
+    func streamFormat(for aggregate: PrivateAggregateHandle) throws -> AudioStreamFormat { .stereo(sampleRate: 48_000) }
+    func createIO(aggregate: PrivateAggregateHandle, callback: @escaping AudioIOCallback, verificationHandler: @escaping AudioCaptureVerificationHandler) throws -> AudioIOHandle { .init(value: 1) }
+    func startIO(_ io: AudioIOHandle) throws {}
+    func stopIO(_ io: AudioIOHandle) throws {}
+    func destroyIO(_ io: AudioIOHandle) throws {}
     func openAudioCapturePermissionSettings() {}
+
+    func emit(_ output: OutputDeviceDescriptor?) { current = output ?? current; outputHandler?(output) }
 }
 
 @MainActor
-private final class RuntimeProfilePreparerFake: OutputEffectProfilePreparing {
-    private var completions: [String: (AudioRuntimeEffectReadiness) -> Void] = [:]
-    private(set) var preparedOutputs: [OutputDeviceDescriptor] = []
-    private(set) var cancelCount = 0
-    private(set) var unavailableCount = 0
-
-    func prepare(
-        output: OutputDeviceDescriptor,
-        completion: @escaping (AudioRuntimeEffectReadiness) -> Void
-    ) {
-        preparedOutputs.append(output)
-        completions[output.uid] = completion
-    }
-
-    func complete(outputUID: String, readiness: AudioRuntimeEffectReadiness) {
-        let completion = completions.removeValue(forKey: outputUID)
-        completion?(readiness)
-    }
-
-    func cancelPreparation() {
-        cancelCount += 1
-        completions.removeAll()
-    }
-
-    func outputBecameUnsupportedOrUnavailable() {
-        unavailableCount += 1
-    }
-}
-
-@MainActor
-private final class ManualRuntimeScheduler: AudioRuntimeScheduling {
-    final class TaskToken: AudioRuntimeCancellation {
-        let delay: TimeInterval
-        var action: (@MainActor () -> Void)?
+private final class SchedulerFake: AudioRuntimeScheduling {
+    final class Task: AudioRuntimeCancellation {
+        let action: () -> Void
         var cancelled = false
-        init(delay: TimeInterval, action: @escaping @MainActor () -> Void) { self.delay = delay; self.action = action }
+        init(_ action: @escaping () -> Void) { self.action = action }
         func cancel() { cancelled = true }
-        @MainActor func runEvenIfCancelled() { let action = action; self.action = nil; action?() }
+        func run() { if !cancelled { action() } }
     }
 
-    var tasks: [TaskToken] = []
-    var pendingDelays: [TimeInterval] { tasks.filter { !$0.cancelled && $0.action != nil }.map(\.delay) }
-    var activeTaskCount: Int { pendingDelays.count }
-    var lastTask: TaskToken? { tasks.last }
-
+    private(set) var tasks: [Task] = []
     func schedule(after delay: TimeInterval, _ action: @escaping @MainActor () -> Void) -> AudioRuntimeCancellation {
-        let task = TaskToken(delay: delay, action: action)
+        let task = Task { action() }
         tasks.append(task)
         return task
     }
-
-    func runNext() {
-        guard let task = tasks.first(where: { !$0.cancelled && $0.action != nil }) else { return }
-        task.runEvenIfCancelled()
-    }
-
-    func run(delay: TimeInterval) {
-        tasks.first(where: { !$0.cancelled && $0.action != nil && $0.delay == delay })?.runEvenIfCancelled()
-    }
+    func runNext() { guard !tasks.isEmpty else { return }; let task = tasks.removeFirst(); task.run() }
 }
 
-private func device(
-    id: UInt64, name: String, channels: Int = 2,
-    virtual: Bool = false, aggregate: Bool = false
-) -> OutputDeviceDescriptor {
-    OutputDeviceDescriptor(
-        id: .init(id), uid: "uid-\(id)", name: name, transport: virtual ? "virt" : "built",
-        outputChannelCount: channels, nominalSampleRate: 48_000,
-        isVirtual: virtual, isAggregate: aggregate
-    )
+@MainActor
+private final class PlayerFake: AudioProbeStimulusPlaying {
+    var playCount = 0
+    var stopCount = 0
+    func play() throws { playCount += 1 }
+    func stop() { stopCount += 1 }
+}
+
+private func output(id: UInt64 = 1, name: String = "Built-in") -> OutputDeviceDescriptor {
+    OutputDeviceDescriptor(id: .init(id), uid: "output-\(id)", name: name, transport: "built-in", outputChannelCount: 2, nominalSampleRate: 48_000, isVirtual: false, isAggregate: false)
 }

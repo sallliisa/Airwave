@@ -1,7 +1,6 @@
 import AppKit
 import AudioToolbox
 import CoreAudio
-import Darwin
 import Foundation
 
 nonisolated enum CoreAudioStatus {
@@ -22,7 +21,18 @@ nonisolated enum CoreAudioStatus {
 
 nonisolated enum CoreAudioErrorMapping {
     static func tapCreation(_ status: OSStatus) -> AudioRuntimeError {
-        .tapCreationFailed(CoreAudioStatus.creationError(status, operation: "Create process tap"))
+        if isPermissionDenied(status) { return .permissionDenied }
+        return .tapCreationFailed(CoreAudioStatus.creationError(status, operation: "Create process tap"))
+    }
+
+    static func aggregateCreation(_ status: OSStatus) -> AudioRuntimeError {
+        if isPermissionDenied(status) { return .permissionDenied }
+        return .aggregateCreationFailed(CoreAudioStatus.creationError(status, operation: "Create private aggregate"))
+    }
+
+    static func ioCreation(_ status: OSStatus, operation: String) -> AudioRuntimeError {
+        if isPermissionDenied(status) { return .permissionDenied }
+        return .ioCreationFailed(CoreAudioStatus.creationError(status, operation: operation))
     }
 
     static func ioStart(_ status: OSStatus) -> AudioRuntimeError {
@@ -39,67 +49,8 @@ nonisolated enum CoreAudioErrorMapping {
 
 nonisolated enum AudioCaptureVerificationPolicy {
     static func event(forRenderStatus status: OSStatus) -> AudioCaptureVerificationEvent {
-        if status == noErr { return .tapReady }
         if CoreAudioErrorMapping.isPermissionDenied(status) { return .permissionDenied }
         return .renderFailed(status)
-    }
-}
-
-nonisolated enum SystemAudioPermissionSPI {
-    typealias PreflightFunction = @convention(c) (CFString, CFDictionary?) -> Int
-    typealias RequestFunction = @convention(c) (
-        CFString,
-        CFDictionary?,
-        @escaping @convention(block) (Bool) -> Void
-    ) -> Void
-
-    private static let service = "kTCCServiceAudioCapture" as CFString
-    private static let frameworkHandle = dlopen(
-        "/System/Library/PrivateFrameworks/TCC.framework/Versions/A/TCC",
-        RTLD_NOW
-    )
-    private static let preflight: PreflightFunction? = load("TCCAccessPreflight")
-    private static let request: RequestFunction? = load("TCCAccessRequest")
-
-    static func currentStatus(using preflight: PreflightFunction? = preflight) -> SystemAudioPermissionStatus {
-        guard let preflight else { return .unknown }
-        return status(forPreflightResult: preflight(service, nil))
-    }
-
-    static func status(forPreflightResult result: Int) -> SystemAudioPermissionStatus {
-        switch result {
-        case 0: .granted
-        case 1: .denied
-        default: .unknown
-        }
-    }
-
-    static func resolvedRequestStatus(
-        requestGranted: Bool,
-        preflightStatus: SystemAudioPermissionStatus
-    ) -> SystemAudioPermissionStatus {
-        guard requestGranted else { return .denied }
-        return preflightStatus == .granted ? .granted : .unknown
-    }
-
-    static func requestAccess(
-        _ completion: @escaping @Sendable (SystemAudioPermissionStatus) -> Void
-    ) {
-        guard let request else {
-            completion(.unknown)
-            return
-        }
-        request(service, nil) { granted in
-            completion(resolvedRequestStatus(
-                requestGranted: granted,
-                preflightStatus: currentStatus()
-            ))
-        }
-    }
-
-    private static func load<T>(_ symbol: String) -> T? {
-        guard let frameworkHandle, let address = dlsym(frameworkHandle, symbol) else { return nil }
-        return unsafeBitCast(address, to: T.self)
     }
 }
 
@@ -212,6 +163,7 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
         let inputRight: UnsafeMutablePointer<Float>
         let inputListStorage: UnsafeMutableRawPointer
         var verificationReported = false
+        var captureSignalPolicy = CaptureSignalPolicy()
 
         init(
             unit: AudioUnit,
@@ -402,7 +354,7 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
             throw AudioRuntimeError.tapCreationFailed("Invalid global stereo tap request")
         }
         let description = CATapDescription(
-            excludingProcesses: [AudioObjectID(request.excludedProcess.value)],
+            excludingProcesses: request.excludedProcesses.map { AudioObjectID($0.value) },
             deviceUID: request.outputDeviceUID,
             stream: UInt(request.streamIndex)
         )
@@ -462,7 +414,7 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
         var aggregateID = AudioObjectID(kAudioObjectUnknown)
         let status = AudioHardwareCreateAggregateDevice(description as CFDictionary, &aggregateID)
         guard status == noErr, aggregateID != kAudioObjectUnknown else {
-            throw AudioRuntimeError.aggregateCreationFailed(CoreAudioStatus.creationError(status, operation: "Create private aggregate"))
+            throw CoreAudioErrorMapping.aggregateCreation(status)
         }
         aggregateIDs.insert(aggregateID)
         return PrivateAggregateHandle(value: UInt64(aggregateID))
@@ -516,7 +468,7 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
         var candidate: AudioUnit?
         var status = AudioComponentInstanceNew(component, &candidate)
         guard status == noErr, let unit = candidate else {
-            throw AudioRuntimeError.ioCreationFailed(CoreAudioStatus.creationError(status, operation: "Create HAL unit"))
+            throw CoreAudioErrorMapping.ioCreation(status, operation: "Create HAL unit")
         }
         do {
             var enabled: UInt32 = 1
@@ -540,7 +492,7 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
             try setUnit(unit, property: kAudioUnitProperty_SetRenderCallback, scope: kAudioUnitScope_Input, element: 0, value: &render)
             status = AudioUnitInitialize(unit)
             guard status == noErr else {
-                throw AudioRuntimeError.ioCreationFailed(CoreAudioStatus.creationError(status, operation: "Initialize HAL unit"))
+                throw CoreAudioErrorMapping.ioCreation(status, operation: "Initialize HAL unit")
             }
             let handle = AudioIOHandle(value: nextIOHandle)
             nextIOHandle += 1
@@ -585,16 +537,6 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
     func openAudioCapturePermissionSettings() {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture") else { return }
         NSWorkspace.shared.open(url)
-    }
-
-    func systemAudioPermissionStatus() -> SystemAudioPermissionStatus {
-        SystemAudioPermissionSPI.currentStatus()
-    }
-
-    func requestSystemAudioPermission(
-        _ completion: @escaping @Sendable (SystemAudioPermissionStatus) -> Void
-    ) {
-        SystemAudioPermissionSPI.requestAccess(completion)
     }
 
     private func getSystemObjectValue<T>(selector: AudioObjectPropertySelector) throws -> T {
@@ -740,7 +682,7 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
             )
         }
         guard status == noErr else {
-            throw AudioRuntimeError.ioCreationFailed(CoreAudioStatus.creationError(status, operation: "Configure HAL unit"))
+            throw CoreAudioErrorMapping.ioCreation(status, operation: "Configure HAL unit")
         }
     }
 
@@ -774,9 +716,14 @@ nonisolated private func coreAudioRenderCallback(
         }
         return status
     }
-    if !context.verificationReported {
+    if !context.verificationReported,
+       context.captureSignalPolicy.observe(
+           inputLeft: UnsafePointer<Float>(context.inputLeft),
+           inputRight: UnsafePointer<Float>(context.inputRight),
+           frameCount: output.frameCount
+       ) {
         context.verificationReported = true
-        context.verificationHandler(AudioCaptureVerificationPolicy.event(forRenderStatus: status))
+        context.verificationHandler(.signalDetected)
     }
     context.callback(
         UnsafePointer<Float>(context.inputLeft),

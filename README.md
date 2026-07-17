@@ -7,7 +7,7 @@ Airwave applies system-wide stereo HRIR convolution on macOS without changing th
 - macOS 15 Sequoia or later
 - A physical stereo output supported by macOS
 - A HeSuVi-compatible 7- or 14-channel HRIR WAV preset
-- System Audio Capture permission
+- System Audio Capture access, verified by Airwave's public capture self-test
 
 BlackHole, public aggregate devices, and other virtual routing software are neither required nor supported. If macOS currently uses one as its output, Airwave stays in native passthrough and asks you to choose a physical stereo output in System Settings.
 
@@ -22,11 +22,11 @@ Airwave is currently distributed without Apple notarization. On first launch, ma
 1. Open Airwave and choose **Manage HRIR Files**.
 2. Copy a compatible stereo HRIR WAV file into the presets folder.
 3. Select the preset for the current output from Airwave's menu.
-4. Grant **System Audio Capture** permission when macOS asks. This is system-audio capture; Airwave does not request microphone access.
+4. Click **Test System Audio Capture**. Airwave starts its public process tap, plays a short bundled sound, and listens for non-silent captured PCM. This is system-audio capture; Airwave does not request microphone access.
 
-Each supported physical stereo output has its own persistent HRIR and EQ profile. The Settings selector shows available supported outputs, so you can configure one before it becomes the macOS default. New devices start at **None / None**; a profile saves only when you first choose an HRIR or EQ preset, not when Airwave observes the device. Processing starts automatically when the selected profile, permission, and supported output are ready. There is no audio-engine toggle. Output changes are made only in macOS; Airwave follows the current default output automatically.
+Each supported physical stereo output has its own persistent HRIR and EQ profile. The Settings selector shows available supported outputs, so you can configure one before it becomes the macOS default. New devices start at **None / None**; a profile saves only when you first choose an HRIR or EQ preset, not when Airwave observes the device. Processing starts automatically after same-session capture verification and when the selected profile and supported output are ready. A successful test proves current capture capability, not a permanent authorization status. Ad-hoc rebuilds can have a new macOS identity and may require the test again. There is no audio-engine toggle. Output changes are made only in macOS; Airwave follows the current default output automatically.
 
-Airwave never changes macOS volume. If capture, output, or permission becomes unavailable, Airwave releases its private audio objects and native audio continues unprocessed. Status and recovery guidance appear in the menu and Settings.
+Airwave never changes macOS volume. If capture or output becomes unavailable, Airwave releases its private audio objects and native audio continues unprocessed. Status and recovery guidance appear in the menu and Settings.
 
 ## Equalizer
 

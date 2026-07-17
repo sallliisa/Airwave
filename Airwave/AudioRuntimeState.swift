@@ -3,17 +3,11 @@ import Combine
 
 @MainActor
 final class AudioRuntimeState: ObservableObject {
-    enum PermissionStatus: Equatable {
-        case unknown
+    enum CaptureAccess: Equatable {
+        case unverified
         case checking
-        case granted
-        case denied
-    }
-
-    enum TapHealth: Equatable {
-        case idle
-        case checking
-        case ready
+        case verified
+        case permissionRequired
         case failed(reason: String)
     }
 
@@ -45,7 +39,7 @@ final class AudioRuntimeState: ObservableObject {
             case .inactive:
                 "No HRIR preset selected; native audio remains unchanged."
             case .needsPermission:
-                "Allow System Audio Capture in macOS Settings to enable processing."
+                "System Audio Capture needs access before processing can start."
             case .starting:
                 "Airwave is preparing native audio processing."
             case .processing:
@@ -53,16 +47,13 @@ final class AudioRuntimeState: ObservableObject {
             }
         }
 
-        var isProcessing: Bool {
-            self == .processing
-        }
+        var isProcessing: Bool { self == .processing }
     }
 
     static let shared = AudioRuntimeState()
 
     @Published private(set) var status: Status
-    @Published private(set) var permissionStatus: PermissionStatus
-    @Published private(set) var tapHealth: TapHealth
+    @Published private(set) var captureAccess: CaptureAccess
     @Published private(set) var currentOutput: OutputDeviceDescriptor?
     @Published private(set) var warningMessage: String?
 
@@ -70,43 +61,31 @@ final class AudioRuntimeState: ObservableObject {
         status: Status = .unavailable("Airwave 2.0 audio backend is not installed yet"),
         currentOutput: OutputDeviceDescriptor? = nil,
         warningMessage: String? = nil,
-        permissionStatus: PermissionStatus = .unknown,
-        tapHealth: TapHealth = .idle
+        captureAccess: CaptureAccess = .unverified
     ) {
         self.status = status
-        self.permissionStatus = permissionStatus
-        self.tapHealth = tapHealth
+        self.captureAccess = captureAccess
         self.currentOutput = currentOutput
         self.warningMessage = warningMessage
     }
 
-    func setPermissionStatus(_ permissionStatus: PermissionStatus) {
-        self.permissionStatus = permissionStatus
-    }
-
-    func setTapHealth(_ tapHealth: TapHealth) {
-        self.tapHealth = tapHealth
+    func setCaptureAccess(_ captureAccess: CaptureAccess) {
+        self.captureAccess = captureAccess
     }
 
     var isSetupHealthy: Bool {
-        guard permissionStatus == .granted,
-              tapHealth == .ready,
-              let currentOutput else { return false }
-        return currentOutput.isSupportedProfileOutput
+        captureAccess == .verified && (currentOutput?.isSupportedProfileOutput == true)
     }
 
     func publish(
         _ status: Status,
         output: OutputDeviceDescriptor? = nil,
         warning: String? = nil,
-        permission: PermissionStatus? = nil,
-        tapHealth: TapHealth? = nil
+        captureAccess: CaptureAccess? = nil
     ) {
-        if let permission { permissionStatus = permission }
-        if let tapHealth { self.tapHealth = tapHealth }
+        if let captureAccess { self.captureAccess = captureAccess }
         self.currentOutput = output
         self.status = status
         self.warningMessage = warning
     }
-
 }

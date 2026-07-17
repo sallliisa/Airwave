@@ -90,8 +90,13 @@ nonisolated enum AudioTapMuteBehavior: Equatable, Sendable {
     case mutedWhenTapped
 }
 
+nonisolated enum AudioPipelinePurpose: Equatable, Sendable {
+    case verification(includeOwnProcess: Bool)
+    case processing
+}
+
 nonisolated struct GlobalStereoTapRequest: Equatable, Sendable {
-    let excludedProcess: AudioProcessHandle
+    let excludedProcesses: [AudioProcessHandle]
     let outputDeviceUID: String
     let streamIndex: Int
     let isGlobal: Bool
@@ -100,17 +105,25 @@ nonisolated struct GlobalStereoTapRequest: Equatable, Sendable {
     let muteBehavior: AudioTapMuteBehavior
 
     init(
-        excludedProcess: AudioProcessHandle,
+        excludedProcesses: [AudioProcessHandle],
         output: OutputDeviceDescriptor,
         muteBehavior: AudioTapMuteBehavior = .mutedWhenTapped
     ) {
-        self.excludedProcess = excludedProcess
+        self.excludedProcesses = excludedProcesses
         self.outputDeviceUID = output.uid
         self.streamIndex = 0
         self.isGlobal = true
         self.channelCount = 2
         self.isPrivate = true
         self.muteBehavior = muteBehavior
+    }
+
+    init(
+        excludedProcess: AudioProcessHandle,
+        output: OutputDeviceDescriptor,
+        muteBehavior: AudioTapMuteBehavior = .mutedWhenTapped
+    ) {
+        self.init(excludedProcesses: [excludedProcess], output: output, muteBehavior: muteBehavior)
     }
 }
 
@@ -127,12 +140,6 @@ nonisolated enum AudioRuntimeError: Error, Equatable {
     case cleanupFailed(String)
 }
 
-nonisolated enum SystemAudioPermissionStatus: Equatable, Sendable {
-    case unknown
-    case denied
-    case granted
-}
-
 typealias DefaultOutputChangeHandler = (OutputDeviceDescriptor?) -> Void
 typealias AvailableOutputChangeHandler = ([OutputDeviceDescriptor]) -> Void
 typealias AudioIOCallback = (
@@ -143,10 +150,40 @@ typealias AudioIOCallback = (
     _ frameCount: Int
 ) -> Void
 
+nonisolated struct CaptureSignalPolicy: Equatable, Sendable {
+    static let sampleThreshold: Float = 0.0001
+    static let minimumSustainedFrames = 2_048
+
+    private var sustainedFrames = 0
+
+    mutating func observe(
+        inputLeft: UnsafePointer<Float>,
+        inputRight: UnsafePointer<Float>?,
+        frameCount: Int
+    ) -> Bool {
+        guard frameCount > 0 else { return false }
+        for index in 0..<frameCount {
+            let left = inputLeft[index]
+            let right = inputRight?[index] ?? left
+            let active = left.isFinite && right.isFinite
+                && (abs(left) >= Self.sampleThreshold || abs(right) >= Self.sampleThreshold)
+            if active {
+                sustainedFrames += 1
+                if sustainedFrames >= Self.minimumSustainedFrames { return true }
+            } else {
+                sustainedFrames = 0
+            }
+        }
+        return false
+    }
+}
+
 nonisolated enum AudioCaptureVerificationEvent: Equatable, Sendable {
-    case tapReady
+    case signalDetected
     case permissionDenied
     case renderFailed(OSStatus)
+
+    static let tapReady = Self.signalDetected
 }
 
 typealias AudioCaptureVerificationHandler = @Sendable (AudioCaptureVerificationEvent) -> Void
@@ -179,21 +216,7 @@ nonisolated protocol AudioPlatformClient: AnyObject {
     func stopIO(_ io: AudioIOHandle) throws
     func destroyIO(_ io: AudioIOHandle) throws
 
-    func systemAudioPermissionStatus() -> SystemAudioPermissionStatus
-    func requestSystemAudioPermission(
-        _ completion: @escaping @Sendable (SystemAudioPermissionStatus) -> Void
-    )
     func openAudioCapturePermissionSettings()
-}
-
-extension AudioPlatformClient {
-    func systemAudioPermissionStatus() -> SystemAudioPermissionStatus { .unknown }
-
-    func requestSystemAudioPermission(
-        _ completion: @escaping @Sendable (SystemAudioPermissionStatus) -> Void
-    ) {
-        completion(.unknown)
-    }
 }
 
 nonisolated protocol OutputDeviceDiscovering: AnyObject {

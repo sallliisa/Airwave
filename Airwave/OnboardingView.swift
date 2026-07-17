@@ -138,26 +138,25 @@ struct OnboardingView: View {
     private var systemAudioStep: some View {
         VStack(alignment: .leading, spacing: AirwaveLayout.sectionContentSpacing) {
             Text("Allow Airwave to capture system audio so it can apply the selected HRIR preset. Airwave does not use microphone access.")
-            permissionStatusCard
-            tapHealthStatusCard
+            captureAccessCard
 
             HStack {
-                switch viewModel.permissionPresentation {
-                case .denied:
+                switch viewModel.captureAccessPresentation {
+                case .permissionRequired:
                     Button("Open System Settings") { viewModel.openPermissionSettings() }
                         .buttonStyle(.borderedProminent)
-                    Button("Verify Again") { viewModel.requestPermission() }.buttonStyle(.bordered)
+                    Button("Test Again") { viewModel.requestPermission() }.buttonStyle(.bordered)
                 case .checking:
                     ProgressView().controlSize(.small)
-                    Text("Requesting access…").font(.callout).foregroundStyle(.secondary)
-                case .unknown, .granted:
+                    Text("Playing a short test sound…").font(.callout).foregroundStyle(.secondary)
+                case .unverified, .verified, .failed:
                     Button(
-                        viewModel.permissionPresentation == .unknown
-                            ? "Allow System Audio Capture"
-                            : "System Audio Capture Verified"
+                        viewModel.captureAccessPresentation == .verified
+                            ? "System Audio Capture Verified"
+                            : "Test System Audio Capture"
                     ) { viewModel.requestPermission() }
                         .buttonStyle(.borderedProminent)
-                        .disabled(viewModel.permissionPresentation == .granted)
+                        .disabled(viewModel.captureAccessPresentation == .verified)
                 }
             }
         }
@@ -286,35 +285,38 @@ struct OnboardingView: View {
         }
     }
 
-    private var permissionStatusCard: some View {
-        switch viewModel.permissionPresentation {
-        case .unknown:
-            statusCard(icon: "circle", color: .secondary, title: "macOS Permission", detail: "Ready to verify System Audio Capture access.")
+    private var captureAccessCard: some View {
+        let icon: String
+        let color: Color
+        let detail: String
+        switch viewModel.captureAccessPresentation {
+        case .unverified:
+            icon = "circle"
+            color = .secondary
+            detail = "Airwave will play a short sound and listen for captured system audio."
         case .checking:
-            statusCard(icon: "hourglass", color: .secondary, title: "macOS Permission", detail: "Respond to the macOS permission prompt, then return to Airwave.")
-        case .granted:
-            statusCard(icon: "checkmark.seal.fill", color: .green, title: "macOS Permission", detail: "System Audio Capture is available to Airwave.")
-        case .denied:
-            statusCard(icon: "exclamationmark.triangle.fill", color: .orange, title: "macOS Permission", detail: "Permission required. Enable Airwave in Privacy & Security, then verify again.")
-        }
-    }
-
-    private var tapHealthStatusCard: some View {
-        switch runtime.tapHealth {
-        case .idle:
-            statusCard(icon: "circle", color: .secondary, title: "Audio Tap Health", detail: "Run verification to check the Core Audio tap path.")
-        case .checking:
-            statusCard(icon: "hourglass", color: .secondary, title: "Audio Tap Health", detail: "Checking tap, aggregate device, and audio I/O setup.")
-        case .ready:
-            statusCard(icon: "checkmark.seal.fill", color: .green, title: "Audio Tap Health", detail: "Core Audio tap setup is ready.")
+            icon = "hourglass"
+            color = .secondary
+            detail = "A short test sound may play while Airwave verifies captured PCM."
+        case .verified:
+            icon = "checkmark.seal.fill"
+            color = .green
+            detail = "Airwave successfully captured system audio."
+        case .permissionRequired:
+            icon = "exclamationmark.triangle.fill"
+            color = .orange
+            detail = "Enable Airwave in Privacy & Security, then test again."
         case .failed(let reason):
-            statusCard(icon: "exclamationmark.triangle.fill", color: .orange, title: "Audio Tap Health", detail: reason)
+            icon = "exclamationmark.triangle.fill"
+            color = .orange
+            detail = reason
         }
+        return statusCard(icon: icon, color: color, title: "System Audio Capture", detail: detail)
     }
 
     private var readinessPresentation: OnboardingReadinessPresentation {
         OnboardingReadinessPresentation.make(
-            permission: viewModel.permissionPresentation,
+            captureAccess: viewModel.captureAccessPresentation,
             hasPreset: profiles.currentProfile?.hrirPresetID != nil,
             runtimeStatus: runtime.status,
             isReady: viewModel.canComplete
@@ -351,7 +353,7 @@ struct OnboardingView: View {
 
 struct OnboardingProgressIndicator: View {
     let currentStep: OnboardingStepV2
-    let permission: SystemAudioPermissionPresentation
+    let permission: CaptureAccessPresentation
     let hasPreset: Bool
     let isReady: Bool
     let onSelect: (OnboardingStepV2) -> Void
@@ -377,10 +379,10 @@ struct OnboardingProgressIndicator: View {
         case .welcome: .complete
         case .systemAudio:
             switch permission {
-            case .granted: .complete
-            case .denied: .attention
+            case .verified: .complete
+            case .permissionRequired, .failed: .attention
             case .checking: .checking
-            case .unknown: .incomplete
+            case .unverified: .incomplete
             }
         case .hrirPreset: .complete
         case .liveHealth: isReady ? .complete : .incomplete

@@ -23,7 +23,26 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project Air
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project Airwave.xcodeproj -scheme Airwave -configuration Release -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO analyze
 ```
 
-CI runs no TCC or hardware-dependent capture test. Lifecycle tests use injected platform and scheduler fakes. Release workflow verifies the archived bundle requires macOS 15 and refuses an appcast without `sparkle:minimumSystemVersion` 15.0.
+CI runs no hardware-dependent capture test. Lifecycle tests use injected platform, scheduler, and stimulus-player fakes. Release workflow verifies the archived bundle requires macOS 15 and refuses an appcast without `sparkle:minimumSystemVersion` 15.0.
+
+## Plan 006 public capture self-test matrix
+
+Automated tests prove state transitions, sustained non-silent signal detection, all-process versus own-process-excluding taps, silent verification output, cleanup, stale callback rejection, and bundled-resource identity. Physical rows below remain `NOT TESTED` until run on macOS 15 and current macOS with the exact ad-hoc archive shape used for distribution.
+
+| Scenario | Result | Required evidence / observation |
+|---|---|---|
+| Reset access, launch, explicit test, allow | NOT TESTED | One audible bundled WAV; successful captured signal; one live probe at most |
+| Reset access, launch, explicit test, deny | NOT TESTED | Native WAV remains audible; permission-required state; no muted pipeline remains |
+| Denied → System Settings → enable → return → test | NOT TESTED | Test succeeds without restart; returning active replays once |
+| Silent Mac with explicit test | NOT TESTED | Known WAV succeeds; passive launch does not play bundled WAV |
+| Selected effect with real audio | NOT TESTED | First brief segment native; promotion then muted processing; no duplicate/silence |
+| Output 44.1 / 48 / 88.2 / 96 kHz | NOT TESTED | Capture test and processing pass where hardware supports rate |
+| Built-in / USB / HDMI / Bluetooth | NOT TESTED | Supported physical stereo outputs preserve native output and volume |
+| Output change / sleep-wake / revoke / close setup / quit | NOT TESTED | Probe/player stop; native audio remains available; no stale callback success |
+| Install identical archive twice | NOT TESTED | Access remains associated with unchanged binary |
+| Install rebuilt ad-hoc archive | NOT TESTED | New prompt is expected identity behavior, not probe regression |
+
+Ad-hoc signatures do not provide stable identity across rebuilt releases. A successful self-test is behavioral evidence for current capture only; it is not persisted as a permanent access grant. Do not treat a new prompt after an ad-hoc update as a capture-path failure.
 
 ## Equalizer product validation
 
@@ -86,7 +105,7 @@ Validation date: 2026-07-16. Signed Debug build used Xcode “Sign to Run Locall
 | Attach second output without selecting it | NOT TESTED | Requires physical device run |
 | Default output A→B recovery | PASS | 44.1 kHz Bluetooth ↔ 48 kHz built-in transition recovered processed audio |
 | Quit/relaunch keeps onboarding complete | NOT TESTED | Requires signed app run |
-| Explicit revoked/denied access has terminal guidance | PASS (automated) | State/controller tests: explicit request ends `.granted`, `.denied`, or `.unknown`; generic recovery never presents requesting |
+| Explicit revoked/denied access has terminal guidance | PASS (automated) | State/controller tests distinguish `verified`, `permissionRequired`, and `failed(reason:)`; generic recovery never claims authorization |
 | Normal quit releases resources; route/volume unchanged | PASS | Native audio resumed; output identity and volume remained unchanged |
 
 ## Performance observations
