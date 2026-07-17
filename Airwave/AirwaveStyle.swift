@@ -208,7 +208,6 @@ nonisolated enum HRIRDeletionDecision {
 
 nonisolated struct HRIRSettingsMessage: Equatable {
     let text: String
-    let isSuccess: Bool
 }
 
 @MainActor
@@ -259,7 +258,7 @@ final class HRIRSettingsCoordinator: ObservableObject {
         case .keepExisting:
             importURLs(urls, collisionPolicy: .reject, preflightFailures: failures)
         case .cancel:
-            message = makeMessage(imported: [], skipped: [], failures: failures)
+            message = makeMessage(failures: failures)
         }
     }
 
@@ -290,15 +289,11 @@ final class HRIRSettingsCoordinator: ObservableObject {
         guard manager.deletePreset(preset) else {
             message = HRIRSettingsMessage(
                 text: manager.errorMessage.map { "Could not delete \(preset.name): \($0)" }
-                    ?? "Could not delete the managed HRIR preset.",
-                isSuccess: false
+                    ?? "Could not delete the managed HRIR preset."
             )
             return false
         }
-        message = HRIRSettingsMessage(
-            text: "Deleted \(preset.name) from the managed HRIR Presets folder.",
-            isSuccess: true
-        )
+        message = nil
         return true
     }
 
@@ -308,34 +303,13 @@ final class HRIRSettingsCoordinator: ObservableObject {
         preflightFailures: [HRIRImportFailure] = []
     ) {
         let result = manager.importPresets(urls, collisionPolicy: collisionPolicy)
-        message = makeMessage(
-            imported: result.imported,
-            skipped: result.skipped,
-            failures: preflightFailures + result.failures
-        )
+        message = makeMessage(failures: preflightFailures + result.failures)
     }
 
-    private func makeMessage(
-        imported: [HRIRPreset],
-        skipped: [String],
-        failures: [HRIRImportFailure]
-    ) -> HRIRSettingsMessage {
-        var parts: [String] = []
-        if !imported.isEmpty {
-            parts.append("Imported \(imported.count) preset\(imported.count == 1 ? "" : "s").")
-        }
-        if !skipped.isEmpty {
-            parts.append("Kept existing: \(skipped.joined(separator: ", ")).")
-        }
-        if !failures.isEmpty {
-            parts.append(failures.map { "\($0.filename): \($0.reason)" }.joined(separator: " • "))
-        }
-        if parts.isEmpty {
-            parts.append("No presets were imported.")
-        }
+    private func makeMessage(failures: [HRIRImportFailure]) -> HRIRSettingsMessage? {
+        guard !failures.isEmpty else { return nil }
         return HRIRSettingsMessage(
-            text: parts.joined(separator: " "),
-            isSuccess: !imported.isEmpty && failures.isEmpty
+            text: failures.map { "\($0.filename): \($0.reason)" }.joined(separator: " • ")
         )
     }
 }
@@ -706,7 +680,7 @@ struct AirwaveHRIRPicker: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if let message = coordinator.message {
                 HStack(spacing: 8) {
-                    Image(systemName: message.isSuccess ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    Image(systemName: "exclamationmark.triangle.fill")
                     Text(message.text).font(.caption).foregroundStyle(.secondary)
                     Spacer(minLength: 0)
                     Button("Dismiss") { coordinator.dismissMessage() }

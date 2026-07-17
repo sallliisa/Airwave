@@ -26,14 +26,9 @@ nonisolated struct DeviceManagementConfirmation: Equatable {
     let destructiveButtonTitle: String
 }
 
-nonisolated struct DeviceManagementResult: Equatable {
-    let text: String
-}
-
 @MainActor
 final class DeviceManagementCoordinator: ObservableObject {
     @Published private(set) var pendingConfirmation: DeviceManagementConfirmation?
-    @Published private(set) var result: DeviceManagementResult?
 
     private let profileManager: DeviceProfileManager
     private let hrirManager: HRIRManager
@@ -129,35 +124,18 @@ final class DeviceManagementCoordinator: ObservableObject {
         guard let confirmation = pendingConfirmation else { return false }
         pendingConfirmation = nil
 
-        let changed: Bool
         switch confirmation.action {
         case .reset:
-            changed = resetOperation(confirmation.deviceUID)
-            result = DeviceManagementResult(
-                text: changed
-                    ? "Reset " + confirmation.deviceName + " profile. HRIR and EQ are now None."
-                    : "No changes were made to " + confirmation.deviceName + " profile."
-            )
+            return resetOperation(confirmation.deviceUID)
         case .forget:
-            changed = forgetOperation(confirmation.deviceUID)
-            result = DeviceManagementResult(
-                text: changed
-                    ? "Forgot " + confirmation.deviceName + ". Select it from the device selector to recreate its profile."
-                    : "No changes were made for " + confirmation.deviceName + "."
-            )
+            return forgetOperation(confirmation.deviceUID)
         }
-        return changed
-    }
-
-    func dismissResult() {
-        result = nil
     }
 }
 
 struct DeviceManagementView: View {
     @StateObject private var coordinator: DeviceManagementCoordinator
     @State private var selectedDeviceUID: String?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(
         profileManager: DeviceProfileManager,
@@ -182,23 +160,6 @@ struct DeviceManagementView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: AirwaveLayout.sectionContentSpacing) {
-            if let result = coordinator.result {
-                HStack(spacing: 8) {
-                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                    Text(result.text).font(.system(size: 11)).foregroundStyle(.secondary)
-                    Spacer(minLength: 8)
-                    Button("Dismiss", action: coordinator.dismissResult)
-                        .buttonStyle(.plain)
-                        .font(.system(size: 11, weight: .medium))
-                }
-                .padding(.horizontal, AirwaveLayout.rowHorizontalPadding)
-                .padding(.vertical, AirwaveLayout.rowVerticalPadding)
-                .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: AirwaveLayout.cardCornerRadius))
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("Result: \(result.text)")
-                .transition(.opacity)
-            }
-
             VStack(spacing: 0) {
                 ZStack {
                     if coordinator.rows.isEmpty {
@@ -234,7 +195,6 @@ struct DeviceManagementView: View {
                 return
             }
         }
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: coordinator.result)
         .confirmationDialog(
             coordinator.pendingConfirmation?.title ?? "",
             isPresented: Binding(

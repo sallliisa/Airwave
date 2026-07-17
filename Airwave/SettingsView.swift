@@ -203,31 +203,29 @@ struct SettingsView: View {
             AirwavePalette.canvas.ignoresSafeArea()
 
             AirwavePageLayout(mode: pageLayoutMode) {
-                VStack(alignment: .leading, spacing: 0) {
-                    ZStack(alignment: .topLeading) {
+                ZStack(alignment: .topLeading) {
+                    VStack(alignment: .leading, spacing: 0) {
                         pageHeader
-                            .id(page.wrappedValue)
-                            .transition(pageRevealTransition)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .animation(settingsPageAnimation, value: page.wrappedValue)
 
-                    Color.clear.frame(height: AirwaveLayout.pageHeaderContentMinimumSpacing)
+                        Color.clear.frame(height: AirwaveLayout.pageHeaderContentMinimumSpacing)
 
-                    VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
-                        ZStack(alignment: .topLeading) {
+                        VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
                             settingsPageContent
-                        }
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                        .animation(settingsPageAnimation, value: page.wrappedValue)
+                                .frame(maxWidth: .infinity, alignment: .topLeading)
 
-                        #if DEBUG
-                        if page.wrappedValue == .general {
-                            debugSection
+                            #if DEBUG
+                            if page.wrappedValue == .general {
+                                debugSection
+                            }
+                            #endif
                         }
-                        #endif
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .id(page.wrappedValue)
+                    .transition(pageRevealTransition)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .animation(settingsPageAnimation, value: page.wrappedValue)
             }
 
         }
@@ -256,16 +254,12 @@ struct SettingsView: View {
         switch page.wrappedValue {
         case .general:
             generalPage
-                .transition(pageRevealTransition)
         case .equalizer:
             EqualizerSettingsView()
-                .transition(pageRevealTransition)
         case .devices:
             DeviceManagementView()
-                .transition(pageRevealTransition)
         case .application:
             applicationPage
-                .transition(pageRevealTransition)
         }
     }
 

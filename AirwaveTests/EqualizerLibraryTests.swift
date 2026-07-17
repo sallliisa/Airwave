@@ -151,6 +151,37 @@ final class EqualizerLibraryTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: context.managed.appendingPathComponent("Link.txt").path))
     }
 
+    func testSettingsCoordinatorSuppressesSuccessfulActionsAndSkippedImports() throws {
+        let context = try TestContext()
+        let source = try context.writePreset(named: "Curve.txt", preamp: 1)
+        let coordinator = EqualizerSettingsCoordinator(manager: context.manager)
+
+        coordinator.receive([source])
+        let imported = try XCTUnwrap(context.manager.presets.first)
+        XCTAssertNil(coordinator.message)
+
+        coordinator.receive([source])
+        XCTAssertEqual(coordinator.conflicts, [source])
+        coordinator.resolveConflicts(.keepExisting)
+        XCTAssertNil(coordinator.message)
+
+        XCTAssertTrue(coordinator.delete(imported, decision: .confirm))
+        XCTAssertNil(coordinator.message)
+    }
+
+    func testSettingsCoordinatorRetainsMixedImportFailures() throws {
+        let context = try TestContext()
+        let valid = try context.writePreset(named: "Valid.txt", preamp: 1)
+        let invalid = try context.writePreset(named: "Invalid.txt", preamp: nil)
+        let coordinator = EqualizerSettingsCoordinator(manager: context.manager)
+
+        coordinator.receive([invalid, valid])
+
+        XCTAssertTrue(coordinator.message?.text.contains("Invalid.txt") == true)
+        XCTAssertTrue(coordinator.message?.text.contains("unsupported directive") == true)
+        XCTAssertEqual(context.manager.presets.map(\.displayName), ["Valid"])
+    }
+
     func testCorruptManifestErrorIsPreservedAlongsideValidPresetRows() throws {
         let context = try TestContext()
         let valid = context.managed.appendingPathComponent("Valid.txt")

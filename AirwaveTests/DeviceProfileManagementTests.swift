@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import XCTest
 @testable import Airwave
@@ -81,10 +82,10 @@ final class DeviceProfileManagementTests: XCTestCase {
         coordinator.requestReset(deviceUID: "remembered")
         XCTAssertTrue(coordinator.confirmPendingAction())
         XCTAssertEqual(resetCalls, ["remembered"])
-        XCTAssertEqual(coordinator.result?.text, "Reset Studio DAC profile. HRIR and EQ are now None.")
+        XCTAssertNil(coordinator.pendingConfirmation)
     }
 
-    func testForgetConfirmationAndResultUseExpectedCopyAndManagerCall() throws {
+    func testForgetConfirmationUsesExpectedCopyAndManagerCallWithoutResultFeedback() throws {
         let context = try ManagementContext()
         seedProfile(context.profiles, profileDevice(id: 1, uid: "remembered", name: "Studio DAC"))
         context.date = context.date.addingTimeInterval(1)
@@ -106,10 +107,38 @@ final class DeviceProfileManagementTests: XCTestCase {
         ))
         XCTAssertTrue(coordinator.confirmPendingAction())
         XCTAssertEqual(forgetCalls, ["remembered"])
-        XCTAssertEqual(
-            coordinator.result?.text,
-            "Forgot Studio DAC. Select it from the device selector to recreate its profile."
-        )
+        XCTAssertNil(coordinator.pendingConfirmation)
+    }
+
+    func testHRIRSettingsCoordinatorSuppressesSuccessfulActionsAndSkippedImports() throws {
+        let context = try ManagementContext()
+        let source = context.root.appendingPathComponent("Room.wav")
+        try writeTestWAV(to: source)
+        let coordinator = HRIRSettingsCoordinator(manager: context.hrir)
+
+        coordinator.receive([source])
+        let imported = try XCTUnwrap(context.hrir.presets.first)
+        XCTAssertNil(coordinator.message)
+
+        coordinator.receive([source])
+        XCTAssertEqual(coordinator.conflicts, [source])
+        coordinator.resolveConflicts(.keepExisting)
+        XCTAssertNil(coordinator.message)
+
+        XCTAssertTrue(coordinator.delete(imported, decision: .confirm))
+        XCTAssertNil(coordinator.message)
+    }
+
+    func testHRIRSettingsCoordinatorRetainsImportFailures() throws {
+        let context = try ManagementContext()
+        let invalid = context.root.appendingPathComponent("broken.txt")
+        try Data("not a WAV\n".utf8).write(to: invalid)
+        let coordinator = HRIRSettingsCoordinator(manager: context.hrir)
+
+        coordinator.receive([invalid])
+
+        XCTAssertTrue(coordinator.message?.text.contains("broken.txt") == true)
+        XCTAssertTrue(coordinator.message?.text.contains("WAV") == true)
     }
 
     func testCurrentForgetIsDisabledAndCannotCreateConfirmation() throws {
@@ -203,4 +232,14 @@ private func seedProfile(_ manager: DeviceProfileManager, _ output: OutputDevice
     manager.setHRIRPresetID(UUID(), for: output.uid)
     manager.setHRIRPresetID(nil, for: output.uid)
     manager.observeCurrentOutput(output)
+}
+
+private func writeTestWAV(to url: URL) throws {
+    let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2))
+    let file = try AVAudioFile(forWriting: url, settings: format.settings)
+    let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1))
+    buffer.frameLength = 1
+    buffer.floatChannelData?[0][0] = 0
+    buffer.floatChannelData?[1][0] = 0
+    try file.write(from: buffer)
 }
