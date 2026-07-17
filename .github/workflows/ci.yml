@@ -27,6 +27,6 @@ jobs:
       - name: Verify bundled presets
         run: scripts/verify-bundled-presets.sh "$PWD/build/DebugDerivedData/Build/Products/Debug/Airwave.app"
       - name: Test
-        run: DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project Airwave.xcodeproj -scheme Airwave -destination 'platform=macOS' -derivedDataPath build/DebugDerivedData CODE_SIGNING_ALLOWED=NO test
+        run: DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project Airwave.xcodeproj -scheme Airwave -configuration Debug -destination 'platform=macOS' -derivedDataPath build/DebugDerivedData CODE_SIGNING_ALLOWED=NO test
       - name: Analyze
         run: DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project Airwave.xcodeproj -scheme Airwave -configuration Debug -destination 'platform=macOS' -derivedDataPath build/DebugDerivedData CODE_SIGNING_ALLOWED=NO analyze
