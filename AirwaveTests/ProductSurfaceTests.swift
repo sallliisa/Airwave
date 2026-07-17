@@ -34,6 +34,29 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertTrue(settings.contains("isReady: onboarding.runtime.isSetupHealthy"))
     }
 
+    func testSettingsPageUsesOneUnifiedTransition() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("Airwave/SettingsView.swift"),
+            encoding: .utf8
+        )
+
+        let settingsStart = try XCTUnwrap(source.range(of: "struct SettingsView: View"))
+        let generalPageStart = try XCTUnwrap(
+            source.range(of: "private var generalPage", range: settingsStart.lowerBound..<source.endIndex)
+        )
+        let pageSwitchingSource = String(source[settingsStart.lowerBound..<generalPageStart.lowerBound])
+        XCTAssertTrue(pageSwitchingSource.contains(".id(page.wrappedValue)"))
+        XCTAssertEqual(
+            pageSwitchingSource.components(separatedBy: ".transition(pageRevealTransition)").count - 1,
+            1
+        )
+
+        let pageContentStart = try XCTUnwrap(pageSwitchingSource.range(of: "private var settingsPageContent"))
+        let pageContentSource = pageSwitchingSource[pageContentStart.lowerBound...]
+        XCTAssertFalse(pageContentSource.contains(".transition("))
+    }
+
     func testRegisteredDevicesUsesSelectableRowsAndPickerFooterActions() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let source = try String(
@@ -54,6 +77,32 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertFalse(rowSource.contains("Button(\"Forget Device\")"))
         XCTAssertFalse(rowSource.contains("Image(systemName: \"checkmark\")"))
         XCTAssertTrue(source[source.startIndex..<row.lowerBound].contains("Divider()"))
+    }
+
+    func testPickerActionsHaveNoSuccessIndicatorsButRetainFailureFeedback() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let device = try String(
+            contentsOf: root.appendingPathComponent("Airwave/DeviceManagementView.swift"),
+            encoding: .utf8
+        )
+        let hrir = try String(
+            contentsOf: root.appendingPathComponent("Airwave/AirwaveStyle.swift"),
+            encoding: .utf8
+        )
+        let equalizer = try String(
+            contentsOf: root.appendingPathComponent("Airwave/EqualizerSettingsView.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertFalse(device.contains("DeviceManagementResult"))
+        XCTAssertFalse(device.contains("coordinator.result"))
+        XCTAssertFalse(device.contains("checkmark.circle.fill"))
+        XCTAssertFalse(hrir.contains("isSuccess"))
+        XCTAssertFalse(equalizer.contains("isSuccess"))
+        XCTAssertTrue(hrir.contains("exclamationmark.triangle.fill"))
+        XCTAssertTrue(equalizer.contains("exclamationmark.triangle.fill"))
+        XCTAssertTrue(hrir.contains("confirmationDialog("))
+        XCTAssertTrue(equalizer.contains("confirmationDialog("))
     }
 
     func testOnboardingHasOneCaptureCardAndNoSplitHealthCopy() throws {
