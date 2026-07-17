@@ -208,6 +208,8 @@ final class AudioRuntimeController {
     func requestSystemAudioAccess() {
         guard launched, !sleeping, !terminated, !explicitCaptureTest else { return }
         guard stopForInvalidation() else { return }
+        // Explicit tests always start from a fresh capture verification. Do
+        // not let a previous processing session bypass the probe.
         explicitCaptureTest = true
         captureProbeRequested = true
         captureVerified = false
@@ -460,6 +462,9 @@ final class AudioRuntimeController {
         stimulusToken?.cancel(); stimulusToken = nil
         stimulusPlayer.stop()
         profilePreparer?.cancelPreparation()
+        // Profile cancellation deactivates HRIR state. Any subsequent start
+        // must run profile preparation again before creating a processing tap.
+        hasPreparedDesiredOutput = false
         retryToken?.cancel(); retryToken = nil
         stabilityToken?.cancel(); stabilityToken = nil
         guard let pipeline else { return true }
