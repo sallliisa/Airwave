@@ -229,7 +229,7 @@ struct SettingsView: View {
             }
 
         }
-        .frame(width: 900, height: 600)
+        .frame(width: 900, height: 620)
         .preferredColorScheme(.dark)
     }
 
