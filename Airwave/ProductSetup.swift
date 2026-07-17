@@ -193,7 +193,7 @@ final class PermissionWindowFocusRestorer: PermissionFocusRestoring {
         },
         restoreWindow: @escaping @MainActor (NSWindow) -> Void = { window in
             ApplicationLifecycleCoordinator.shared.prepareToPresentUserWindow()
-            NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps, .activateAllWindows])
+            NSRunningApplication.current.activate(options: [.activateAllWindows])
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
         }

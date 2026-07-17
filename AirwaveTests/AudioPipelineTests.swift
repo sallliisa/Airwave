@@ -1,4 +1,5 @@
 import XCTest
+import os
 @testable import Airwave
 
 final class AudioPipelineTests: XCTestCase {
@@ -35,12 +36,14 @@ final class AudioPipelineTests: XCTestCase {
     func testPipelineForwardsCaptureVerificationEvents() throws {
         let platform = RecordingAudioPlatformClient()
         let pipeline = AudioPipeline(platform: platform, processor: PassthroughProcessor())
-        var events: [AudioCaptureVerificationEvent] = []
+        let events = OSAllocatedUnfairLock<[AudioCaptureVerificationEvent]>(initialState: [])
 
-        try pipeline.start(on: platform.output) { events.append($0) }
+        try pipeline.start(on: platform.output) { event in
+            events.withLock { $0.append(event) }
+        }
         platform.verificationHandler?(.tapReady)
 
-        XCTAssertEqual(events, [.tapReady])
+        XCTAssertEqual(events.withLock { $0 }, [.tapReady])
         try pipeline.stop()
     }
 
@@ -70,8 +73,8 @@ final class AudioPipelineTests: XCTestCase {
         XCTAssertEqual(platform.tapRequests[0].muteBehavior, .unmuted)
         var left = [Float](repeating: 9, count: 4)
         var right = [Float](repeating: 8, count: 4)
-        var inputLeft = [Float](repeating: 1, count: 4)
-        var inputRight = [Float](repeating: 1, count: 4)
+        let inputLeft = [Float](repeating: 1, count: 4)
+        let inputRight = [Float](repeating: 1, count: 4)
         inputLeft.withUnsafeBufferPointer { inL in
             inputRight.withUnsafeBufferPointer { inR in
                 left.withUnsafeMutableBufferPointer { outL in

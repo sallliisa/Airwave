@@ -2,7 +2,7 @@ import Foundation
 import Combine
 import Sparkle
 
-enum UpdateState: Equatable {
+nonisolated enum UpdateState: Equatable {
     case idle
     case checking
     case current
@@ -10,7 +10,7 @@ enum UpdateState: Equatable {
     case error(message: String)
 }
 
-struct UpdateStateModel: Equatable {
+nonisolated struct UpdateStateModel: Equatable {
     private(set) var state: UpdateState = .idle
 
     mutating func beganChecking() {

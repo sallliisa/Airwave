@@ -3,13 +3,7 @@ import Combine
 
 @MainActor
 final class MenuBarViewModel: ObservableObject {
-    static let shared = MenuBarViewModel(
-        runtime: .shared,
-        hrirManager: .shared,
-        profileManager: .shared,
-        updateManager: .shared,
-        runtimeActions: AudioRuntimeController.shared
-    )
+    static let shared = MenuBarViewModel()
 
     let runtime: AudioRuntimeState
     let hrirManager: HRIRManager
@@ -20,7 +14,7 @@ final class MenuBarViewModel: ObservableObject {
     init(
         runtime: AudioRuntimeState,
         hrirManager: HRIRManager,
-        profileManager: DeviceProfileManager = .shared,
+        profileManager: DeviceProfileManager,
         updateManager: UpdateManager,
         runtimeActions: AudioRuntimeUserActions
     ) {
@@ -29,6 +23,17 @@ final class MenuBarViewModel: ObservableObject {
         self.profileManager = profileManager
         self.updateManager = updateManager
         self.runtimeActions = runtimeActions
+    }
+
+    @MainActor
+    convenience init() {
+        self.init(
+            runtime: .shared,
+            hrirManager: .shared,
+            profileManager: .shared,
+            updateManager: .shared,
+            runtimeActions: AudioRuntimeController.shared
+        )
     }
 
     func selectPreset(_ preset: HRIRPreset?) {

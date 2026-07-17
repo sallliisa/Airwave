@@ -13,21 +13,21 @@ final class CoreAudioPlatformClientTests: XCTestCase {
 
     func testCaptureSignalPolicyRejectsSilenceSpikeAndNonFiniteSamples() {
         var policy = CaptureSignalPolicy()
-        var zeros = [Float](repeating: 0, count: CaptureSignalPolicy.minimumSustainedFrames)
+        let zeros = [Float](repeating: 0, count: CaptureSignalPolicy.minimumSustainedFrames)
         XCTAssertFalse(zeros.withUnsafeBufferPointer { policy.observe(inputLeft: $0.baseAddress!, inputRight: $0.baseAddress, frameCount: $0.count) })
 
         var spike = zeros
         spike[0] = 1
         XCTAssertFalse(spike.withUnsafeBufferPointer { policy.observe(inputLeft: $0.baseAddress!, inputRight: $0.baseAddress, frameCount: $0.count) })
 
-        var nonFinite = [Float](repeating: .infinity, count: CaptureSignalPolicy.minimumSustainedFrames)
+        let nonFinite = [Float](repeating: .infinity, count: CaptureSignalPolicy.minimumSustainedFrames)
         var fresh = CaptureSignalPolicy()
         XCTAssertFalse(nonFinite.withUnsafeBufferPointer { fresh.observe(inputLeft: $0.baseAddress!, inputRight: $0.baseAddress, frameCount: $0.count) })
     }
 
     func testCaptureSignalPolicyAcceptsSustainedLowLevelSignalOnce() {
         var policy = CaptureSignalPolicy()
-        var signal = [Float](repeating: CaptureSignalPolicy.sampleThreshold * 2, count: CaptureSignalPolicy.minimumSustainedFrames)
+        let signal = [Float](repeating: CaptureSignalPolicy.sampleThreshold * 2, count: CaptureSignalPolicy.minimumSustainedFrames)
 
         let detected = signal.withUnsafeBufferPointer {
             policy.observe(inputLeft: $0.baseAddress!, inputRight: $0.baseAddress, frameCount: $0.count)

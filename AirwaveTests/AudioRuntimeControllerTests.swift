@@ -145,6 +145,35 @@ final class AudioRuntimeControllerTests: XCTestCase {
         XCTAssertNotEqual(h.state.captureAccess, .verified)
     }
 
+    func testRenderFailureIncludesOSStatusInFailureMessage() {
+        let h = Harness()
+        h.pipelines.automaticEvent = nil
+        h.controller.launch(presetReady: true)
+
+        h.pipelines.emit(.renderFailed(-50))
+
+        guard case .failed(let reason) = h.state.captureAccess else {
+            return XCTFail("expected failed capture state")
+        }
+        XCTAssertEqual(reason, "Render system audio failed (OSStatus -50)")
+        XCTAssertEqual(h.state.status, .nativePassthrough(reason: reason))
+    }
+
+    func testFormatMismatchIncludesExpectedAndActualFormatsInFailureMessage() {
+        let h = Harness()
+        let expected = AudioStreamFormat.stereo(sampleRate: 44_100)
+        let actual = AudioStreamFormat.stereo(sampleRate: 48_000)
+        h.pipelines.startError = .formatMismatch(expected: expected, actual: actual)
+
+        h.controller.launch(presetReady: true)
+
+        guard case .failed(let reason) = h.state.captureAccess else {
+            return XCTFail("expected failed capture state")
+        }
+        XCTAssertEqual(reason, "Capture format mismatch (expected \(expected), actual \(actual)).")
+        XCTAssertEqual(h.state.status, .nativePassthrough(reason: reason))
+    }
+
     func testOutputChangeSleepAndTerminationReleaseResources() {
         let h = Harness(effect: true)
         h.controller.launch(presetReady: true)
@@ -172,7 +201,7 @@ private final class Harness {
     private(set) lazy var controller: AudioRuntimeController = AudioRuntimeController(
         state: state,
         platform: platform,
-        pipelineFactory: { [weak self] in self?.pipelines.make() ?? PipelineFake(owner: PipelineFactoryFake()) },
+        pipelineFactory: { [pipelines] in pipelines.make() },
         scheduler: scheduler,
         stimulusPlayer: player
     )

@@ -160,15 +160,24 @@ struct DeviceManagementView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(
-        profileManager: DeviceProfileManager = .shared,
-        hrirManager: HRIRManager = .shared,
-        equalizerManager: EqualizerManager = .shared
+        profileManager: DeviceProfileManager,
+        hrirManager: HRIRManager,
+        equalizerManager: EqualizerManager
     ) {
         _coordinator = StateObject(wrappedValue: DeviceManagementCoordinator(
             profileManager: profileManager,
             hrirManager: hrirManager,
             equalizerManager: equalizerManager
         ))
+    }
+
+    @MainActor
+    init() {
+        self.init(
+            profileManager: .shared,
+            hrirManager: .shared,
+            equalizerManager: .shared
+        )
     }
 
     var body: some View {

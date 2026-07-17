@@ -421,7 +421,7 @@ final class AudioRuntimeController {
         case .permissionDenied:
             handleFailure(AudioRuntimeError.permissionDenied, output: output)
         case .renderFailed(let status):
-            handleFailure(AudioRuntimeError.ioStartFailed("Render system audio failed (OSStatus (status))"), output: output)
+            handleFailure(AudioRuntimeError.ioStartFailed("Render system audio failed (OSStatus \(status))"), output: output)
         }
     }
 
@@ -472,7 +472,7 @@ final class AudioRuntimeController {
         let delay = retryDelays[min(retryAttempt, retryDelays.count - 1)]
         retryAttempt += 1
         let retryGeneration = generation
-        state.publish(.recovering(reason: "(reason) Retrying in (Int(delay))s."), output: output)
+        state.publish(.recovering(reason: "\(reason) Retrying in \(Int(delay))s."), output: output)
         retryToken = scheduler.schedule(after: delay) { [weak self] in
             guard let self, self.generation == retryGeneration else { return }
             self.retryToken = nil; self.captureProbeRequested = true; self.reconcile()
@@ -484,7 +484,7 @@ final class AudioRuntimeController {
         let delay = retryDelays[min(retryAttempt, retryDelays.count - 1)]
         retryAttempt += 1
         let retryGeneration = generation
-        state.publish(.recovering(reason: "Releasing audio resources. Retrying in (Int(delay))s."))
+        state.publish(.recovering(reason: "Releasing audio resources. Retrying in \(Int(delay))s."))
         retryToken = scheduler.schedule(after: delay) { [weak self] in
             guard let self, self.generation == retryGeneration else { return }
             self.retryToken = nil; guard self.stopForInvalidation() else { return }; self.reconcile()
@@ -517,7 +517,7 @@ final class AudioRuntimeController {
             case .tapCreationFailed(let reason), .aggregateCreationFailed(let reason), .ioCreationFailed(let reason), .ioStartFailed(let reason):
                 return reason
             case .formatMismatch(let expected, let actual):
-                return "Capture format mismatch (expected (expected), actual (actual))."
+                return "Capture format mismatch (expected \(expected), actual \(actual))."
             default: return "Audio capture test failed safely."
             }
         default: return "Audio capture test failed safely."
