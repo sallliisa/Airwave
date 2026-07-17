@@ -150,18 +150,27 @@ class HRIRManager: ObservableObject {
 
     private let presetsDirectory: URL
     private let fileManager: FileManager
+    private let bundledPresetCatalog: BundledPresetCatalog
     private var eventStream: FSEventStreamRef?
     private var directoryDebounceTask: DispatchWorkItem?
 
     // MARK: - Initialization
 
-    init(presetsDirectory: URL? = nil, fileManager: FileManager = .default, startWatcher: Bool = true) {
+    init(
+        presetsDirectory: URL? = nil,
+        fileManager: FileManager = .default,
+        startWatcher: Bool = true,
+        bundledPresetCatalog: BundledPresetCatalog? = nil
+    ) {
         self.fileManager = fileManager
+        self.bundledPresetCatalog = bundledPresetCatalog ?? BundledPresetCatalog.fromMainBundle()
         let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         self.presetsDirectory = presetsDirectory ?? appSupport.appendingPathComponent("Airwave/presets", isDirectory: true)
 
         // Create directory if it doesn't exist
         try? fileManager.createDirectory(at: self.presetsDirectory, withIntermediateDirectories: true)
+
+        seedBundledPresets()
 
         // Load existing presets and sync with directory
         loadAndSyncPresets()
@@ -175,6 +184,17 @@ class HRIRManager: ObservableObject {
     }
 
     // MARK: - Public Methods
+
+    private func seedBundledPresets() {
+        BundledPresetSeeder.seed(
+            files: bundledPresetCatalog.hrirFiles,
+            into: presetsDirectory,
+            markerURL: presetsDirectory.appendingPathComponent(".bundled-presets.json"),
+            fileManager: fileManager
+        ) { source in
+            _ = try WAVLoader.load(from: source)
+        }
+    }
 
     /// Opens the presets directory in Finder
     func openPresetsDirectory() {

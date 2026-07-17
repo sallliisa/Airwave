@@ -278,7 +278,7 @@ struct EqualizerSettingsView: View {
                     AirwaveEmptyLibraryState(
                         systemImage: "slider.horizontal.3",
                         title: "No equalizer presets",
-                        description: "Import an EqualizerAPO .txt preset to choose an equalizer profile."
+                        description: "Airwave normally ships five EQ presets. Import an EqualizerAPO .txt preset to add another profile."
                     )
                 } else {
                     ScrollView {

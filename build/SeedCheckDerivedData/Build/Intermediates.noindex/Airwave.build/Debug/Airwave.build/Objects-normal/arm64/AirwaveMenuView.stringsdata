@@ -1,0 +1,32 @@
+{
+  "source": "/Users/gamer/Documents/projects/Airwave/Airwave/AirwaveMenuView.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "Airwave",
+        "location": {
+          "startingColumn": 33,
+          "startingLine": 7
+        }
+      },
+      {
+        "comment": "",
+        "key": "Airwave",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 21
+        }
+      },
+      {
+        "comment": "",
+        "key": "⚠️",
+        "location": {
+          "startingColumn": 39,
+          "startingLine": 129
+        }
+      }
+    ]
+  },
+  "version": 1
+}

@@ -1,0 +1,49 @@
+{
+  "object" : {
+    "artifacts" : [
+      {
+        "kind" : {
+          "xcframework" : {
+
+          }
+        },
+        "packageRef" : {
+          "identity" : "sparkle",
+          "kind" : "remoteSourceControl",
+          "location" : "https://github.com/sparkle-project/Sparkle",
+          "name" : "Sparkle"
+        },
+        "path" : "/Users/gamer/Documents/projects/Airwave/build/AnswerCheckDerivedData/SourcePackages/artifacts/sparkle/Sparkle/Sparkle.xcframework",
+        "source" : {
+          "checksum" : "b83e37436774556ed055e0244b297ef2c790e0737393bf65bf495fcbba6eed65",
+          "type" : "remote",
+          "url" : "https://github.com/sparkle-project/Sparkle/releases/download/2.9.2/Sparkle-for-Swift-Package-Manager.zip"
+        },
+        "targetName" : "Sparkle"
+      }
+    ],
+    "dependencies" : [
+      {
+        "basedOn" : null,
+        "packageRef" : {
+          "identity" : "sparkle",
+          "kind" : "remoteSourceControl",
+          "location" : "https://github.com/sparkle-project/Sparkle",
+          "name" : "Sparkle"
+        },
+        "state" : {
+          "checkoutState" : {
+            "revision" : "6276ba2b404829d139c45ff98427cf90e2efc59b",
+            "version" : "2.9.2"
+          },
+          "name" : "sourceControlCheckout"
+        },
+        "subpath" : "Sparkle"
+      }
+    ],
+    "prebuilts" : [
+
+    ]
+  },
+  "version" : 7
+}

@@ -1,0 +1,37 @@
+{
+  "/Users/gamer/Documents/projects/Airwave/Airwave/BiquadCoefficientBuilder.swift" : {
+    "const-values" : "/Users/gamer/Documents/projects/Airwave/build/AnswerCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/BiquadCoefficientBuilder.swiftconstvalues",
+    "dependencies" : "/Users/gamer/Documents/projects/Airwave/build/AnswerCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/BiquadCoefficientBuilder.d",
+    "diagnostics" : "/Users/gamer/Documents/projects/Airwave/build/AnswerCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/BiquadCoefficientBuilder.dia",
+    "object" : "/Users/gamer/Documents/projects/Airwave/build/AnswerCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/BiquadCoefficientBuilder.o",
+    "swift-dependencies" : "/Users/gamer/Documents/projects/Airwave/build/AnswerCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/BiquadCoefficientBuilder.swiftdeps"
+  },
+  "/Users/gamer/Documents/projects/Airwave/Airwave/BundledPresetCatalog.swift" : {
+    "const-values" : "/Users/gamer/Documents/projects/Airwave/build/AnswerCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/BundledPresetCatalog.swiftconstvalues",
+    "dependencies" : "/Users/gamer/Documents/projects/Airwave/build/AnswerCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/BundledPresetCatalog.d",
+    "diagnostics" : "/Users/gamer/Documents/projects/Airwave/build/AnswerCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/BundledPresetCatalog.dia",
+    "object" : "/Users/gamer/Documents/projects/Airwave/build/AnswerCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/BundledPresetCatalog.o",
+    "swift-dependencies" : "/Users/gamer/Documents/projects/Airwave/build/AnswerCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/BundledPresetCatalog.swiftdeps"
+  },
+  "/Users/gamer/Documents/projects/Airwave/Airwave/ConvolutionEngine.swift" : {
+    "const-values" : "/Users/gamer/Documents/projects/Airwave/build/AnswerCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/ConvolutionEngine.swiftconstvalues",
+    "dependencies" : "/Users/gamer/Documents/projects/Airwave/build/AnswerCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/ConvolutionEngine.d",
+    "diagnostics" : "/Users/gamer/Documents/projects/Airwave/build/AnswerCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/ConvolutionEngine.dia",
+    "object" : "/Users/gamer/Documents/projects/Airwave/build/AnswerCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/ConvolutionEngine.o",
+    "swift-dependencies" : "/Users/gamer/Documents/projects/Airwave/build/AnswerCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/ConvolutionEngine.swiftdeps"
+  },
+  "/Users/gamer/Documents/projects/Airwave/Airwave/CoreAudioPlatformClient.swift" : {
+    "const-values" : "/Users/gamer/Documents/projects/Airwave/build/AnswerCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/CoreAudioPlatformClient.swiftconstvalues",
+    "dependencies" : "/Users/gamer/Documents/projects/Airwave/build/AnswerCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/CoreAudioPlatformClient.d",
+    "diagnostics" : "/Users/gamer/Documents/projects/Airwave/build/AnswerCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/CoreAudioPlatformClient.dia",
+    "object" : "/Users/gamer/Documents/projects/Airwave/build/AnswerCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/CoreAudioPlatformClient.o",
+    "swift-dependencies" : "/Users/gamer/Documents/projects/Airwave/build/AnswerCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/CoreAudioPlatformClient.swiftdeps"
+  },
+  "/Users/gamer/Documents/projects/Airwave/Airwave/DeviceManagementView.swift" : {
+    "const-values" : "/Users/gamer/Documents/projects/Airwave/build/AnswerCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/DeviceManagementView.swiftconstvalues",
+    "dependencies" : "/Users/gamer/Documents/projects/Airwave/build/AnswerCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/DeviceManagementView.d",
+    "diagnostics" : "/Users/gamer/Documents/projects/Airwave/build/AnswerCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/DeviceManagementView.dia",
+    "object" : "/Users/gamer/Documents/projects/Airwave/build/AnswerCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/DeviceManagementView.o",
+    "swift-dependencies" : "/Users/gamer/Documents/projects/Airwave/build/AnswerCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/DeviceManagementView.swiftdeps"
+  }
+}

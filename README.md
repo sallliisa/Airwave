@@ -1,55 +1,143 @@
-# Airwave 2.0
+<div align="center">
+   <h1 style="border-bottom: none; margin-bottom: 8px">Airwave</h1>
+   <img src="docs/images/AirwaveIcon.png" alt="Airwave Icon" width="128" height="128" />
+   <p>A macOS application that provides system-wide spatial audio through headphones. Compatible with HeSuVi HRIR presets.</p>
+   
+   <br/>
 
-Airwave applies system-wide stereo HRIR convolution on macOS without changing the default output device or its volume. Version 2 uses Core Audio process taps: macOS remains the only authority for output selection and volume.
+   <strong>Version: </strong>1.1.1
+   <br />
+   <a href="https://github.com/sallliisa/Airwave/releases"><strong>Download</strong></a>
+    · 
+   <a href="https://github.com/sallliisa/Airwave/commits">Commits</a>
+
+   <br/>
+
+   If you find this useful, consider supporting the project.
+
+   [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Q5Q51RNAGT)
+
+   <br/>
+
+   <strong>Table of Contents</strong>
+   <br/>
+   [About](#About) • [Features](#Features) • [Requirements](#Requirements) • [Installation](#Installation) • [License](#License) • [Credits](#Credits) • [Support](#Support)
+</div>
+
+## About
+Airwave is a source-available, non-commercial, macOS application that provides system-wide spatial audio for stereo outputs using HRIR convolution. Airwave is heavily inspired by HeSuVi and is compatible with HeSuVi HRIR presets.
+
+This project was created to offer a free, customizable alternative to proprietary spatial audio applications.
+
+## Features
+**1. System-wide audio processing with HRIR convolution**: Routes system audio through a real-time HRIR convolution pipeline to produce spatial audio. Supports any HRIR presets that HeSuVi uses.
+
+**2. Input/output device and volume management**: Manages device volume and selection automatically, on launch and on exit. Manual aggregate device setup is required.
+
+**3. Resource-efficient real-time processing**: ~1% of a single CPU core, ~0.125% of total CPU capacity on an 8-core M1 MacBook Air using the `dht` preset
 
 ## Requirements
+- macOS 14.0 or later
+- Virtual audio device (e.g., BlackHole 2ch)
 
-- macOS 15 Sequoia or later
-- A physical stereo output supported by macOS
-- A HeSuVi-compatible 7- or 14-channel HRIR WAV preset
-- System Audio Capture access, verified by Airwave's public capture self-test
+## Installation
+### 1. Install Virtual Audio Device (BlackHole 2ch Recommended)
+Any virtual audio device should work; however, BlackHole 2ch has been extensively tested and is recommended for use with Airwave. 
 
-BlackHole, public aggregate devices, and other virtual routing software are neither required nor supported. If macOS currently uses one as its output, Airwave stays in native passthrough and asks you to choose a physical stereo output in System Settings.
+Install BlackHole 2ch using Homebrew:
+```bash
+brew install blackhole-2ch
+```
 
-## Install
+Or download and install it from [ExistentialAudio/BlackHole](https://github.com/ExistentialAudio/BlackHole)
 
-Download Airwave from [GitHub Releases](https://github.com/sallliisa/Airwave/releases), or install the Homebrew cask after its 2.0 checksum is published.
+### 2. Get Airwave
+Install Airwave with Homebrew:
 
-Airwave is currently distributed without Apple notarization. On first launch, macOS may require **System Settings → Privacy & Security → Open Anyway**.
+```bash
+brew tap sallliisa/airwave
+brew install --cask airwave
+```
 
-## Set up
+Alternatively, download Airwave and copy it to your Applications folder from [Airwave Releases](https://github.com/sallliisa/Airwave/releases).
 
-1. Open Airwave and choose **Manage HRIR Files**.
-2. Copy a compatible stereo HRIR WAV file into the presets folder.
-3. Select the preset for the current output from Airwave's menu.
-4. Click **Test System Audio Capture**. Airwave starts its public process tap, plays a short bundled sound, and listens for non-silent captured PCM. This is system-audio capture; Airwave does not request microphone access.
+> [!IMPORTANT]
+> This step is necessary, because the app has not been notarized by Apple due to the membership fees of the Apple Developer Program. "Apple could not verify 'Airwave.app' is free of malware" refers to the [lack of notarization](https://support.apple.com/en-us/102445), not to any anomalies detected.
 
-Each supported physical stereo output has its own persistent HRIR and EQ profile. The Settings selector shows available supported outputs, so you can configure one before it becomes the macOS default. New devices start at **None / None**; a profile saves only when you first choose an HRIR or EQ preset, not when Airwave observes the device. Processing starts automatically after same-session capture verification and when the selected profile and supported output are ready. A successful test proves current capture capability, not a permanent authorization status. Ad-hoc rebuilds can have a new macOS identity and may require the test again. There is no audio-engine toggle. Output changes are made only in macOS; Airwave follows the current default output automatically.
+On macOS 14 Sonoma:
+1. Right click `Airwave.app`
+2. Click "Open"
+3. Click "Open" in the dialog box
 
-Airwave never changes macOS volume. If capture or output becomes unavailable, Airwave releases its private audio objects and native audio continues unprocessed. Status and recovery guidance appear in the menu and Settings.
+On macOS 15 Sequoia or above:
+1. Try to open the app, it will tell you it's blocked
+2. Go to `System Settings > Privacy & Security` and scroll to the bottom
+3. Click "Open Anyway" to allow Airwave to open
+4. Click "Open Anyway" on the next dialog box and authenticate
+5. Open Airwave again from Applications folder
 
-## Equalizer
+On first launch, the Airwave menu bar icon indicates that additional setup is required. Click the menu bar icon and open Settings to view the required setup steps.
 
-Airwave ships no headphone curves and does not recommend any preset. Import an EqualizerAPO-style `.txt` file from **Settings → Equalizer**; files are copied into Airwave's managed `Equalizer Presets` folder. Imports add to the library but do not select a preset for any device. EQ selection is persistent per supported output, and **None** is the default for new devices. Imported presets are read-only in Airwave.
+|<img alt="Airwave Incomplete Setup Warning" src="docs/images/airwave_incomplete_setup_warning.png" width="400">|
+|:--:|
+| **Fig. 1**. *Airwave Incomplete Setup Warning* |
 
-The supported v1 subset is `Preamp` plus `Filter` directives using `PK`, `LSC`, or `HSC`, each with frequency, gain, and Q. Preamp is applied exactly as written. Airwave has no limiter and does not add automatic headroom. EQ can run alone; when combined with spatial processing, the order is HRIR first, then EQ. See the upstream [Equalizer APO configuration reference](https://sourceforge.net/p/equalizerapo/wiki/Configuration%20reference/) for the source syntax.
+### 3. Set Up an Aggregate Device
 
-## Device management
+From the Airwave Settings menu, scroll down to the Diagnostics section, and click `Configure` under `Aggregate Device`. This will open the Audio MIDI Setup application.
 
-Open **Settings → Devices** from the General page to review saved output profiles. The top-bar selector shows currently available supported outputs plus saved profiles whose devices are unavailable; Devices manages saved profiles only. **Reset Profile** atomically returns both HRIR and EQ to **None**. **Forget Device** removes a saved profile and is available only for devices marked **Not Current**. Both actions require confirmation. Airwave never changes output selection or volume.
+|<img alt="Setup Aggregate Device Notice" src="docs/images/setup_aggregate_device_notice.png" width="350">|
+|:--:|
+| **Fig. 2**. *Setup Aggregate Device Notice* |
 
-## Upgrading from Airwave 1.x
+In Audio MIDI Setup, click the `+` button in the bottom-left corner and select `Create Aggregate Device`.
 
-Airwave 2.0 is a clean break. Version 1.x used BlackHole and user-created aggregate routing; remove that old routing manually if you no longer need it. Airwave 2.0 will warn when a virtual or aggregate output remains selected, but will never change the selection for you. HRIR files remain on disk; other 1.x preferences and Launch at Login state are reset.
+In the newly created aggregate device, enable `BlackHole 2ch` (or another virtual audio device) in the `Use` column, then enable any physical output devices you want Airwave to make available as output options. After you're done, make sure to only check the `Drift Correction` box only on the `BlackHole 2ch` (or any virtual audio device that you are using). If you have multiple virtual audio devices, you may enable more than one. You will be able to choose which device Airwave captures from later in the settings menu.
 
-macOS 14 users remain on Airwave 1.x. Airwave 2.0 requires macOS 15 and must not be offered by Sparkle or Homebrew to older systems.
+|<img alt="Create Aggregate Device" src="docs/images/create_aggregate_device.png" width="500">|<img alt="Aggregate Device Setup" src="docs/images/select_physical_device_aggregate_device.png" width="500">|
+|:----------:|:----------:|
+| **Fig. 3**. *Create Aggregate Device* | **Fig. 4**. *Aggregate Device Setup* |
 
-## Validation status
+### 4. Get HRIR Presets
+Airwave does not ship with any HRIR presets.
+You can download them for free from the [HeSuVi HRTF Database](https://airtable.com/embed/appac4r1cu9UpBNAN/shrpUAbtyZxhDDMjg/tblopH2GznvFipWjq/viwnouWPGDuYEd8Go).
 
-Automated lifecycle, cleanup, DSP, metadata, and invariant checks run in CI. Hardware support claims require recorded physical validation. See [release validation](docs/release-validation.md); device classes marked **NOT TESTED** are not claimed as validated.
+After downloading the `.wav` files, click on `Manage files` under `HRIR Presets`. Move the files into the folder shown, and the presets will be automatically detected and ready for use.
 
-## License and credits
+|<img alt="Manage HRIR Presets" src="docs/images/manage_hrir_files.png" width="400">|<img alt="HRIR Presets Folder" src="docs/images/hrir_files_folder.png" width="500">|
+|:--:|:--:|
+| **Fig. 5**. *Manage HRIR Presets* | **Fig. 6**. *HRIR Presets Folder* |
 
-Airwave is licensed under GPLv3. It is inspired by HeSuVi and supports third-party HRIR datasets from the HeSuVi HRTF Database. Airwave is independently developed and is not affiliated with HeSuVi.
+### 5. Start Using Airwave
+Airwave is now ready to use. Any issues or warnings will appear in the `Diagnostics` section of Settings.
 
-For bugs and feature requests, [open a GitHub issue](https://github.com/sallliisa/Airwave/issues).
+To get started, choose:
+- the **aggregate device** you created,
+- the **input device** you want Airwave to capture from,
+- the **output device** you want audio to play through,
+- the **HRIR preset** you prefer,
+
+then start the audio engine.
+
+These controls are available in Settings, and can also be accessed later from the menu bar.
+
+|<img alt="General Setup" src="docs/images/general_setup.png" width="350">|
+|:--:|
+| **Fig. 7**. *General Setup* |
+
+## License
+Airwave is currently licensed under the GNU General Public License v3. I believe macOS tools should be accessible to everyone, free from the high price tags or and the subscription models that dominate the ecosystem.
+
+## Credits
+- Inspired by the original concept and implementation of [HeSuVi](https://sourceforge.net/projects/hesuvi/). This project is independently developed and not affiliated with the HeSuVi project.
+- Supports HRIR datasets obtained from the [HeSuVi HRTF Database](https://airtable.com/embed/appac4r1cu9UpBNAN/shrpUAbtyZxhDDMjg/tblopH2GznvFipWjq/viwnouWPGDuYEd8Go). HRIR files are provided by third parties and are subject to their respective licenses.
+- Designed to work with [BlackHole](https://github.com/ExistentialAudio/BlackHole) for virtual audio routing.
+- [Material Symbols](https://fonts.google.com/icons) used for the app and menu bar icon.
+- The notice and the steps to resolve the signing issue copied from [Battery Toolkit](https://github.com/mhaeuser/Battery-Toolkit).
+
+## Support
+For issues and feature requests, please [file an issue on GitHub](https://github.com/sallliisa/Airwave/issues).
+
+If you find Airwave useful, consider supporting its continued development through a [voluntary donation](https://ko-fi.com/Q5Q51RNAGT). Donations help cover development time and ongoing maintenance, and are greatly appreciated.
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Q5Q51RNAGT)

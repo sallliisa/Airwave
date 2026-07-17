@@ -107,6 +107,7 @@ jobs:
           lipo "$app/Contents/MacOS/Airwave" -verify_arch arm64 x86_64
           codesign --verify --strict --verbose=2 "$app"
           test -f "$app/Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle"
+          scripts/verify-bundled-presets.sh "$app"
 
       - name: Generate release notes
         env:

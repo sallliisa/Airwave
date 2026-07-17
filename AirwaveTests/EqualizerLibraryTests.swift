@@ -4,6 +4,89 @@ import XCTest
 
 @MainActor
 final class EqualizerLibraryTests: XCTestCase {
+    func testBundledAssetsSeedIntoEmptyLibrary() throws {
+        let context = try TestContext()
+        let files = try ["Bass Booster", "Bass Reducer", "Treble Booster", "Treble Reducer", "Vocal Booster"].map {
+            try context.writePreset(named: "\($0).txt", preamp: 1)
+        }
+        let manager = EqualizerManager(
+            managedDirectory: context.managed,
+            fileManager: .default,
+            defaults: context.defaults,
+            securityScope: context.securityScope,
+            bundledPresetCatalog: BundledPresetCatalog(equalizerFiles: files)
+        )
+
+        XCTAssertEqual(
+            manager.presets.map(\.displayName),
+            ["Bass Booster", "Bass Reducer", "Treble Booster", "Treble Reducer", "Vocal Booster"]
+        )
+        XCTAssertTrue(manager.presets.allSatisfy { $0.definition.preampDB == 1 })
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(
+            at: context.managed,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ).filter { $0.pathExtension == "txt" }.count, 5)
+    }
+
+    func testBundledSeedingIsIdempotentAndDoesNotOverwriteExistingFiles() throws {
+        let context = try TestContext()
+        let sourceFile = try context.writePreset(named: "Bass Booster.txt", preamp: 1)
+        let sourceFiles = [sourceFile]
+        _ = EqualizerManager(
+            managedDirectory: context.managed,
+            fileManager: .default,
+            defaults: context.defaults,
+            securityScope: context.securityScope,
+            bundledPresetCatalog: BundledPresetCatalog(equalizerFiles: sourceFiles)
+        )
+        let managedFile = context.managed.appendingPathComponent("Bass Booster.txt")
+        let originalBytes = try Data(contentsOf: managedFile)
+
+        try Data("Preamp: 99 dB\n".utf8).write(to: managedFile)
+        try FileManager.default.removeItem(at: context.managed.appendingPathComponent(".bundled-presets.json"))
+
+        let relaunched = EqualizerManager(
+            managedDirectory: context.managed,
+            fileManager: .default,
+            defaults: context.defaults,
+            securityScope: context.securityScope,
+            bundledPresetCatalog: BundledPresetCatalog(equalizerFiles: sourceFiles)
+        )
+
+        XCTAssertEqual(try Data(contentsOf: managedFile), Data("Preamp: 99 dB\n".utf8))
+        XCTAssertEqual(relaunched.presets.first?.definition.preampDB, 99)
+        XCTAssertNotEqual(try Data(contentsOf: managedFile), originalBytes)
+    }
+
+    func testDeletedBundledPresetDoesNotReturnAndNewBundledFilenameIsSeeded() throws {
+        let context = try TestContext()
+        let initialFiles = try ["Bass Booster", "Bass Reducer", "Treble Booster", "Treble Reducer"].map {
+            try context.writePreset(named: "\($0).txt", preamp: 1)
+        }
+        let allFiles = initialFiles + [try context.writePreset(named: "Vocal Booster.txt", preamp: 1)]
+        let manager = EqualizerManager(
+            managedDirectory: context.managed,
+            fileManager: .default,
+            defaults: context.defaults,
+            securityScope: context.securityScope,
+            bundledPresetCatalog: BundledPresetCatalog(equalizerFiles: initialFiles)
+        )
+        let deleted = try XCTUnwrap(manager.presets.first { $0.displayName == "Bass Booster" })
+        XCTAssertTrue(manager.delete(deleted))
+
+        let relaunched = EqualizerManager(
+            managedDirectory: context.managed,
+            fileManager: .default,
+            defaults: context.defaults,
+            securityScope: context.securityScope,
+            bundledPresetCatalog: BundledPresetCatalog(equalizerFiles: allFiles)
+        )
+
+        XCTAssertNil(relaunched.presets.first { $0.displayName == "Bass Booster" })
+        XCTAssertNotNil(relaunched.presets.first { $0.displayName == "Vocal Booster" })
+    }
+
     func testEmptyLibraryDefaultsToNone() throws {
         let context = try TestContext()
 
@@ -234,7 +317,10 @@ private final class TestContext {
     let manager: EqualizerManager
     private let defaultsSuiteName: String
 
-    init(manifestWriter: EqualizerManifestWriting = DefaultEqualizerManifestWriter()) throws {
+    init(
+        manifestWriter: EqualizerManifestWriting = DefaultEqualizerManifestWriter(),
+        bundledPresetCatalog: BundledPresetCatalog? = nil
+    ) throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         managed = root.appendingPathComponent("Equalizer Presets", isDirectory: true)
         sourceDirectory = root.appendingPathComponent("source", isDirectory: true)
@@ -246,7 +332,8 @@ private final class TestContext {
             fileManager: .default,
             defaults: defaults,
             securityScope: securityScope,
-            manifestWriter: manifestWriter
+            manifestWriter: manifestWriter,
+            bundledPresetCatalog: bundledPresetCatalog
         )
     }
 

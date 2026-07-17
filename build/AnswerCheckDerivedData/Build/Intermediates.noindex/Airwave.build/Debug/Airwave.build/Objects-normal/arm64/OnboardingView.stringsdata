@@ -1,0 +1,136 @@
+{
+  "source": "/Users/gamer/Documents/projects/Airwave/Airwave/OnboardingView.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "Set up Airwave for spatial audio.",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 129
+        }
+      },
+      {
+        "comment": "",
+        "key": "Airwave processes sound from your Mac and creates a spacious listening experience. Setup only takes a moment.",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 130
+        }
+      },
+      {
+        "comment": "",
+        "key": "Allow Airwave to capture system audio so it can apply the selected HRIR preset. Airwave does not use microphone access.",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 150
+        }
+      },
+      {
+        "comment": "",
+        "key": "Capture troubleshooting suggestions",
+        "location": {
+          "startingColumn": 29,
+          "startingLine": 211
+        }
+      },
+      {
+        "comment": "",
+        "key": "Playing a short test sound…",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 165
+        }
+      },
+      {
+        "comment": "",
+        "key": "Test System Audio Capture",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 168
+        }
+      },
+      {
+        "comment": "",
+        "key": "System Audio Capture Verified",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 172
+        }
+      },
+      {
+        "comment": "",
+        "key": "Try these fixes",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 183
+        }
+      },
+      {
+        "comment": "",
+        "key": "Open System Settings",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 201
+        }
+      },
+      {
+        "comment": "",
+        "key": "Test Again",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 203
+        }
+      },
+      {
+        "comment": "",
+        "key": "Choose the HRIR preset used by Airwave for processing. You can play audio in the background to audition it in real time",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 216
+        }
+      },
+      {
+        "comment": "",
+        "key": "Retry",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 254
+        }
+      },
+      {
+        "comment": "",
+        "key": "",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 281
+        }
+      },
+      {
+        "comment": "",
+        "key": "Back to Settings",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 309
+        }
+      },
+      {
+        "comment": "",
+        "key": "Onboarding progress",
+        "location": {
+          "startingColumn": 29,
+          "startingLine": 432
+        }
+      },
+      {
+        "comment": "",
+        "key": "%@ — %@",
+        "location": {
+          "startingColumn": 15,
+          "startingLine": 478
+        }
+      }
+    ]
+  },
+  "version": 1
+}
