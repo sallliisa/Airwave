@@ -12,7 +12,7 @@ final class DeviceProfileManagementTests: XCTestCase {
         try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let sourceFiles = try ["Neutral", "Room", "Stage"].map { name in
+        let sourceFiles = try ["NeutralSH1.0", "RoomSH1.0", "StageSH1.0"].map { name in
             let url = sourceDirectory.appendingPathComponent("\(name).wav")
             try writeTestWAV(to: url)
             return url
@@ -26,10 +26,10 @@ final class DeviceProfileManagementTests: XCTestCase {
         )
         waitForInitialHRIRSync(manager)
 
-        XCTAssertEqual(Set(manager.presets.map(\.name)), ["Neutral", "Room", "Stage"])
+        XCTAssertEqual(Set(manager.presets.map(\.name)), ["NeutralSH1.0", "RoomSH1.0", "StageSH1.0"])
         XCTAssertTrue(manager.presets.allSatisfy { $0.channelCount == 2 && $0.sampleRate == 48_000 })
 
-        let deleted = try XCTUnwrap(manager.presets.first { $0.name == "Room" })
+        let deleted = try XCTUnwrap(manager.presets.first { $0.name == "RoomSH1.0" })
         manager.deletePreset(deleted)
         let relaunched = HRIRManager(
             presetsDirectory: managed,
@@ -38,8 +38,8 @@ final class DeviceProfileManagementTests: XCTestCase {
         )
         waitForInitialHRIRSync(relaunched)
 
-        XCTAssertNil(relaunched.presets.first { $0.name == "Room" })
-        XCTAssertEqual(Set(relaunched.presets.map(\.name)), ["Neutral", "Stage"])
+        XCTAssertNil(relaunched.presets.first { $0.name == "RoomSH1.0" })
+        XCTAssertEqual(Set(relaunched.presets.map(\.name)), ["NeutralSH1.0", "StageSH1.0"])
     }
 
     func testRowsResolveNamesAndKeepCurrentFirstOrdering() throws {

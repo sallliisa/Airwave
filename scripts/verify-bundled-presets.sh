@@ -18,9 +18,9 @@ declare -a files=(
   "eq/Treble Booster.txt"
   "eq/Treble Reducer.txt"
   "eq/Vocal Booster.txt"
-  "hrtf/Neutral.wav"
-  "hrtf/Room.wav"
-  "hrtf/Stage.wav"
+  "hrtf/NeutralSH1.0.wav"
+  "hrtf/RoomSH1.0.wav"
+  "hrtf/StageSH1.0.wav"
 )
 
 for relative in "${files[@]}"; do
