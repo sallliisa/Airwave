@@ -41,13 +41,15 @@ struct OnboardingView: View {
 
     private var content: some View {
         AirwavePageLayout(mode: .compact) {
-            VStack(alignment: .leading, spacing: AirwaveLayout.pageHeaderContentMinimumSpacing) {
-                stepHeader
-                stepBody
+            ZStack(alignment: .topLeading) {
+                VStack(alignment: .leading, spacing: AirwaveLayout.pageHeaderContentMinimumSpacing) {
+                    stepHeader
+                    stepBody
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .id(viewModel.currentStep)
+                .transition(pageTransition)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .id(viewModel.currentStep)
-            .transition(pageTransition)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
     }
