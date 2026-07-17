@@ -4,7 +4,7 @@
   <p>System-wide spatial audio for macOS headphones.</p>
 
   <p>
-    <strong>Version 2.0.0</strong><br />
+    [![Latest release](https://img.shields.io/github/v/release/sallliisa/Airwave?display_name=tag&sort=semver)](https://github.com/sallliisa/Airwave/releases/latest)
     <a href="https://github.com/sallliisa/Airwave/releases"><strong>Download Airwave</strong></a>
     ·
     <a href="https://github.com/sallliisa/Airwave/issues">Support</a>

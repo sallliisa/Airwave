@@ -3,7 +3,21 @@ name: CI
 on:
   push:
     branches: [main]
+    paths:
+      - 'Airwave/**'
+      - 'AirwaveTests/**'
+      - 'Airwave.xcodeproj/**'
+      - 'scripts/**'
+      - 'tools/**'
+      - '.github/workflows/**'
   pull_request:
+    paths:
+      - 'Airwave/**'
+      - 'AirwaveTests/**'
+      - 'Airwave.xcodeproj/**'
+      - 'scripts/**'
+      - 'tools/**'
+      - '.github/workflows/**'
 
 concurrency:
   group: airwave-ci-${{ github.workflow }}-${{ github.ref }}
