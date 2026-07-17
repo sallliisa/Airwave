@@ -1,143 +1,172 @@
 <div align="center">
-   <h1 style="border-bottom: none; margin-bottom: 8px">Airwave</h1>
-   <img src="docs/images/AirwaveIcon.png" alt="Airwave Icon" width="128" height="128" />
-   <p>A macOS application that provides system-wide spatial audio through headphones. Compatible with HeSuVi HRIR presets.</p>
-   
-   <br/>
+  <h1 style="border-bottom: none; margin-bottom: 8px">Airwave</h1>
+  <img src="docs/images/AirwaveIcon.png" alt="Airwave icon" width="128" height="128" />
+  <p>System-wide spatial audio for macOS headphones.</p>
 
-   <strong>Version: </strong>1.1.1
-   <br />
-   <a href="https://github.com/sallliisa/Airwave/releases"><strong>Download</strong></a>
-    · 
-   <a href="https://github.com/sallliisa/Airwave/commits">Commits</a>
-
-   <br/>
-
-   If you find this useful, consider supporting the project.
-
-   [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Q5Q51RNAGT)
-
-   <br/>
-
-   <strong>Table of Contents</strong>
-   <br/>
-   [About](#About) • [Features](#Features) • [Requirements](#Requirements) • [Installation](#Installation) • [License](#License) • [Credits](#Credits) • [Support](#Support)
+  <p>
+    <strong>Version 2.0.0</strong><br />
+    <a href="https://github.com/sallliisa/Airwave/releases"><strong>Download Airwave</strong></a>
+    ·
+    <a href="https://github.com/sallliisa/Airwave/issues">Support</a>
+  </p>
 </div>
 
-## About
-Airwave is a source-available, non-commercial, macOS application that provides system-wide spatial audio for stereo outputs using HRIR convolution. Airwave is heavily inspired by HeSuVi and is compatible with HeSuVi HRIR presets.
+## What Airwave does
 
-This project was created to offer a free, customizable alternative to proprietary spatial audio applications.
+Airwave captures audio from your Mac, applies a spatial audio profile, and plays the result through your current stereo output. It uses HRIR convolution to create a wider, more speaker-like listening experience in headphones.
 
-## Features
-**1. System-wide audio processing with HRIR convolution**: Routes system audio through a real-time HRIR convolution pipeline to produce spatial audio. Supports any HRIR presets that HeSuVi uses.
+Airwave is designed for stereo headphones. The spatial effect may not sound as intended through speakers or other non-headphone outputs.
 
-**2. Input/output device and volume management**: Manages device volume and selection automatically, on launch and on exit. Manual aggregate device setup is required.
-
-**3. Resource-efficient real-time processing**: ~1% of a single CPU core, ~0.125% of total CPU capacity on an 8-core M1 MacBook Air using the `dht` preset
+Airwave follows your normal macOS output selection and volume. You do not need to manage a second audio route while using the app.
 
 ## Requirements
-- macOS 14.0 or later
-- Virtual audio device (e.g., BlackHole 2ch)
+
+- macOS 15 Sequoia or later
+- Stereo headphones
+- System Audio Capture permission
+
+Airwave does not use microphone access.
 
 ## Installation
-### 1. Install Virtual Audio Device (BlackHole 2ch Recommended)
-Any virtual audio device should work; however, BlackHole 2ch has been extensively tested and is recommended for use with Airwave. 
 
-Install BlackHole 2ch using Homebrew:
-```bash
-brew install blackhole-2ch
-```
-
-Or download and install it from [ExistentialAudio/BlackHole](https://github.com/ExistentialAudio/BlackHole)
-
-### 2. Get Airwave
-Install Airwave with Homebrew:
+### Homebrew
 
 ```bash
 brew tap sallliisa/airwave
 brew install --cask airwave
 ```
 
-Alternatively, download Airwave and copy it to your Applications folder from [Airwave Releases](https://github.com/sallliisa/Airwave/releases).
+### Download
 
-> [!IMPORTANT]
-> This step is necessary, because the app has not been notarized by Apple due to the membership fees of the Apple Developer Program. "Apple could not verify 'Airwave.app' is free of malware" refers to the [lack of notarization](https://support.apple.com/en-us/102445), not to any anomalies detected.
+Download the latest release from [GitHub Releases](https://github.com/sallliisa/Airwave/releases), open the ZIP file, and move `Airwave.app` to your Applications folder.
 
-On macOS 14 Sonoma:
-1. Right click `Airwave.app`
-2. Click "Open"
-3. Click "Open" in the dialog box
+If macOS stops the app from opening, try opening it once, then go to **System Settings > Privacy & Security** and choose **Open Anyway** for Airwave.
 
-On macOS 15 Sequoia or above:
-1. Try to open the app, it will tell you it's blocked
-2. Go to `System Settings > Privacy & Security` and scroll to the bottom
-3. Click "Open Anyway" to allow Airwave to open
-4. Click "Open Anyway" on the next dialog box and authenticate
-5. Open Airwave again from Applications folder
+## First launch
 
-On first launch, the Airwave menu bar icon indicates that additional setup is required. Click the menu bar icon and open Settings to view the required setup steps.
+Airwave opens a short setup wizard the first time you run it. It has four pages and takes only a moment.
 
-|<img alt="Airwave Incomplete Setup Warning" src="docs/images/airwave_incomplete_setup_warning.png" width="400">|
-|:--:|
-| **Fig. 1**. *Airwave Incomplete Setup Warning* |
+### 1. Welcome
 
-### 3. Set Up an Aggregate Device
+The welcome page explains the two things Airwave needs: permission to capture system audio and stereo headphones for the spatial effect.
 
-From the Airwave Settings menu, scroll down to the Diagnostics section, and click `Configure` under `Aggregate Device`. This will open the Audio MIDI Setup application.
+![Airwave setup welcome page](docs/images/1Onboarding_Welcome.png)
 
-|<img alt="Setup Aggregate Device Notice" src="docs/images/setup_aggregate_device_notice.png" width="350">|
-|:--:|
-| **Fig. 2**. *Setup Aggregate Device Notice* |
+### 2. Allow system audio capture
 
-In Audio MIDI Setup, click the `+` button in the bottom-left corner and select `Create Aggregate Device`.
+Click **Test System Audio Capture**. macOS will ask for permission to let Airwave capture system audio. Follow the prompt, then run the test again if needed.
 
-In the newly created aggregate device, enable `BlackHole 2ch` (or another virtual audio device) in the `Use` column, then enable any physical output devices you want Airwave to make available as output options. After you're done, make sure to only check the `Drift Correction` box only on the `BlackHole 2ch` (or any virtual audio device that you are using). If you have multiple virtual audio devices, you may enable more than one. You will be able to choose which device Airwave captures from later in the settings menu.
+Airwave plays a short test sound and checks that it can receive captured audio. If access is not enabled, the setup page gives you a button to open the relevant macOS privacy setting.
 
-|<img alt="Create Aggregate Device" src="docs/images/create_aggregate_device.png" width="500">|<img alt="Aggregate Device Setup" src="docs/images/select_physical_device_aggregate_device.png" width="500">|
-|:----------:|:----------:|
-| **Fig. 3**. *Create Aggregate Device* | **Fig. 4**. *Aggregate Device Setup* |
+![Airwave system audio capture setup](docs/images/2Onboarding_SystemAudioCapture.png)
 
-### 4. Get HRIR Presets
-Airwave does not ship with any HRIR presets.
-You can download them for free from the [HeSuVi HRTF Database](https://airtable.com/embed/appac4r1cu9UpBNAN/shrpUAbtyZxhDDMjg/tblopH2GznvFipWjq/viwnouWPGDuYEd8Go).
+### 3. Choose an HRIR preset
 
-After downloading the `.wav` files, click on `Manage files` under `HRIR Presets`. Move the files into the folder shown, and the presets will be automatically detected and ready for use.
+Choose an HRIR preset from the list. Airwave includes `Neutral`, `Room`, and `Stage` presets to get you started. You can listen to audio while switching presets so you can choose the one you prefer.
 
-|<img alt="Manage HRIR Presets" src="docs/images/manage_hrir_files.png" width="400">|<img alt="HRIR Presets Folder" src="docs/images/hrir_files_folder.png" width="500">|
-|:--:|:--:|
-| **Fig. 5**. *Manage HRIR Presets* | **Fig. 6**. *HRIR Presets Folder* |
+Airwave also accepts compatible HeSuVi HRIR `.wav` files. Use **Import…** to add files, **Manage…** to open Airwave's preset folder, or **Get more HRIRs…** to visit the [HeSuVi HRTF Database](https://airtable.com/embed/appac4r1cu9UpBNAN/shrpUAbtyZxhDDMjg/tblopH2GznvFipWjq/viwnouWPGDuYEd8Go).
 
-### 5. Start Using Airwave
-Airwave is now ready to use. Any issues or warnings will appear in the `Diagnostics` section of Settings.
+Selecting **None** leaves spatial processing off. You can choose a preset later from Settings or, if enabled, the menu bar.
 
-To get started, choose:
-- the **aggregate device** you created,
-- the **input device** you want Airwave to capture from,
-- the **output device** you want audio to play through,
-- the **HRIR preset** you prefer,
+![Airwave HRIR preset setup](docs/images/3Onboarding_HRIRPreset.png)
 
-then start the audio engine.
+### 4. Finish setup
 
-These controls are available in Settings, and can also be accessed later from the menu bar.
+When the capture test and preset setup are complete, Airwave is ready. The final page also lets you choose whether Airwave should launch when you log in and whether it should stay visible in the macOS menu bar.
 
-|<img alt="General Setup" src="docs/images/general_setup.png" width="350">|
-|:--:|
-| **Fig. 7**. *General Setup* |
+![Airwave setup complete](docs/images/4Onboarding_Complete.png)
+
+## Running Airwave
+
+Airwave gives you two ways to use it:
+
+- With **Show in Menu Bar** enabled, Airwave is available from the macOS menu bar. Open its menu to choose the HRIR preset, revisit setup, open Settings, or quit Airwave.
+- With **Show in Menu Bar** disabled, Airwave has no visible menu bar icon. It continues processing in the background, which makes it suitable for a set-and-forget setup. Open Airwave again from Applications, Finder, Spotlight, or another app launcher when you need to change a setting.
+
+Changing the HRIR preset takes effect while audio is playing. When no HRIR preset is selected, Airwave leaves audio in its normal form.
+
+Closing the Settings window does not quit Airwave. To stop audio processing and exit Airwave completely, use the power button in Settings or choose **Quit Airwave** from the menu bar menu.
+
+## Settings
+
+Settings shows the current supported stereo output at the top. Airwave remembers a separate profile for each output it sees, so a pair of headphones can keep its own HRIR and EQ choices when you switch between devices.
+
+![Airwave Settings](docs/images/5Settings.png)
+
+### Spatial profiles
+
+The **Spatial Profile** section is where you choose the HRIR preset for the output shown at the top of the window. Airwave's bundled presets are available immediately, and imported HeSuVi-compatible WAV files appear in the same list.
+
+### Equalizer
+
+The optional Equalizer uses EqualizerAPO-format `.txt` presets. Airwave includes five presets:
+
+- Bass Booster
+- Bass Reducer
+- Treble Booster
+- Treble Reducer
+- Vocal Booster
+
+Choose **None** to bypass the Equalizer. Use **Import…** to add your own EqualizerAPO preset, **Manage…** to open Airwave's managed preset folder, or **Get more equalizer presets…** to browse [AutoEq](https://autoeq.app/). You can delete imported presets from the library.
+
+![Airwave Equalizer](docs/images/6Equalizer.png)
+
+The HRIR and Equalizer settings are independent. You can use spatial processing, EQ processing, both together, or neither.
+
+### Registered Devices
+
+**Registered Devices** lists the outputs Airwave remembers. Each device shows its transport, whether it is current, and the HRIR and EQ presets assigned to it.
+
+- **Reset Profile** changes both HRIR and EQ to `None` for the selected device.
+- **Forget Device** removes a device that is not currently in use. If it is available again later, Airwave can create its profile again from the device selector.
+
+![Airwave Registered Devices](docs/images/7RegisteredDevices.png)
+
+### Application
+
+The **Application** page contains preferences and app information:
+
+- **Launch at Login** starts Airwave when you log in.
+- **Show in Menu Bar** keeps Airwave available from the macOS menu bar. Turn it off to run Airwave as a hidden background app.
+- **Software Update** checks for a newer Airwave release.
+- **About Airwave** shows the installed version and app information.
+
+![Airwave Application settings](docs/images/8Application.png)
+
+## Troubleshooting
+
+### Airwave says system audio capture needs attention
+
+Open setup from **Settings > Setup & Troubleshooting** and run **Test System Audio Capture**. If macOS asks for access, allow Airwave under **System Settings > Privacy & Security > System Audio Capture**, then test again.
+
+### The spatial effect is not audible
+
+Check that:
+
+1. Your headphones are the current macOS output.
+2. The output is a supported stereo physical device.
+3. An HRIR preset other than `None` is selected.
+4. Airwave's capture test has passed.
+
+### A device is not available
+
+Connect the headphones and select them as the macOS output. Airwave watches for supported outputs and adds them to the device selector when they become available.
 
 ## License
-Airwave is currently licensed under the GNU General Public License v3. I believe macOS tools should be accessible to everyone, free from the high price tags or and the subscription models that dominate the ecosystem.
+
+Airwave is licensed under the [GNU General Public License v3](LICENSE).
 
 ## Credits
-- Inspired by the original concept and implementation of [HeSuVi](https://sourceforge.net/projects/hesuvi/). This project is independently developed and not affiliated with the HeSuVi project.
-- Supports HRIR datasets obtained from the [HeSuVi HRTF Database](https://airtable.com/embed/appac4r1cu9UpBNAN/shrpUAbtyZxhDDMjg/tblopH2GznvFipWjq/viwnouWPGDuYEd8Go). HRIR files are provided by third parties and are subject to their respective licenses.
-- Designed to work with [BlackHole](https://github.com/ExistentialAudio/BlackHole) for virtual audio routing.
-- [Material Symbols](https://fonts.google.com/icons) used for the app and menu bar icon.
-- The notice and the steps to resolve the signing issue copied from [Battery Toolkit](https://github.com/mhaeuser/Battery-Toolkit).
+
+- Airwave is inspired by [HeSuVi](https://sourceforge.net/projects/hesuvi/) and supports compatible HRIR datasets. Airwave is independently developed and is not affiliated with HeSuVi.
+- HRIR files from the [HeSuVi HRTF Database](https://airtable.com/embed/appac4r1cu9UpBNAN/shrpUAbtyZxhDDMjg/tblopH2GznvFipWjq/viwnouWPGDuYEd8Go) are provided by third parties and remain subject to their respective licenses.
+- Equalizer preset discovery is provided through [AutoEq](https://autoeq.app/).
+- [Material Symbols](https://fonts.google.com/icons) are used for app and menu bar icons.
 
 ## Support
-For issues and feature requests, please [file an issue on GitHub](https://github.com/sallliisa/Airwave/issues).
 
-If you find Airwave useful, consider supporting its continued development through a [voluntary donation](https://ko-fi.com/Q5Q51RNAGT). Donations help cover development time and ongoing maintenance, and are greatly appreciated.
+For bugs and feature requests, [open an issue on GitHub](https://github.com/sallliisa/Airwave/issues).
 
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Q5Q51RNAGT)
+If Airwave is useful to you, you can support its development with a [voluntary donation on Ko-fi](https://ko-fi.com/Q5Q51RNAGT).
+
+[![Support Airwave on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Q5Q51RNAGT)
