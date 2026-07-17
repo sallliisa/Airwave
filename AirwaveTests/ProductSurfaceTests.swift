@@ -3,6 +3,37 @@ import XCTest
 
 @MainActor
 final class ProductSurfaceTests: XCTestCase {
+    func testSettingsSurfaceIncludesResourceLinksPickerLabelsIconsAndHitTargets() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let style = try String(contentsOf: root.appendingPathComponent("Airwave/AirwaveStyle.swift"), encoding: .utf8)
+        let settings = try String(contentsOf: root.appendingPathComponent("Airwave/SettingsView.swift"), encoding: .utf8)
+        let equalizer = try String(contentsOf: root.appendingPathComponent("Airwave/EqualizerSettingsView.swift"), encoding: .utf8)
+
+        XCTAssertTrue(style.contains("Get more HRIRs…"))
+        XCTAssertTrue(equalizer.contains("Get more equalizer presets…"))
+        XCTAssertTrue(style.contains("https://airtable.com/embed/appac4r1cu9UpBNAN/shrpUAbtyZxhDDMjg/tblopH2GznvFipWjq/viwnouWPGDuYEd8Go"))
+        XCTAssertTrue(style.contains("https://autoeq.app/"))
+        XCTAssertTrue(style.contains("Button(\"Manage…\")"))
+        XCTAssertTrue(equalizer.contains("Button(\"Manage…\")"))
+        XCTAssertFalse(style.contains("Button(\"Show in Finder\")"))
+        XCTAssertFalse(equalizer.contains("Button(\"Show in Finder\")"))
+        XCTAssertTrue(style.contains(".buttonStyle(.plain)"))
+        XCTAssertTrue(style.contains(".foregroundStyle(.tint)"))
+        XCTAssertTrue(equalizer.contains(".buttonStyle(.plain)"))
+        XCTAssertTrue(equalizer.contains(".foregroundStyle(.tint)"))
+
+        let libraryCard = try XCTUnwrap(equalizer.range(of: "private var libraryCard"))
+        let libraryCardSource = String(equalizer[libraryCard.lowerBound...])
+        XCTAssertFalse(libraryCardSource.contains("title: \"Equalizer Presets\""))
+
+        for icon in ["slider.horizontal.3", "headphones", "sparkles", "gearshape"] {
+            XCTAssertTrue(settings.contains("systemImage: \"\(icon)\""))
+        }
+        XCTAssertTrue(settings.contains(".frame(minWidth: 44, minHeight: 44)"))
+        XCTAssertTrue(settings.contains(".frame(width: 44, height: 44)"))
+        XCTAssertTrue(settings.contains("isReady: onboarding.runtime.isSetupHealthy"))
+    }
+
     func testOnboardingHasOneCaptureCardAndNoSplitHealthCopy() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let source = try String(contentsOf: root.appendingPathComponent("Airwave/OnboardingView.swift"), encoding: .utf8)
@@ -27,6 +58,10 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertTrue(source.contains("case .checking, .unknown: return Color.primary"))
         XCTAssertTrue(source.contains("case .checking:"))
         XCTAssertTrue(source.contains("hasCaptureFailureGuidance"))
+        XCTAssertTrue(source.contains("viewModel.canComplete(allowingUnknownCapture: canReturnToSettings)"))
+        XCTAssertTrue(source.contains("viewModel.complete(allowingUnknownCapture: canReturnToSettings)"))
+        XCTAssertTrue(source.contains("private var isRuntimeReady: Bool"))
+        XCTAssertTrue(source.contains("isReady: isRuntimeReady"))
     }
 
     func testCapturePresentationUsesTruthfulStatesAndActions() {
@@ -46,6 +81,7 @@ final class ProductSurfaceTests: XCTestCase {
             isReady: false
         )
         XCTAssertFalse(unknown.isAttention)
+        XCTAssertEqual(unknown.title, "Capture not confirmed")
         XCTAssertEqual(unknown.actionTitle, "Test System Audio Capture")
 
         let checking = OnboardingReadinessPresentation.make(
@@ -120,15 +156,54 @@ final class ProductSurfaceTests: XCTestCase {
         )
         let viewModel = OnboardingViewModel(runtime: runtime, actions: ActionsFake(), persistence: persistence)
 
-        XCTAssertTrue(viewModel.canComplete)
+        XCTAssertTrue(viewModel.canComplete(allowingUnknownCapture: false))
     }
 
-    func testKnownFailuresAndUnsupportedOrUnknownCaptureCannotComplete() {
+    func testInitialSetupUnknownCaptureCannotCompleteButSubsequentSetupCan() {
+        let persistence = PersistenceFake()
+        let runtime = AudioRuntimeState(
+            status: .inactive,
+            currentOutput: output(),
+            captureAccess: .unverified
+        )
+        let viewModel = OnboardingViewModel(runtime: runtime, actions: ActionsFake(), persistence: persistence)
+
+        XCTAssertFalse(viewModel.canComplete(allowingUnknownCapture: false))
+        XCTAssertTrue(viewModel.canComplete(allowingUnknownCapture: true))
+    }
+
+    func testCompleteUsesSetupEntryContext() {
+        let persistence = PersistenceFake()
+        let runtime = AudioRuntimeState(
+            status: .inactive,
+            currentOutput: output(),
+            captureAccess: .unverified
+        )
+        let viewModel = OnboardingViewModel(runtime: runtime, actions: ActionsFake(), persistence: persistence)
+
+        XCTAssertFalse(viewModel.complete(allowingUnknownCapture: false))
+        XCTAssertFalse(persistence.isComplete)
+        XCTAssertTrue(viewModel.complete(allowingUnknownCapture: true))
+        XCTAssertTrue(persistence.isComplete)
+    }
+
+    func testSubsequentSetupCheckingCaptureCannotComplete() {
+        let persistence = PersistenceFake()
+        let runtime = AudioRuntimeState(
+            status: .starting,
+            currentOutput: output(),
+            captureAccess: .checking
+        )
+        let viewModel = OnboardingViewModel(runtime: runtime, actions: ActionsFake(), persistence: persistence)
+
+        XCTAssertFalse(viewModel.canComplete(allowingUnknownCapture: true))
+    }
+
+    func testKnownFailuresAndUnsupportedCaptureCannotCompleteInEitherSetupContext() {
         let persistence = PersistenceFake()
 
         for captureAccess in [
-            AudioRuntimeState.CaptureAccess.unverified,
-            .permissionRequired,
+            AudioRuntimeState.CaptureAccess.permissionRequired,
             .failed(reason: "capture failed")
         ] {
             let runtime = AudioRuntimeState(
@@ -138,7 +213,8 @@ final class ProductSurfaceTests: XCTestCase {
             )
             let viewModel = OnboardingViewModel(runtime: runtime, actions: ActionsFake(), persistence: persistence)
 
-            XCTAssertFalse(viewModel.canComplete, "Unexpectedly allowed completion for \(captureAccess)")
+            XCTAssertFalse(viewModel.canComplete(allowingUnknownCapture: false), "Unexpectedly allowed initial completion for \(captureAccess)")
+            XCTAssertFalse(viewModel.canComplete(allowingUnknownCapture: true), "Unexpectedly allowed subsequent completion for \(captureAccess)")
         }
 
         let unsupportedRuntime = AudioRuntimeState(
@@ -152,7 +228,21 @@ final class ProductSurfaceTests: XCTestCase {
             persistence: persistence
         )
 
-        XCTAssertFalse(unsupportedViewModel.canComplete)
+        XCTAssertFalse(unsupportedViewModel.canComplete(allowingUnknownCapture: false))
+        XCTAssertFalse(unsupportedViewModel.canComplete(allowingUnknownCapture: true))
+    }
+
+    func testPersistedWarningBlocksSubsequentUnknownCaptureCompletion() {
+        let persistence = PersistenceFake()
+        persistence.persistedCaptureFailure = PersistedCaptureFailure(kind: .failed, reason: "previous timeout")
+        let runtime = AudioRuntimeState(
+            status: .inactive,
+            currentOutput: output(),
+            captureAccess: .unverified
+        )
+        let viewModel = OnboardingViewModel(runtime: runtime, actions: ActionsFake(), persistence: persistence)
+
+        XCTAssertFalse(viewModel.canComplete(allowingUnknownCapture: true))
     }
 
     func testCaptureRequestDelegatesToRuntimeAndFocusRestores() {
@@ -196,8 +286,10 @@ final class ProductSurfaceTests: XCTestCase {
 
         runtime.setCaptureAccess(.unverified)
         XCTAssertEqual(viewModel.captureFailureGuidance?.reason, "first failure")
+        XCTAssertEqual(viewModel.captureAccessPresentation, .failed(reason: "first failure"))
         runtime.setCaptureAccess(.checking)
         XCTAssertEqual(viewModel.captureFailureGuidance?.reason, "first failure")
+        XCTAssertEqual(viewModel.captureAccessPresentation, .checking)
 
         runtime.setCaptureAccess(.failed(reason: "second failure"))
         XCTAssertEqual(viewModel.captureFailureGuidance?.reason, "second failure")
@@ -206,6 +298,7 @@ final class ProductSurfaceTests: XCTestCase {
         runtime.setCaptureAccess(.verified)
         XCTAssertNil(viewModel.captureFailureGuidance)
         XCTAssertNil(persistence.persistedCaptureFailure)
+        XCTAssertEqual(viewModel.captureAccessPresentation, .verified)
     }
 
     func testPersistedCaptureFailureRoundTripsAcrossPersistenceInstances() throws {
@@ -226,13 +319,31 @@ final class ProductSurfaceTests: XCTestCase {
 
     func testPersistedFailureRestoresGuidanceWithoutChangingUnknownRuntime() {
         let persistence = PersistenceFake()
+        persistence.persistedCaptureFailure = PersistedCaptureFailure(kind: .failed, reason: "previous timeout")
+        let runtime = AudioRuntimeState(captureAccess: .unverified)
+        let viewModel = OnboardingViewModel(runtime: runtime, actions: ActionsFake(), persistence: persistence)
+
+        XCTAssertEqual(viewModel.captureFailureGuidance?.reason, "previous timeout")
+        XCTAssertEqual(viewModel.captureAccessPresentation, .failed(reason: "previous timeout"))
+        XCTAssertEqual(runtime.captureAccess, .unverified)
+        XCTAssertTrue(viewModel.needsSetupAttention)
+    }
+
+    func testPersistedPermissionFailureRestoresPermissionPresentation() {
+        let persistence = PersistenceFake()
         persistence.persistedCaptureFailure = PersistedCaptureFailure(kind: .permissionRequired, reason: nil)
         let runtime = AudioRuntimeState(captureAccess: .unverified)
         let viewModel = OnboardingViewModel(runtime: runtime, actions: ActionsFake(), persistence: persistence)
 
-        XCTAssertEqual(viewModel.captureFailureGuidance?.suggestions.count, 2)
+        XCTAssertEqual(viewModel.captureAccessPresentation, .permissionRequired)
         XCTAssertEqual(runtime.captureAccess, .unverified)
-        XCTAssertTrue(viewModel.needsSetupAttention)
+    }
+
+    func testUnknownCaptureWithoutPersistedFailureRemainsUnverifiedPresentation() {
+        let runtime = AudioRuntimeState(captureAccess: .unverified)
+        let viewModel = OnboardingViewModel(runtime: runtime, actions: ActionsFake(), persistence: PersistenceFake())
+
+        XCTAssertEqual(viewModel.captureAccessPresentation, .unverified)
     }
 
     func testPersistedFailureMakesFinalReadinessAttentionState() {

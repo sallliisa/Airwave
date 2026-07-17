@@ -295,14 +295,6 @@ struct EqualizerSettingsView: View {
 
     private var libraryCard: some View {
         VStack(alignment: .leading, spacing: 0) {
-            AirwaveSectionHeader(
-                title: "Equalizer Presets",
-                subtitle: "None is selected by default."
-            )
-            .padding(AirwaveLayout.cardPadding)
-
-            Divider()
-
             ZStack {
                 if manager.presets.isEmpty {
                     AirwaveEmptyLibraryState(
@@ -354,10 +346,15 @@ struct EqualizerSettingsView: View {
                 Button("Import…") { coordinator.presentImportPanel() }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
-                Button("Show in Finder") { coordinator.showInFinder() }
+                Button("Manage…") { coordinator.showInFinder() }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .help("Reveal the managed Equalizer Presets folder")
+                Link("Get more equalizer presets…", destination: AirwaveResourceLinks.equalizer)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.tint)
+                    .font(.system(size: 11, weight: .medium))
+                    .help("Open AutoEq")
                 Spacer(minLength: 0)
                 Button("Delete", role: .destructive) {
                     pendingDelete = selectedPreset

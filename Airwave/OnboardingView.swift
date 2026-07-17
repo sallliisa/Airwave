@@ -99,9 +99,17 @@ struct OnboardingView: View {
     private var stepProgressLabel: String {
         switch viewModel.currentStep {
         case .welcome: "Before you begin"
-        case .liveHealth: viewModel.canComplete ? "All is set. Airwave is now set up." : "Finish setup to use Airwave."
+        case .liveHealth: isRuntimeReady ? "All is set. Airwave is now set up." : "Finish setup to use Airwave."
         default: "Step \(currentPageNumber - 1) of 2"
         }
+    }
+
+    private var canComplete: Bool {
+        viewModel.canComplete(allowingUnknownCapture: canReturnToSettings)
+    }
+
+    private var isRuntimeReady: Bool {
+        runtime.isSetupHealthy
     }
 
     @ViewBuilder
@@ -225,10 +233,10 @@ struct OnboardingView: View {
         let presentation = readinessPresentation
         return VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
             statusCard(
-                icon: viewModel.canComplete
+                icon: isRuntimeReady
                     ? "checkmark.seal.fill"
                     : (presentation.isAttention ? "exclamationmark.triangle.fill" : "info.circle.fill"),
-                color: viewModel.canComplete ? .green : (presentation.isAttention ? .orange : .secondary),
+                color: isRuntimeReady ? .green : (presentation.isAttention ? .orange : .secondary),
                 title: presentation.title,
                 detail: presentation.detail
             )
@@ -314,10 +322,10 @@ struct OnboardingView: View {
                 accessibilityLabel: primaryLabel,
                 help: primaryLabel,
                 isProminent: true,
-                isEnabled: isCompletion ? viewModel.canComplete : true
+                isEnabled: isCompletion ? canComplete : true
             ) {
                 if isCompletion {
-                    if viewModel.complete() { onComplete() }
+                    if viewModel.complete(allowingUnknownCapture: canReturnToSettings) { onComplete() }
                 } else {
                     navigateForward()
                 }
@@ -360,7 +368,7 @@ struct OnboardingView: View {
             captureAccess: viewModel.captureAccessPresentation,
             hasPreset: profiles.currentProfile?.hrirPresetID != nil,
             runtimeStatus: runtime.status,
-            isReady: viewModel.canComplete,
+            isReady: isRuntimeReady,
             hasCaptureFailureGuidance: viewModel.captureFailureGuidance != nil
         )
     }
