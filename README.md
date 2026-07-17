@@ -4,12 +4,12 @@
   <p>System-wide spatial audio for macOS headphones.</p>
 
   <p>
-    <a href="https://github.com/sallliisa/Airwave/releases/latest"><img src="https://img.shields.io/github/v/release/sallliisa/Airwave?display_name=tag&amp;sort=semver" alt="Latest release" /></a>
-  </p>
-  <p>
     <a href="https://github.com/sallliisa/Airwave/releases"><strong>Download Airwave</strong></a>
     ·
     <a href="https://github.com/sallliisa/Airwave/issues">Support</a>
+  </p>
+  <p>
+    <a href="https://github.com/sallliisa/Airwave/releases/latest"><img src="https://img.shields.io/github/v/release/sallliisa/Airwave?display_name=tag&amp;sort=semver" alt="Latest release" /></a>
   </p>
 
   <img src="docs/images/Bento.png" alt="Airwave Bento Infographics" />
