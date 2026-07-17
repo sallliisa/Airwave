@@ -105,6 +105,7 @@ protocol OnboardingPersisting: AnyObject {
     var checkpoint: OnboardingStepV2 { get set }
     var isComplete: Bool { get set }
     var isDeferred: Bool { get set }
+    var persistedCaptureFailure: PersistedCaptureFailure? { get set }
 }
 
 final class UserDefaultsOnboardingPersistenceV2: OnboardingPersisting {
@@ -114,6 +115,7 @@ final class UserDefaultsOnboardingPersistenceV2: OnboardingPersisting {
     private let checkpointKey = "Airwave.OnboardingV2.Checkpoint"
     private let completionKey = "Airwave.OnboardingV2.Completed"
     private let deferredKey = "Airwave.OnboardingV2.Deferred"
+    private let captureFailureKey = "Airwave.OnboardingV2.CaptureFailure"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -122,6 +124,7 @@ final class UserDefaultsOnboardingPersistenceV2: OnboardingPersisting {
             defaults.set(OnboardingStepV2.welcome.rawValue, forKey: checkpointKey)
             defaults.set(false, forKey: completionKey)
             defaults.set(false, forKey: deferredKey)
+            defaults.removeObject(forKey: captureFailureKey)
         }
     }
 
@@ -143,6 +146,21 @@ final class UserDefaultsOnboardingPersistenceV2: OnboardingPersisting {
     var isDeferred: Bool {
         get { defaults.bool(forKey: deferredKey) }
         set { defaults.set(newValue, forKey: deferredKey) }
+    }
+
+    var persistedCaptureFailure: PersistedCaptureFailure? {
+        get {
+            guard let data = defaults.data(forKey: captureFailureKey) else { return nil }
+            return try? JSONDecoder().decode(PersistedCaptureFailure.self, from: data)
+        }
+        set {
+            guard let newValue,
+                  let data = try? JSONEncoder().encode(newValue) else {
+                defaults.removeObject(forKey: captureFailureKey)
+                return
+            }
+            defaults.set(data, forKey: captureFailureKey)
+        }
     }
 }
 
@@ -233,6 +251,36 @@ struct CaptureFailureGuidance: Equatable {
     }
 }
 
+struct PersistedCaptureFailure: Codable, Equatable {
+    enum Kind: String, Codable {
+        case permissionRequired
+        case failed
+    }
+
+    let kind: Kind
+    let reason: String?
+
+    var guidance: CaptureFailureGuidance {
+        switch kind {
+        case .permissionRequired:
+            return CaptureFailureGuidance.make(for: .permissionRequired)!
+        case .failed:
+            return CaptureFailureGuidance.make(for: .failed(reason: reason ?? "Audio capture test failed safely."))!
+        }
+    }
+
+    static func make(for captureAccess: AudioRuntimeState.CaptureAccess) -> Self? {
+        switch captureAccess {
+        case .permissionRequired:
+            return Self(kind: .permissionRequired, reason: nil)
+        case .failed(let reason):
+            return Self(kind: .failed, reason: reason)
+        case .unverified, .checking, .verified:
+            return nil
+        }
+    }
+}
+
 enum OnboardingPresentationContext {
     case automaticFirstSetup
     case voluntary
@@ -268,16 +316,29 @@ final class OnboardingViewModel: ObservableObject {
         self.persistence = persistence
         self.focusRestorer = focusRestorer ?? PermissionWindowFocusRestorer.shared
         currentStep = persistence.checkpoint
-        captureFailureGuidance = Self.failureGuidance(for: runtime.captureAccess)
+        if runtime.captureAccess == .verified {
+            persistence.persistedCaptureFailure = nil
+            captureFailureGuidance = nil
+        } else if let currentFailure = PersistedCaptureFailure.make(for: runtime.captureAccess) {
+            persistence.persistedCaptureFailure = currentFailure
+            captureFailureGuidance = currentFailure.guidance
+        } else {
+            captureFailureGuidance = persistence.persistedCaptureFailure?.guidance
+        }
         runtime.$captureAccess
             .sink { [weak self] captureAccess in
                 guard let self else { return }
                 switch captureAccess {
                 case .permissionRequired:
-                    self.captureFailureGuidance = CaptureFailureGuidance.make(for: .permissionRequired)
+                    let failure = PersistedCaptureFailure(kind: .permissionRequired, reason: nil)
+                    self.persistence.persistedCaptureFailure = failure
+                    self.captureFailureGuidance = failure.guidance
                 case .failed(let reason):
-                    self.captureFailureGuidance = CaptureFailureGuidance.make(for: .failed(reason: reason))
+                    let failure = PersistedCaptureFailure(kind: .failed, reason: reason)
+                    self.persistence.persistedCaptureFailure = failure
+                    self.captureFailureGuidance = failure.guidance
                 case .verified:
+                    self.persistence.persistedCaptureFailure = nil
                     self.captureFailureGuidance = nil
                 case .unverified, .checking:
                     break
@@ -303,6 +364,7 @@ final class OnboardingViewModel: ObservableObject {
     var isConfigurationHealthy: Bool { runtime.isSetupHealthy }
     var needsSetupAttention: Bool {
         if !persistence.isComplete { return true }
+        if captureFailureGuidance != nil { return true }
         switch runtime.captureAccess {
         case .permissionRequired, .failed: return true
         case .unverified, .checking: return false
@@ -330,17 +392,6 @@ final class OnboardingViewModel: ObservableObject {
         case .verified: return .verified
         case .permissionRequired: return .permissionRequired
         case .failed(let reason): return .failed(reason: reason)
-        }
-    }
-
-    private static func failureGuidance(for captureAccess: AudioRuntimeState.CaptureAccess) -> CaptureFailureGuidance? {
-        switch captureAccess {
-        case .permissionRequired:
-            return CaptureFailureGuidance.make(for: .permissionRequired)
-        case .failed(let reason):
-            return CaptureFailureGuidance.make(for: .failed(reason: reason))
-        case .unverified, .checking, .verified:
-            return nil
         }
     }
 
@@ -467,7 +518,8 @@ struct OnboardingReadinessPresentation: Equatable {
         captureAccess: CaptureAccessPresentation,
         hasPreset: Bool,
         runtimeStatus: AudioRuntimeState.Status,
-        isReady: Bool
+        isReady: Bool,
+        hasCaptureFailureGuidance: Bool = false
     ) -> Self {
         if isReady {
             return Self(
@@ -479,6 +531,17 @@ struct OnboardingReadinessPresentation: Equatable {
                 actionTitle: nil,
                 canRetry: false,
                 isAttention: false
+            )
+        }
+
+        if hasCaptureFailureGuidance {
+            return Self(
+                title: "A little more setup is needed",
+                detail: "System Audio Capture still needs your attention.",
+                actionStep: .systemAudio,
+                actionTitle: "Review Capture",
+                canRetry: false,
+                isAttention: true
             )
         }
 
