@@ -5,6 +5,8 @@
 
   <p>
     <a href="https://github.com/sallliisa/Airwave/releases/latest"><img src="https://img.shields.io/github/v/release/sallliisa/Airwave?display_name=tag&amp;sort=semver" alt="Latest release" /></a>
+  </p>
+  <p>
     <a href="https://github.com/sallliisa/Airwave/releases"><strong>Download Airwave</strong></a>
     ·
     <a href="https://github.com/sallliisa/Airwave/issues">Support</a>
