@@ -54,7 +54,6 @@ nonisolated enum EqualizerDeletionDecision {
 
 nonisolated struct EqualizerSettingsMessage: Equatable {
     let text: String
-    let isSuccess: Bool
 }
 
 @MainActor
@@ -105,7 +104,7 @@ final class EqualizerSettingsCoordinator: ObservableObject {
         case .keepExisting:
             importURLs(urls, collisionPolicy: .reject, preflightFailures: failures)
         case .cancel:
-            message = makeMessage(imported: [], skipped: [], failures: failures)
+            message = makeMessage(failures: failures)
         }
     }
 
@@ -139,15 +138,11 @@ final class EqualizerSettingsCoordinator: ObservableObject {
         guard manager.delete(preset) else {
             let error = manager.libraryError
             message = EqualizerSettingsMessage(
-                text: error.map { "Could not delete \($0.filename): \($0.reason)" } ?? "Could not delete the managed preset.",
-                isSuccess: false
+                text: error.map { "Could not delete \($0.filename): \($0.reason)" } ?? "Could not delete the managed preset."
             )
             return false
         }
-        message = EqualizerSettingsMessage(
-            text: "Deleted \(preset.displayName) from the managed Equalizer Presets folder.",
-            isSuccess: true
-        )
+        message = nil
         return true
     }
 
@@ -157,35 +152,13 @@ final class EqualizerSettingsCoordinator: ObservableObject {
         preflightFailures: [EqualizerImportFailure] = []
     ) {
         let result = manager.importPresets(urls, collisionPolicy: collisionPolicy)
-        message = makeMessage(
-            imported: result.imported,
-            skipped: result.skipped,
-            failures: preflightFailures + result.failures
-        )
+        message = makeMessage(failures: preflightFailures + result.failures)
     }
 
-    private func makeMessage(
-        imported: [EqualizerPreset],
-        skipped: [String],
-        failures: [EqualizerImportFailure]
-    ) -> EqualizerSettingsMessage {
-        var parts: [String] = []
-        if !imported.isEmpty {
-            parts.append("Imported \(imported.count) preset\(imported.count == 1 ? "" : "s").")
-        }
-        if !skipped.isEmpty {
-            parts.append("Kept existing: \(skipped.joined(separator: ", ")).")
-        }
-        if !failures.isEmpty {
-            let details = failures.map { "\($0.filename): \($0.reason)" }.joined(separator: " • ")
-            parts.append(details)
-        }
-        if parts.isEmpty {
-            parts.append("No presets were imported.")
-        }
+    private func makeMessage(failures: [EqualizerImportFailure]) -> EqualizerSettingsMessage? {
+        guard !failures.isEmpty else { return nil }
         return EqualizerSettingsMessage(
-            text: parts.joined(separator: " "),
-            isSuccess: !imported.isEmpty && failures.isEmpty
+            text: failures.map { "\($0.filename): \($0.reason)" }.joined(separator: " • ")
         )
     }
 }
@@ -272,7 +245,7 @@ struct EqualizerSettingsView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if let message = coordinator.message {
                     HStack(spacing: 8) {
-                        Image(systemName: message.isSuccess ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        Image(systemName: "exclamationmark.triangle.fill")
                         Text(message.text).font(.caption).foregroundStyle(.secondary)
                         Spacer(minLength: 0)
                         Button("Dismiss") { coordinator.dismissMessage() }
