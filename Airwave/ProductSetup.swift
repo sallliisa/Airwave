@@ -204,6 +204,35 @@ enum CaptureAccessPresentation: Equatable {
     case failed(reason: String)
 }
 
+struct CaptureFailureGuidance: Equatable {
+    let reason: String?
+    let suggestions: [String]
+
+    static func make(for captureAccess: CaptureAccessPresentation) -> Self? {
+        switch captureAccess {
+        case .permissionRequired:
+            return Self(
+                reason: nil,
+                suggestions: [
+                    "Enable Airwave under Privacy & Security → System Audio Capture.",
+                    "Have another app actively playing audio."
+                ]
+            )
+        case .failed(let reason):
+            return Self(
+                reason: reason,
+                suggestions: [
+                    "Enable Airwave under Privacy & Security → System Audio Capture.",
+                    "Have another app actively playing audio.",
+                    "Use a supported physical stereo output; virtual and aggregate outputs are unsupported."
+                ]
+            )
+        case .unverified, .checking, .verified:
+            return nil
+        }
+    }
+}
+
 enum OnboardingPresentationContext {
     case automaticFirstSetup
     case voluntary
@@ -219,6 +248,7 @@ final class OnboardingViewModel: ObservableObject {
     )
 
     @Published private(set) var currentStep: OnboardingStepV2
+    @Published private(set) var captureFailureGuidance: CaptureFailureGuidance?
 
     let runtime: AudioRuntimeState
     private let actions: AudioRuntimeUserActions
@@ -238,10 +268,21 @@ final class OnboardingViewModel: ObservableObject {
         self.persistence = persistence
         self.focusRestorer = focusRestorer ?? PermissionWindowFocusRestorer.shared
         currentStep = persistence.checkpoint
+        captureFailureGuidance = Self.failureGuidance(for: runtime.captureAccess)
         runtime.$captureAccess
             .sink { [weak self] captureAccess in
-                guard let self,
-                      self.captureFocusRestorationPending,
+                guard let self else { return }
+                switch captureAccess {
+                case .permissionRequired:
+                    self.captureFailureGuidance = CaptureFailureGuidance.make(for: .permissionRequired)
+                case .failed(let reason):
+                    self.captureFailureGuidance = CaptureFailureGuidance.make(for: .failed(reason: reason))
+                case .verified:
+                    self.captureFailureGuidance = nil
+                case .unverified, .checking:
+                    break
+                }
+                guard self.captureFocusRestorationPending,
                       captureAccess != .checking else { return }
                 self.captureFocusRestorationPending = false
                 self.focusRestorer.permissionRequestResolved()
@@ -264,7 +305,7 @@ final class OnboardingViewModel: ObservableObject {
         if !persistence.isComplete { return true }
         switch runtime.captureAccess {
         case .permissionRequired, .failed: return true
-        case .unverified, .checking: return runtime.status != .inactive
+        case .unverified, .checking: return false
         case .verified: break
         }
         return false
@@ -292,12 +333,21 @@ final class OnboardingViewModel: ObservableObject {
         }
     }
 
+    private static func failureGuidance(for captureAccess: AudioRuntimeState.CaptureAccess) -> CaptureFailureGuidance? {
+        switch captureAccess {
+        case .permissionRequired:
+            return CaptureFailureGuidance.make(for: .permissionRequired)
+        case .failed(let reason):
+            return CaptureFailureGuidance.make(for: .failed(reason: reason))
+        case .unverified, .checking, .verified:
+            return nil
+        }
+    }
+
     // SettingsView keeps its existing call-site label; value still comes from one capture state.
     var permissionPresentation: CaptureAccessPresentation { captureAccessPresentation }
 
-    var canComplete: Bool {
-        runtime.isSetupHealthy && (runtime.status == .processing || runtime.status == .inactive)
-    }
+    var canComplete: Bool { runtime.isSetupHealthy }
 
     func advance() {
         guard let index = OnboardingStepV2.allCases.firstIndex(of: currentStep),
@@ -409,7 +459,9 @@ struct OnboardingReadinessPresentation: Equatable {
     let title: String
     let detail: String
     let actionStep: OnboardingStepV2?
+    let actionTitle: String?
     let canRetry: Bool
+    let isAttention: Bool
 
     static func make(
         captureAccess: CaptureAccessPresentation,
@@ -424,17 +476,53 @@ struct OnboardingReadinessPresentation: Equatable {
                     ? "Airwave is set up and ready to apply your spatial profile."
                     : "Airwave setup is complete. Choose an HRIR preset whenever you’re ready to enable spatial processing.",
                 actionStep: nil,
-                canRetry: false
+                actionTitle: nil,
+                canRetry: false,
+                isAttention: false
             )
         }
-        if captureAccess != .verified {
+
+        switch captureAccess {
+        case .permissionRequired:
             return Self(
                 title: "A little more setup is needed",
                 detail: "System Audio Capture still needs your attention.",
                 actionStep: .systemAudio,
-                canRetry: false
+                actionTitle: "Review Permission",
+                canRetry: false,
+                isAttention: true
             )
+        case .failed:
+            return Self(
+                title: "A little more setup is needed",
+                detail: "System Audio Capture failed. Review the capture step and try again.",
+                actionStep: .systemAudio,
+                actionTitle: "Review Capture",
+                canRetry: false,
+                isAttention: true
+            )
+        case .unverified:
+            return Self(
+                title: "Capture not confirmed",
+                detail: "Run the System Audio Capture test to confirm Airwave can process system audio.",
+                actionStep: .systemAudio,
+                actionTitle: "Test System Audio Capture",
+                canRetry: false,
+                isAttention: false
+            )
+        case .checking:
+            return Self(
+                title: "Checking system audio capture",
+                detail: "Airwave is running the capture test.",
+                actionStep: nil,
+                actionTitle: nil,
+                canRetry: false,
+                isAttention: false
+            )
+        case .verified:
+            break
         }
+
         let menuPresentation = RuntimeMenuPresentation.make(from: runtimeStatus)
         return Self(
             title: "A little more setup is needed",
@@ -442,7 +530,9 @@ struct OnboardingReadinessPresentation: Equatable {
                 ? "Airwave is getting everything ready. This should only take a moment."
                 : "Airwave isn’t ready yet. Review the earlier steps or try again.",
             actionStep: nil,
-            canRetry: menuPresentation.canRetry
+            actionTitle: nil,
+            canRetry: menuPresentation.canRetry,
+            isAttention: menuPresentation.canRetry
         )
     }
 }

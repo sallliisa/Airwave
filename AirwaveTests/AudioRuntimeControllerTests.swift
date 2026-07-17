@@ -10,7 +10,9 @@ final class AudioRuntimeControllerTests: XCTestCase {
 
         XCTAssertEqual(h.pipelines.purposes, [.verification(includeOwnProcess: false)])
         XCTAssertEqual(h.pipelines.muteBehaviors, [.unmuted])
-        XCTAssertEqual(h.state.captureAccess, .checking)
+        XCTAssertEqual(h.state.captureAccess, .unverified)
+        XCTAssertEqual(h.player.playCount, 0)
+        XCTAssertEqual(h.scheduler.scheduledCount, 0)
     }
 
     func testExplicitTestUsesAllProcessProbeAndOnePlayer() {
@@ -26,6 +28,44 @@ final class AudioRuntimeControllerTests: XCTestCase {
         XCTAssertEqual(h.player.playCount, 1)
     }
 
+    func testResigningBeforeStimulusAllowsActivationReplay() {
+        let h = Harness()
+        h.controller.launch(presetReady: false)
+        h.controller.requestSystemAudioAccess()
+
+        h.controller.applicationWillResignActive()
+        h.controller.refreshSystemAudioAccess()
+        h.scheduler.runNext() // canceled pre-deactivation stimulus
+        h.scheduler.runNext() // replay after activation
+
+        XCTAssertEqual(h.player.playCount, 1)
+        XCTAssertEqual(h.state.captureAccess, .checking)
+    }
+
+    func testResigningAfterReplayCancelsOldTimeoutAndAllowsSecondReplay() {
+        let h = Harness()
+        h.controller.launch(presetReady: false)
+        h.controller.requestSystemAudioAccess()
+        h.scheduler.runNext() // first stimulus
+
+        h.controller.applicationWillResignActive()
+        h.controller.refreshSystemAudioAccess()
+        h.scheduler.runNext() // canceled first timeout
+        h.scheduler.runNext() // second stimulus
+
+        XCTAssertEqual(h.player.playCount, 2)
+        XCTAssertEqual(h.state.captureAccess, .checking)
+
+        h.scheduler.runNext() // second timeout
+        guard case .failed = h.state.captureAccess else {
+            return XCTFail("expected second test timeout")
+        }
+    }
+
+    func testCaptureVerificationTimeoutMatchesProbeBudget() {
+        XCTAssertEqual(AudioRuntimeController.captureVerificationTimeout, 2.5)
+    }
+
     func testSignalPromotesToProcessingOnlyAfterVerification() {
         let h = Harness(effect: true)
         h.pipelines.automaticEvent = nil
@@ -36,6 +76,26 @@ final class AudioRuntimeControllerTests: XCTestCase {
 
         XCTAssertEqual(h.pipelines.purposes, [.verification(includeOwnProcess: false), .processing])
         XCTAssertEqual(h.pipelines.muteBehaviors, [.unmuted, .mutedWhenTapped])
+        XCTAssertEqual(h.state.captureAccess, .verified)
+        XCTAssertEqual(h.state.status, .processing)
+    }
+
+    func testReprepareAfterVerifiedCaptureRestartsProcessingWithoutProbe() {
+        let h = Harness(effect: true)
+        h.pipelines.automaticEvent = nil
+        h.controller.launch(presetReady: true)
+        h.pipelines.emit(.signalDetected)
+
+        XCTAssertEqual(h.state.captureAccess, .verified)
+        XCTAssertEqual(h.state.status, .processing)
+
+        h.controller.reprepareCurrentOutput()
+
+        XCTAssertEqual(h.pipelines.purposes, [
+            .verification(includeOwnProcess: false),
+            .processing,
+            .processing
+        ])
         XCTAssertEqual(h.state.captureAccess, .verified)
         XCTAssertEqual(h.state.status, .processing)
     }
@@ -57,6 +117,17 @@ final class AudioRuntimeControllerTests: XCTestCase {
         let h = Harness()
         h.pipelines.startError = .permissionDenied
         h.controller.launch(presetReady: true)
+
+        XCTAssertEqual(h.state.captureAccess, .permissionRequired)
+        XCTAssertEqual(h.state.status, .needsPermission)
+    }
+
+    func testOpeningSystemSettingsPreservesKnownPermissionFailure() {
+        let h = Harness()
+        h.pipelines.startError = .permissionDenied
+        h.controller.launch(presetReady: true)
+
+        h.controller.openSystemAudioRecordingSettings()
 
         XCTAssertEqual(h.state.captureAccess, .permissionRequired)
         XCTAssertEqual(h.state.status, .needsPermission)
@@ -182,6 +253,7 @@ private final class SchedulerFake: AudioRuntimeScheduling {
     }
 
     private(set) var tasks: [Task] = []
+    var scheduledCount: Int { tasks.count }
     func schedule(after delay: TimeInterval, _ action: @escaping @MainActor () -> Void) -> AudioRuntimeCancellation {
         let task = Task { action() }
         tasks.append(task)
