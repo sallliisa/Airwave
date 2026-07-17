@@ -302,7 +302,13 @@ struct OnboardingView: View {
 
         return HStack {
             if canReturnToSettings {
-                Button("Back to Settings", action: onReturnToSettings)
+                Button(action: onReturnToSettings) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text("Back to Settings")
+                    }
+                }
                     .buttonStyle(.plain)
                     .font(.callout)
                     .foregroundStyle(.secondary)
