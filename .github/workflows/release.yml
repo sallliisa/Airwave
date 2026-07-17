@@ -43,6 +43,15 @@ jobs:
             exit 1
           fi
 
+      - name: Check Homebrew tap credentials
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          test -n "$HOMEBREW_TAP_TOKEN" || {
+            echo 'HOMEBREW_TAP_TOKEN is not configured; refusing to publish without updating the Homebrew tap' >&2
+            exit 1
+          }
+
       - name: Test release validation
         run: |
           scripts/test-release-version.sh
@@ -162,6 +171,47 @@ jobs:
             --title "$TAG" \
             --notes-file build/release-notes.md \
             --verify-tag
+
+      - name: Check out Homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: sallliisa/homebrew-airwave
+          ref: main
+          path: homebrew-airwave
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Update Homebrew cask
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          cask="homebrew-airwave/Casks/airwave.rb"
+          sha256=$(awk '{print $1}' "build/update/Airwave_v$VERSION.zip.sha256")
+          [[ "$sha256" =~ ^[[:xdigit:]]{64}$ ]] || {
+            echo "invalid release checksum: $sha256" >&2
+            exit 1
+          }
+
+          cp Casks/airwave.rb "$cask"
+
+          ruby - "$cask" "$VERSION" "$sha256" <<'RUBY'
+          path, version, sha256 = ARGV
+          content = File.read(path)
+          content = content.sub(/^  version "[^"]+"$/, %(  version "#{version}"))
+          content = content.sub(/^  sha256 "[^"]+"$/, %(  sha256 "#{sha256}"))
+          abort "cask version was not found" unless content.include?(%(  version "#{version}"))
+          abort "cask checksum was not found" unless content.include?(%(  sha256 "#{sha256}"))
+          File.write(path, content)
+          RUBY
+
+          git -C homebrew-airwave config user.name 'github-actions[bot]'
+          git -C homebrew-airwave config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C homebrew-airwave add Casks/airwave.rb
+          if git -C homebrew-airwave diff --cached --quiet; then
+            echo 'Homebrew cask is already current'
+          else
+            git -C homebrew-airwave commit -m "airwave $VERSION"
+            git -C homebrew-airwave push origin HEAD:main
+          fi
 
       - name: Remove signing key
         if: always()
