@@ -7,7 +7,6 @@ final class DeviceProfileManagementTests: XCTestCase {
     func testRowsResolveNamesAndKeepCurrentFirstOrdering() throws {
         let context = try ManagementContext()
         let hrirID = UUID()
-        let equalizerID = UUID()
         context.hrir.presets = [HRIRPreset(
             id: hrirID,
             name: "Concert Hall",

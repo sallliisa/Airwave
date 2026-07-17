@@ -291,7 +291,7 @@ private enum WindowFronting {
             window.hidesOnDeactivate = false
             if window.isMiniaturized { window.deminiaturize(nil) }
 
-            NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps, .activateAllWindows])
+            NSRunningApplication.current.activate(options: [.activateAllWindows])
             NSApp.activate(ignoringOtherApps: true)
             window.orderFrontRegardless()
             window.makeKeyAndOrderFront(nil)
@@ -306,7 +306,7 @@ private enum WindowFronting {
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(150))
                 guard window.isVisible else { return }
-                NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps, .activateAllWindows])
+                NSRunningApplication.current.activate(options: [.activateAllWindows])
                 NSApp.activate(ignoringOtherApps: true)
                 window.orderFrontRegardless()
                 window.makeKeyAndOrderFront(nil)

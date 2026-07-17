@@ -9,7 +9,7 @@ import Foundation
 import Combine
 
 /// Represents an HRIR preset
-struct HRIRPreset: Identifiable, Codable, Equatable, Hashable {
+nonisolated struct HRIRPreset: Identifiable, Codable, Equatable, Hashable {
     let id: UUID
     let name: String
     let fileURL: URL

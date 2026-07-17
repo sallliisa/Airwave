@@ -199,9 +199,14 @@ struct EqualizerSettingsView: View {
     @State private var pendingDelete: EqualizerPreset?
 
     @MainActor
-    init(manager: EqualizerManager = .shared) {
+    init(manager: EqualizerManager) {
         _manager = ObservedObject(wrappedValue: manager)
         _coordinator = StateObject(wrappedValue: EqualizerSettingsCoordinator(manager: manager))
+    }
+
+    @MainActor
+    init() {
+        self.init(manager: .shared)
     }
 
     var body: some View {
