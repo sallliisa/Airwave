@@ -214,6 +214,8 @@ struct OnboardingView: View {
     private var hrirStep: some View {
         VStack(alignment: .leading, spacing: AirwaveLayout.sectionContentSpacing) {
             Text("Choose the HRIR preset used by Airwave for processing. You can play audio in the background to audition it in real time")
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
 
             AirwaveHRIRPicker(
                 manager: hrirManager,
@@ -225,7 +227,7 @@ struct OnboardingView: View {
                     }
                 }
             )
-            .frame(height: 300, alignment: .top)
+            .frame(height: 260, alignment: .top)
             .disabled(profiles.currentDeviceUID == nil)
             .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: AirwaveLayout.cardCornerRadius))
         }
