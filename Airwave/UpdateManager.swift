@@ -11,6 +11,9 @@ nonisolated enum UpdateState: Equatable {
 }
 
 nonisolated struct UpdateStateModel: Equatable {
+    // Sparkle's SUNoUpdateError; Sparkle's C enum case is not imported into Swift.
+    private static let sparkleNoUpdateErrorCode = 1001
+
     private(set) var state: UpdateState = .idle
 
     mutating func beganChecking() {
@@ -23,6 +26,20 @@ nonisolated struct UpdateStateModel: Equatable {
 
     mutating func foundNoUpdate() {
         state = .current
+    }
+
+    mutating func finished(error: (any Error)?) {
+        guard let error else { return }
+
+        let nsError = error as NSError
+        if nsError.domain == SUSparkleErrorDomain, nsError.code == Self.sparkleNoUpdateErrorCode {
+            // Sparkle reports a normal "no update" result to both callbacks:
+            // updaterDidNotFindUpdate and didFinishUpdateCycleFor. The latter
+            // carries SUNoUpdateError even though the check completed normally.
+            foundNoUpdate()
+        } else {
+            failed(message: error.localizedDescription)
+        }
     }
 
     mutating func failed(message: String) {
@@ -105,10 +122,6 @@ extension UpdateManager: SPUUpdaterDelegate {
         didFinishUpdateCycleFor updateCheck: SPUUpdateCheck,
         error: (any Error)?
     ) {
-        guard let error else { return }
-
-        // "No update" is delivered through updaterDidNotFindUpdate. Errors
-        // reaching this callback represent feed, network, or validation failure.
-        model.failed(message: error.localizedDescription)
+        model.finished(error: error)
     }
 }
