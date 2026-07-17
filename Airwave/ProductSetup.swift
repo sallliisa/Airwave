@@ -196,11 +196,12 @@ final class PermissionWindowFocusRestorer: PermissionFocusRestoring {
     }
 }
 
-enum SystemAudioPermissionPresentation: Equatable {
-    case unknown
+enum CaptureAccessPresentation: Equatable {
+    case unverified
     case checking
-    case granted
-    case denied
+    case verified
+    case permissionRequired
+    case failed(reason: String)
 }
 
 enum OnboardingPresentationContext {
@@ -223,7 +224,7 @@ final class OnboardingViewModel: ObservableObject {
     private let actions: AudioRuntimeUserActions
     private let persistence: OnboardingPersisting
     private let focusRestorer: PermissionFocusRestoring
-    private var permissionFocusRestorationPending = false
+    private var captureFocusRestorationPending = false
     private var cancellables: Set<AnyCancellable> = []
 
     init(
@@ -237,12 +238,12 @@ final class OnboardingViewModel: ObservableObject {
         self.persistence = persistence
         self.focusRestorer = focusRestorer ?? PermissionWindowFocusRestorer.shared
         currentStep = persistence.checkpoint
-        runtime.$permissionStatus
-            .sink { [weak self] permissionStatus in
+        runtime.$captureAccess
+            .sink { [weak self] captureAccess in
                 guard let self,
-                      self.permissionFocusRestorationPending,
-                      permissionStatus != .checking else { return }
-                self.permissionFocusRestorationPending = false
+                      self.captureFocusRestorationPending,
+                      captureAccess != .checking else { return }
+                self.captureFocusRestorationPending = false
                 self.focusRestorer.permissionRequestResolved()
             }
             .store(in: &cancellables)
@@ -261,35 +262,38 @@ final class OnboardingViewModel: ObservableObject {
     var isConfigurationHealthy: Bool { runtime.isSetupHealthy }
     var needsSetupAttention: Bool {
         if !persistence.isComplete { return true }
-        if runtime.permissionStatus == .unknown || runtime.permissionStatus == .denied { return true }
-        if case .failed = runtime.tapHealth { return true }
+        switch runtime.captureAccess {
+        case .permissionRequired, .failed: return true
+        case .unverified, .checking: return runtime.status != .inactive
+        case .verified: break
+        }
         return false
     }
 
     var recommendedVoluntaryEntryStep: OnboardingStepV2 {
         if persistence.isComplete && !needsSetupAttention { return .welcome }
         if runtime.status == .needsPermission { return .systemAudio }
-        if case .failed = runtime.tapHealth { return .systemAudio }
+        if case .failed = runtime.captureAccess { return .systemAudio }
         if let output = runtime.currentOutput,
            output.outputChannelCount != 2 || output.isVirtual || output.isAggregate {
             return .liveHealth
         }
-        if permissionPresentation != .granted { return .systemAudio }
+        if captureAccessPresentation != .verified { return .systemAudio }
         return .liveHealth
     }
 
-    var permissionPresentation: SystemAudioPermissionPresentation {
-        switch runtime.permissionStatus {
-        case .granted:
-            return .granted
-        case .denied:
-            return .denied
-        case .checking:
-            return .checking
-        case .unknown:
-            return .unknown
+    var captureAccessPresentation: CaptureAccessPresentation {
+        switch runtime.captureAccess {
+        case .unverified: return .unverified
+        case .checking: return .checking
+        case .verified: return .verified
+        case .permissionRequired: return .permissionRequired
+        case .failed(let reason): return .failed(reason: reason)
         }
     }
+
+    // SettingsView keeps its existing call-site label; value still comes from one capture state.
+    var permissionPresentation: CaptureAccessPresentation { captureAccessPresentation }
 
     var canComplete: Bool {
         runtime.isSetupHealthy && (runtime.status == .processing || runtime.status == .inactive)
@@ -315,7 +319,7 @@ final class OnboardingViewModel: ObservableObject {
     }
 
     func requestPermission() {
-        permissionFocusRestorationPending = true
+        captureFocusRestorationPending = true
         focusRestorer.beginPermissionRequest()
         actions.requestSystemAudioAccess()
     }
@@ -408,7 +412,7 @@ struct OnboardingReadinessPresentation: Equatable {
     let canRetry: Bool
 
     static func make(
-        permission: SystemAudioPermissionPresentation,
+        captureAccess: CaptureAccessPresentation,
         hasPreset: Bool,
         runtimeStatus: AudioRuntimeState.Status,
         isReady: Bool
@@ -423,7 +427,7 @@ struct OnboardingReadinessPresentation: Equatable {
                 canRetry: false
             )
         }
-        if permission != .granted {
+        if captureAccess != .verified {
             return Self(
                 title: "A little more setup is needed",
                 detail: "System Audio Capture still needs your attention.",

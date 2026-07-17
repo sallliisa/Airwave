@@ -6,33 +6,20 @@ nonisolated struct AudioRuntimeEffectReadiness: Equatable, Sendable {
     let equalizerDefinition: EqualizerDefinition?
     let spatialError: String?
 
-    init(
-        spatialReady: Bool,
-        equalizerDefinition: EqualizerDefinition?,
-        spatialError: String? = nil
-    ) {
+    init(spatialReady: Bool, equalizerDefinition: EqualizerDefinition?, spatialError: String? = nil) {
         self.spatialReady = spatialReady
         self.equalizerDefinition = equalizerDefinition
         self.spatialError = spatialError
     }
 
-    var hasSelectedEffect: Bool {
-        spatialReady || equalizerDefinition != nil
-    }
+    var hasSelectedEffect: Bool { spatialReady || equalizerDefinition != nil }
 }
 
-nonisolated enum AudioRuntimeInvalidation {
-    case spatial
-    case equalizerTarget
-    case output
-}
+nonisolated enum AudioRuntimeInvalidation { case spatial, equalizerTarget, output }
 
 @MainActor
 protocol OutputEffectProfilePreparing: AnyObject {
-    func prepare(
-        output: OutputDeviceDescriptor,
-        completion: @escaping (AudioRuntimeEffectReadiness) -> Void
-    )
+    func prepare(output: OutputDeviceDescriptor, completion: @escaping (AudioRuntimeEffectReadiness) -> Void)
     func cancelPreparation()
     func outputBecameUnsupportedOrUnavailable()
 }
@@ -43,9 +30,7 @@ protocol AudioRuntimeScheduling: AnyObject {
     func schedule(after delay: TimeInterval, _ action: @escaping @MainActor () -> Void) -> AudioRuntimeCancellation
 }
 
-protocol AudioRuntimeCancellation: AnyObject {
-    func cancel()
-}
+protocol AudioRuntimeCancellation: AnyObject { func cancel() }
 
 @MainActor
 private final class DispatchRuntimeScheduler: AudioRuntimeScheduling {
@@ -66,23 +51,20 @@ private final class DispatchRuntimeScheduler: AudioRuntimeScheduling {
     }
 }
 
-/// Owns runtime policy and is the sole publisher of audio runtime state.
 @MainActor
 final class AudioRuntimeController {
     typealias PipelineFactory = () -> AudioPipelineControlling
 
     static let shared: AudioRuntimeController = {
         let platform = CoreAudioPlatformClient()
-        let effectGraph = AudioEffectGraph(
-            spatial: HRIRManager.shared,
-            equalizer: EqualizerManager.shared.runtimeEffect
-        )
+        let graph = AudioEffectGraph(spatial: HRIRManager.shared, equalizer: EqualizerManager.shared.runtimeEffect)
         return AudioRuntimeController(
             state: .shared,
             platform: platform,
-            pipelineFactory: { AudioPipeline(platform: platform, processor: effectGraph) },
+            pipelineFactory: { AudioPipeline(platform: platform, processor: graph) },
             scheduler: DispatchRuntimeScheduler(),
-            effectGraph: effectGraph
+            effectGraph: graph,
+            stimulusPlayer: AVAudioProbeStimulusPlayer()
         )
     }()
 
@@ -91,25 +73,22 @@ final class AudioRuntimeController {
     private let pipelineFactory: PipelineFactory
     private let scheduler: AudioRuntimeScheduling
     private let effectGraph: AudioEffectGraphControlling?
+    private let stimulusPlayer: AudioProbeStimulusPlaying
     private let retryDelays: [TimeInterval] = [1, 2, 4, 8, 15]
-    private let permissionVerificationTimeout: TimeInterval = 5
 
     private var pipeline: AudioPipelineControlling?
     private var retryToken: AudioRuntimeCancellation?
     private var stabilityToken: AudioRuntimeCancellation?
-    private var permissionVerificationToken: AudioRuntimeCancellation?
+    private var stimulusToken: AudioRuntimeCancellation?
+    private var verificationTimeoutToken: AudioRuntimeCancellation?
     private var retryAttempt = 0
     private var generation = 0
-    private var effectReadiness = AudioRuntimeEffectReadiness(
-        spatialReady: false,
-        equalizerDefinition: nil
-    )
-    private var permissionGranted = false
-    private var permissionProbeRequested = false
-    private var explicitPermissionRequest = false
-    private var permissionRequestGeneration = 0
+    private var effectReadiness = AudioRuntimeEffectReadiness(spatialReady: false, equalizerDefinition: nil)
     private var captureVerified = false
-    private var soleEffectStopToken: AudioRuntimeCancellation?
+    private var captureProbeRequested = false
+    private var explicitCaptureTest = false
+    private var replayedAfterActivation = false
+    private var appIsActive = true
     private var launched = false
     private var sleeping = false
     private var terminated = false
@@ -122,23 +101,60 @@ final class AudioRuntimeController {
         platform: AudioPlatformClient,
         pipelineFactory: @escaping PipelineFactory,
         scheduler: AudioRuntimeScheduling,
-        effectGraph: AudioEffectGraphControlling? = nil
+        effectGraph: AudioEffectGraphControlling? = nil,
+        stimulusPlayer: AudioProbeStimulusPlaying? = nil
     ) {
         self.state = state
         self.platform = platform
         self.pipelineFactory = pipelineFactory
         self.scheduler = scheduler
         self.effectGraph = effectGraph
+        self.stimulusPlayer = stimulusPlayer ?? AVAudioProbeStimulusPlayer()
     }
 
-    func setProfilePreparer(_ preparer: (any OutputEffectProfilePreparing)?) {
-        profilePreparer = preparer
+    func setProfilePreparer(_ preparer: (any OutputEffectProfilePreparing)?) { profilePreparer = preparer }
+
+    func launch(presetReady: Bool, captureVerified: Bool? = nil) {
+        launch(
+            effectReadiness: AudioRuntimeEffectReadiness(spatialReady: presetReady, equalizerDefinition: nil),
+            captureVerified: captureVerified
+        )
     }
 
-    func reprepareCurrentOutput() {
-        guard launched, !sleeping, !terminated else { return }
+    func launch(effectReadiness: AudioRuntimeEffectReadiness, captureVerified: Bool? = nil) {
+        guard !launched else {
+            self.effectReadiness = effectReadiness
+            if let captureVerified { self.captureVerified = captureVerified }
+            reconcile()
+            return
+        }
+        launched = true
+        self.effectReadiness = effectReadiness
+        self.captureVerified = captureVerified == true
+        state.setCaptureAccess(self.captureVerified ? .verified : .unverified)
+        do {
+            try platform.observeDefaultOutput { [weak self] output in
+                MainActor.assumeIsolated { self?.defaultOutputChanged(output) }
+            }
+        } catch {
+            handleFailure(error, output: nil)
+            return
+        }
+        if effectReadiness.hasSelectedEffect && !self.captureVerified { captureProbeRequested = true }
+        reconcile()
+    }
+
+    func updateReadiness(_ effectReadiness: AudioRuntimeEffectReadiness, invalidation: AudioRuntimeInvalidation) {
+        let changed = self.effectReadiness != effectReadiness
+        self.effectReadiness = effectReadiness
+        guard changed else { return }
+        if invalidation == .equalizerTarget, let effectGraph, pipeline != nil, captureVerified {
+            let result = effectGraph.updateEqualizer(definition: effectReadiness.equalizerDefinition)
+            handleLiveEffectUpdate(result)
+            return
+        }
         guard stopForInvalidation() else { return }
-        hasPreparedDesiredOutput = false
+        captureProbeRequested = effectReadiness.hasSelectedEffect
         reconcile()
     }
 
@@ -153,264 +169,106 @@ final class AudioRuntimeController {
         )
     }
 
-    func launch(presetReady: Bool, permissionGranted: Bool? = nil) {
-        launch(
-            effectReadiness: AudioRuntimeEffectReadiness(
-                spatialReady: presetReady,
-                equalizerDefinition: nil
-            ),
-            permissionGranted: permissionGranted
-        )
-    }
-
-    func launch(
-        effectReadiness: AudioRuntimeEffectReadiness,
-        permissionGranted: Bool? = nil
-    ) {
-        guard !launched else {
-            self.effectReadiness = effectReadiness
-            updateReadiness(
-                effectReadiness,
-                invalidation: .spatial,
-                permissionGranted: permissionGranted ?? self.permissionGranted
-            )
-            return
-        }
-        launched = true
-        self.effectReadiness = effectReadiness
-        let initialPermission = permissionGranted.map {
-            $0 ? SystemAudioPermissionStatus.granted : .denied
-        } ?? platform.systemAudioPermissionStatus()
-        self.permissionGranted = initialPermission == .granted
-        state.setPermissionStatus(permissionState(for: initialPermission))
-        permissionProbeRequested = self.permissionGranted && !effectReadiness.hasSelectedEffect
-        do {
-            try platform.observeDefaultOutput { [weak self] output in
-                // AudioPlatformClient installs this observer on the main queue.
-                MainActor.assumeIsolated { self?.defaultOutputChanged(output) }
-            }
-        } catch {
-            handleFailure(error, output: nil)
-            return
-        }
-        reconcile()
-    }
-
-    func updateReadiness(
-        _ effectReadiness: AudioRuntimeEffectReadiness,
-        invalidation: AudioRuntimeInvalidation
-    ) {
-        updateReadiness(effectReadiness, invalidation: invalidation, permissionGranted: permissionGranted)
-    }
-
-    private func updateReadiness(
-        _ effectReadiness: AudioRuntimeEffectReadiness,
-        invalidation: AudioRuntimeInvalidation,
-        permissionGranted: Bool
-    ) {
-        let changed = self.effectReadiness != effectReadiness || self.permissionGranted != permissionGranted
-        self.effectReadiness = effectReadiness
-        self.permissionGranted = permissionGranted
-        guard changed else { return }
-
-        cancelSoleEffectStop()
-        if invalidation == .equalizerTarget,
-           launched,
-           !sleeping,
-           !terminated,
-           let effectGraph,
-           pipeline != nil {
-            stabilityToken?.cancel()
-            stabilityToken = nil
-            let result = effectGraph.updateEqualizer(definition: effectReadiness.equalizerDefinition)
-            handleLiveEffectUpdate(result)
-            return
-        }
-        guard stopForInvalidation() else { return }
+    func reprepareCurrentOutput() {
+        guard launched, !sleeping, !terminated, stopForInvalidation() else { return }
+        hasPreparedDesiredOutput = false
+        captureVerified = false
+        captureProbeRequested = effectReadiness.hasSelectedEffect
+        state.setCaptureAccess(.unverified)
         reconcile()
     }
 
     func presetDidChange(isReady: Bool) {
-        effectReadiness = AudioRuntimeEffectReadiness(
-            spatialReady: isReady,
-            equalizerDefinition: effectReadiness.equalizerDefinition
-        )
-        guard launched else { return }
-        guard stopForInvalidation() else { return }
-        reconcile()
-    }
-
-    func presetActivationFailed(_ message: String) {
-        if effectGraph == nil {
-            effectReadiness = AudioRuntimeEffectReadiness(spatialReady: false, equalizerDefinition: nil)
-            guard stopForInvalidation() else { return }
-            state.publish(.nativePassthrough(reason: message))
-            return
-        }
         updateReadiness(
             AudioRuntimeEffectReadiness(
-                spatialReady: false,
-                equalizerDefinition: effectReadiness.equalizerDefinition,
-                spatialError: message
+                spatialReady: isReady,
+                equalizerDefinition: effectReadiness.equalizerDefinition
             ),
             invalidation: .spatial
         )
     }
 
+    func presetActivationFailed(_ message: String) {
+        effectReadiness = AudioRuntimeEffectReadiness(spatialReady: false, equalizerDefinition: nil, spatialError: message)
+        guard stopForInvalidation() else { return }
+        state.publish(.nativePassthrough(reason: message), output: state.currentOutput)
+    }
+
     func retryNow() {
         retryAttempt = 0
-        cancelRetry()
+        retryToken?.cancel()
+        retryToken = nil
+        captureProbeRequested = explicitCaptureTest || effectReadiness.hasSelectedEffect
+        state.setCaptureAccess(.checking)
         reconcile()
     }
 
-    /// Performs the same safe tap setup used for processing, but permits a
-    /// short native-passthrough probe before an HRIR preset has been selected.
     func requestSystemAudioAccess() {
-        guard !explicitPermissionRequest else { return }
-        guard launched, !sleeping, !terminated else { return }
+        guard launched, !sleeping, !terminated, !explicitCaptureTest else { return }
         guard stopForInvalidation() else { return }
-        explicitPermissionRequest = true
-        permissionProbeRequested = false
-        permissionGranted = false
-        permissionRequestGeneration += 1
-        let requestGeneration = permissionRequestGeneration
-        state.setPermissionStatus(.checking)
-        state.setTapHealth(.idle)
-        retryAttempt = 0
-        platform.requestSystemAudioPermission { [weak self] result in
-            if Thread.isMainThread {
-                MainActor.assumeIsolated {
-                    self?.permissionRequestCompleted(result, generation: requestGeneration)
-                }
-            } else {
-                DispatchQueue.main.async {
-                    self?.permissionRequestCompleted(result, generation: requestGeneration)
-                }
-            }
-        }
-    }
-
-    func refreshSystemAudioAccess() {
-        guard launched, !sleeping, !terminated, !explicitPermissionRequest else { return }
-        let result = platform.systemAudioPermissionStatus()
-        let nextPermission = permissionState(for: result)
-        guard nextPermission != state.permissionStatus else { return }
-        guard stopForInvalidation() else { return }
-        permissionGranted = result == .granted
-        state.setPermissionStatus(nextPermission)
-        if permissionGranted {
-            permissionProbeRequested = !effectReadiness.hasSelectedEffect
-            state.setTapHealth(.checking)
-            reconcile()
-        } else {
-            permissionProbeRequested = false
-            state.publish(
-                .needsPermission,
-                output: state.currentOutput,
-                permission: nextPermission,
-                tapHealth: result == .unknown
-                    ? .failed(reason: "Airwave could not verify System Audio Capture permission.")
-                    : .idle
-            )
-        }
-    }
-
-    private func permissionRequestCompleted(
-        _ result: SystemAudioPermissionStatus,
-        generation requestGeneration: Int
-    ) {
-        guard explicitPermissionRequest,
-              requestGeneration == permissionRequestGeneration,
-              !sleeping,
-              !terminated else { return }
-        explicitPermissionRequest = false
-        permissionGranted = result == .granted
-        let permission = permissionState(for: result)
-        state.setPermissionStatus(permission)
-        guard permissionGranted else {
-            permissionProbeRequested = false
-            state.publish(
-                .needsPermission,
-                output: state.currentOutput,
-                permission: permission,
-                tapHealth: result == .unknown
-                    ? .failed(reason: "Airwave could not verify System Audio Capture permission.")
-                    : .idle
-            )
-            return
-        }
-        permissionProbeRequested = !effectReadiness.hasSelectedEffect
-        state.setTapHealth(.checking)
+        explicitCaptureTest = true
+        captureProbeRequested = true
+        captureVerified = false
+        replayedAfterActivation = false
+        state.setCaptureAccess(.checking)
         reconcile()
     }
 
-    private func permissionState(
-        for status: SystemAudioPermissionStatus
-    ) -> AudioRuntimeState.PermissionStatus {
-        switch status {
-        case .unknown: .unknown
-        case .denied: .denied
-        case .granted: .granted
-        }
+    /// Activation only retries pending public behavioral verification. No status API is queried.
+    func refreshSystemAudioAccess() {
+        appIsActive = true
+        guard explicitCaptureTest, pipeline != nil, !replayedAfterActivation else { return }
+        replayedAfterActivation = true
+        scheduleStimulus(for: generation)
     }
 
-    private func cancelPendingPermissionRequest() {
-        guard explicitPermissionRequest else { return }
-        permissionRequestGeneration += 1
-        explicitPermissionRequest = false
-        permissionProbeRequested = false
-        permissionGranted = false
-        state.setPermissionStatus(.unknown)
-        state.setTapHealth(.idle)
+    func applicationWillResignActive() {
+        appIsActive = false
+        stimulusToken?.cancel()
+        stimulusToken = nil
+        stimulusPlayer.stop()
     }
 
     func openSystemAudioRecordingSettings() {
+        state.setCaptureAccess(.unverified)
         platform.openAudioCapturePermissionSettings()
     }
 
     func willSleep() {
         sleeping = true
-        cancelPendingPermissionRequest()
         guard stopForInvalidation() else { return }
-        state.publish(.nativePassthrough(reason: "Sleeping; native audio remains active."))
+        explicitCaptureTest = false
+        captureProbeRequested = false
+        state.publish(.nativePassthrough(reason: "Sleeping; native audio remains active."), captureAccess: .unverified)
     }
 
     func didWake() {
         guard !terminated else { return }
         sleeping = false
-        let permission = platform.systemAudioPermissionStatus()
-        permissionGranted = permission == .granted
-        state.setPermissionStatus(permissionState(for: permission))
-        permissionProbeRequested = permissionGranted && !effectReadiness.hasSelectedEffect
+        captureVerified = false
+        captureProbeRequested = effectReadiness.hasSelectedEffect
+        state.setCaptureAccess(.unverified)
         reconcile()
     }
 
     func terminate() {
         terminated = true
-        cancelPendingPermissionRequest()
+        stimulusPlayer.stop()
         platform.stopObservingDefaultOutput()
         _ = stopForInvalidation()
-        state.publish(.unavailable("Airwave stopped"))
+        state.publish(.unavailable("Airwave stopped"), captureAccess: .unverified)
     }
 
     private func defaultOutputChanged(_ output: OutputDeviceDescriptor?) {
         guard launched, !sleeping, !terminated else { return }
-        if let output,
-           output == state.currentOutput,
-           pipeline != nil,
-           state.status == .processing {
-            return
-        }
-        if let output {
-            desiredOutput = output
-            hasPreparedDesiredOutput = false
-            permissionProbeRequested = state.permissionStatus == .granted
-                && !effectReadiness.hasSelectedEffect
-        }
+        if let output, output == state.currentOutput, pipeline != nil, state.status == .processing { return }
+        desiredOutput = output
+        hasPreparedDesiredOutput = false
         guard stopForInvalidation() else { return }
+        captureVerified = false
+        captureProbeRequested = explicitCaptureTest || effectReadiness.hasSelectedEffect
+        state.setCaptureAccess(.unverified)
         guard let output else {
-            desiredOutput = nil
-            hasPreparedDesiredOutput = false
             profilePreparer?.outputBecameUnsupportedOrUnavailable()
             handleFailure(AudioRuntimeError.noOutputDevice, output: nil)
             return
@@ -420,45 +278,25 @@ final class AudioRuntimeController {
 
     private func reconcile() {
         guard launched, !sleeping, !terminated else { return }
-        guard permissionGranted, state.permissionStatus == .granted else {
-            state.publish(.needsPermission, permission: state.permissionStatus)
-            return
-        }
         if let desiredOutput, hasPreparedDesiredOutput {
-            guard effectReadiness.hasSelectedEffect || permissionProbeRequested else {
+            guard effectReadiness.hasSelectedEffect || captureProbeRequested else {
                 publishInactive(output: desiredOutput)
                 return
             }
             start(on: desiredOutput)
             return
         }
-        guard profilePreparer != nil || effectReadiness.hasSelectedEffect || permissionProbeRequested else {
-            // Selecting None intentionally stops processing, but it does not
-            // invalidate the permission result or the supported output that
-            // the running pipeline just proved. Keep that live runtime context
-            // so product surfaces do not fall back to an unverified state.
-            if let spatialError = effectReadiness.spatialError {
-                state.publish(.nativePassthrough(reason: spatialError), output: state.currentOutput)
-            } else {
-                state.publish(.inactive, output: state.currentOutput)
-            }
+        guard profilePreparer != nil || effectReadiness.hasSelectedEffect || captureProbeRequested else {
+            if let output = state.currentOutput { publishInactive(output: output) }
+            else { state.publish(.inactive) }
             return
         }
-        do {
-            let output = try platform.defaultOutputDevice()
-            transition(to: output)
-        } catch {
-            handleFailure(error, output: nil)
-        }
+        do { transition(to: try platform.defaultOutputDevice()) }
+        catch { handleFailure(error, output: nil) }
     }
 
     private func transition(to output: OutputDeviceDescriptor) {
-        guard validate(output) else {
-            desiredOutput = nil
-            hasPreparedDesiredOutput = false
-            profilePreparer?.outputBecameUnsupportedOrUnavailable()
-            return
-        }
+        guard validate(output) else { return }
         desiredOutput = output
         hasPreparedDesiredOutput = false
         guard let profilePreparer else {
@@ -469,17 +307,12 @@ final class AudioRuntimeController {
         let preparationGeneration = generation
         state.publish(.starting, output: output)
         profilePreparer.prepare(output: output) { [weak self] readiness in
-            guard let self,
-                  preparationGeneration == self.generation,
-                  self.desiredOutput?.uid == output.uid,
-                  !self.sleeping,
-                  !self.terminated else { return }
+            guard let self, preparationGeneration == self.generation,
+                  self.desiredOutput?.uid == output.uid, !self.sleeping, !self.terminated else { return }
             self.effectReadiness = readiness
             self.hasPreparedDesiredOutput = true
-            if readiness.hasSelectedEffect {
-                self.permissionProbeRequested = false
-            }
-            guard readiness.hasSelectedEffect || self.permissionProbeRequested else {
+            if readiness.hasSelectedEffect { self.captureProbeRequested = !self.captureVerified }
+            guard readiness.hasSelectedEffect || self.captureProbeRequested else {
                 self.publishInactive(output: output)
                 return
             }
@@ -488,357 +321,194 @@ final class AudioRuntimeController {
     }
 
     private func publishInactive(output: OutputDeviceDescriptor) {
-        if let spatialError = effectReadiness.spatialError {
-            state.publish(.nativePassthrough(reason: spatialError), output: output)
-        } else {
-            state.publish(.inactive, output: output)
-        }
+        if let error = effectReadiness.spatialError { state.publish(.nativePassthrough(reason: error), output: output) }
+        else { state.publish(.inactive, output: output) }
     }
 
     private func start(on output: OutputDeviceDescriptor) {
         guard validate(output) else { return }
+        let purpose: AudioPipelinePurpose = captureProbeRequested && !captureVerified
+            ? .verification(includeOwnProcess: explicitCaptureTest)
+            : .processing
         let preparation: AudioEffectPreparationResult?
         if let effectGraph {
-            let result = effectGraph.prepare(
-                for: output,
-                equalizerDefinition: effectReadiness.equalizerDefinition
-            )
-            guard !result.noEffectCanRun || permissionProbeRequested else {
-                let reason = result.equalizerWarning?.errorDescription
-                    ?? effectReadiness.spatialError
-                    ?? "No compatible audio effect is available for this output."
-                state.publish(.nativePassthrough(reason: reason), output: output)
+            let result = effectGraph.prepare(for: output, equalizerDefinition: effectReadiness.equalizerDefinition)
+            guard purpose != .processing || !result.noEffectCanRun else {
+                state.publish(.nativePassthrough(reason: result.equalizerWarning?.errorDescription ?? "No compatible audio effect is available for this output."), output: output)
                 return
             }
             preparation = result
-        } else {
-            preparation = nil
-        }
+        } else { preparation = nil }
+
         let currentGeneration = generation
-        let startWarning = preparation?.equalizerWarning?.errorDescription ?? effectReadiness.spatialError
-        state.publish(.starting, output: output, tapHealth: .checking)
+        try? pipeline?.stop()
         let candidate = pipelineFactory()
         pipeline = candidate
+        state.publish(.starting, output: output, warning: preparation?.equalizerWarning?.errorDescription, captureAccess: .checking)
         do {
-            try candidate.start(
-                on: output,
-                muteBehavior: permissionProbeRequested ? .unmuted : .mutedWhenTapped
-            ) { [weak self] event in
+            try candidate.start(on: output, purpose: purpose) { [weak self] event in
                 guard let self else { return }
-                if Thread.isMainThread {
-                    MainActor.assumeIsolated {
-                        self.handleCaptureVerification(
-                            event,
-                            generation: currentGeneration,
-                            output: output,
-                            warning: startWarning
-                        )
-                    }
-                } else {
-                    DispatchQueue.main.async { [weak self] in
-                        self?.handleCaptureVerification(
-                            event,
-                            generation: currentGeneration,
-                            output: output,
-                            warning: startWarning
-                        )
-                    }
-                }
+                let work = { @MainActor in self.handleCaptureVerification(event, generation: currentGeneration, output: output, warning: preparation?.equalizerWarning?.errorDescription) }
+                if Thread.isMainThread { MainActor.assumeIsolated { work() } }
+                else { DispatchQueue.main.async(execute: work) }
             }
-            guard currentGeneration == generation, !sleeping, !terminated else {
-                do { try candidate.stop() } catch {
-                    pipeline = candidate
-                    scheduleCleanupRetry(error)
-                }
-                return
+            guard currentGeneration == generation, !sleeping, !terminated else { try? candidate.stop(); return }
+            if case .verification = purpose {
+                state.setCaptureAccess(.checking)
+                if explicitCaptureTest { scheduleStimulus(for: currentGeneration) }
+            } else {
+                state.publish(.processing, output: output, warning: preparation?.equalizerWarning?.errorDescription, captureAccess: .verified)
+                scheduleStabilityReset(for: currentGeneration)
             }
-            guard !captureVerified else { return }
-            state.publish(
-                .starting,
-                output: output,
-                warning: startWarning,
-                permission: nil,
-                tapHealth: .checking
-            )
-            schedulePermissionVerificationTimeout(generation: currentGeneration, output: output)
         } catch {
-            do { try candidate.stop() } catch {
-                completeExplicitPermissionRequest(after: error)
-                pipeline = candidate
-                scheduleCleanupRetry(error)
-                return
-            }
             pipeline = nil
-            guard currentGeneration == generation else { return }
+            try? candidate.stop()
             handleFailure(error, output: output)
         }
     }
 
-    private func handleCaptureVerification(
-        _ event: AudioCaptureVerificationEvent,
-        generation eventGeneration: Int,
-        output: OutputDeviceDescriptor,
-        warning: String?
-    ) {
+    private func scheduleStimulus(for currentGeneration: Int) {
+        stimulusToken?.cancel()
+        stimulusToken = scheduler.schedule(after: 0.1) { [weak self] in
+            guard let self, currentGeneration == self.generation, self.explicitCaptureTest, !self.sleeping, self.appIsActive else { return }
+            self.stimulusToken = nil
+            do { try self.stimulusPlayer.play() }
+            catch { self.handleFailure(error, output: self.state.currentOutput) }
+            self.scheduleVerificationTimeout(for: currentGeneration)
+        }
+    }
+
+    private func scheduleVerificationTimeout(for currentGeneration: Int) {
+        verificationTimeoutToken?.cancel()
+        verificationTimeoutToken = scheduler.schedule(after: 5) { [weak self] in
+            guard let self, currentGeneration == self.generation, !self.captureVerified else { return }
+            guard self.appIsActive else { return }
+            self.stimulusPlayer.stop()
+            self.captureProbeRequested = false
+            self.explicitCaptureTest = false
+            _ = self.stopForInvalidation()
+            self.state.publish(.nativePassthrough(reason: "Capture test timed out. Retry the test sound."), output: self.state.currentOutput, captureAccess: .failed(reason: "Capture test timed out. Retry the test sound."))
+        }
+    }
+
+    private func handleCaptureVerification(_ event: AudioCaptureVerificationEvent, generation eventGeneration: Int, output: OutputDeviceDescriptor, warning: String?) {
         guard eventGeneration == generation, pipeline != nil, !captureVerified else { return }
         switch event {
-        case .tapReady:
+        case .signalDetected:
             captureVerified = true
-            permissionVerificationToken?.cancel()
-            permissionVerificationToken = nil
-            let completedProbe = permissionProbeRequested && !effectReadiness.hasSelectedEffect
-            permissionProbeRequested = false
-            explicitPermissionRequest = false
-            if completedProbe {
-                do {
-                    try pipeline?.stop()
-                    pipeline = nil
-                    state.publish(.inactive, output: output, permission: .granted, tapHealth: .ready)
-                } catch {
-                    scheduleCleanupRetry(error)
-                }
-            } else {
-                state.publish(.processing, output: output, warning: warning, permission: .granted, tapHealth: .ready)
-                scheduleStabilityReset(for: eventGeneration)
-            }
+            captureProbeRequested = false
+            explicitCaptureTest = false
+            stimulusToken?.cancel(); stimulusToken = nil
+            verificationTimeoutToken?.cancel(); verificationTimeoutToken = nil
+            stimulusPlayer.stop()
+            guard (try? pipeline?.stop()) != nil else { handleFailure(AudioRuntimeError.cleanupFailed("Stop verification pipeline"), output: output); return }
+            pipeline = nil
+            state.setCaptureAccess(.verified)
+            if effectReadiness.hasSelectedEffect { start(on: output) }
+            else { state.publish(.inactive, output: output, captureAccess: .verified) }
         case .permissionDenied:
             handleFailure(AudioRuntimeError.permissionDenied, output: output)
         case .renderFailed(let status):
-            handleFailure(
-                AudioRuntimeError.ioStartFailed("Render system audio failed (OSStatus \(status))"),
-                output: output
-            )
+            handleFailure(AudioRuntimeError.ioStartFailed("Render system audio failed (OSStatus (status))"), output: output)
         }
-    }
-
-    private func schedulePermissionVerificationTimeout(
-        generation timeoutGeneration: Int,
-        output: OutputDeviceDescriptor
-    ) {
-        permissionVerificationToken?.cancel()
-        permissionVerificationToken = scheduler.schedule(after: permissionVerificationTimeout) { [weak self] in
-            guard let self,
-                  timeoutGeneration == self.generation,
-                  !self.captureVerified else { return }
-            self.permissionVerificationToken = nil
-            self.permissionProbeRequested = false
-            self.explicitPermissionRequest = false
-            do {
-                try self.pipeline?.stop()
-                self.pipeline = nil
-                let guidance = "Audio tap did not start responding. Retry setup."
-                if self.effectReadiness.hasSelectedEffect {
-                    self.state.publish(
-                        .nativePassthrough(reason: guidance),
-                        output: output,
-                        permission: nil,
-                        tapHealth: .failed(reason: guidance)
-                    )
-                } else {
-                    self.state.publish(
-                        .inactive,
-                        output: output,
-                        warning: guidance,
-                        permission: nil,
-                        tapHealth: .failed(reason: guidance)
-                    )
-                }
-            } catch {
-                self.scheduleCleanupRetry(error)
-            }
-        }
-    }
-
-    private func validate(_ output: OutputDeviceDescriptor) -> Bool {
-        if let reason = output.unsupportedProfileReason {
-            state.publish(.nativePassthrough(reason: reason), output: output)
-            return false
-        }
-        return true
     }
 
     private func handleFailure(_ error: Error, output: OutputDeviceDescriptor?) {
-        let explicitRequest = explicitPermissionRequest
-        Logger.log(
-            "[AudioRuntime] failure=\(error) outputUID=\(output?.uid ?? state.currentOutput?.uid ?? "<none>") outputName=\(output?.name ?? state.currentOutput?.name ?? "<none>") explicitPermissionRequest=\(explicitRequest)"
-        )
-        completeExplicitPermissionRequest(after: error)
-        permissionVerificationToken?.cancel()
-        permissionVerificationToken = nil
-        guard stopForInvalidation() else { return }
+        stimulusPlayer.stop()
+        verificationTimeoutToken?.cancel(); verificationTimeoutToken = nil
+        stimulusToken?.cancel(); stimulusToken = nil
+        _ = stopForInvalidation()
         if case AudioRuntimeError.permissionDenied = error {
-            permissionGranted = false
-            state.publish(
-                .needsPermission,
-                output: output,
-                permission: .denied,
-                tapHealth: .failed(reason: "System Audio Capture permission blocked audio tap verification.")
-            )
+            captureVerified = false
+            captureProbeRequested = false
+            explicitCaptureTest = false
+            state.publish(.needsPermission, output: output, captureAccess: .permissionRequired)
             return
         }
         if case AudioRuntimeError.unsupportedOutput = error {
-            state.publish(.nativePassthrough(reason: "Unsupported output. Change output in macOS Settings."), output: output)
+            state.publish(.nativePassthrough(reason: "Unsupported output. Change output in macOS Settings."), output: output, captureAccess: .failed(reason: "Unsupported output."))
             return
         }
-        let message = failureMessage(error)
-        if explicitRequest || permissionProbeRequested || !effectReadiness.hasSelectedEffect || isTapHealthFailure(error) {
-            permissionProbeRequested = false
-            state.publish(
-                .nativePassthrough(reason: message),
-                output: output,
-                permission: state.permissionStatus == .granted ? nil : .unknown,
-                tapHealth: .failed(reason: message)
-            )
-            return
-        }
-        state.setTapHealth(.checking)
-        scheduleRetry(reason: message, output: output)
+        let reason = failureMessage(error)
+        captureVerified = false
+        captureProbeRequested = false
+        explicitCaptureTest = false
+        state.publish(.nativePassthrough(reason: reason), output: output, captureAccess: .failed(reason: reason))
     }
 
-    private func isTapHealthFailure(_ error: Error) -> Bool {
-        guard let runtimeError = error as? AudioRuntimeError else { return false }
-        switch runtimeError {
-        case .tapCreationFailed, .aggregateCreationFailed, .formatMismatch,
-             .ioCreationFailed, .ioStartFailed:
-            return true
-        case .permissionDenied, .noOutputDevice, .unsupportedOutput, .deviceLost, .cleanupFailed:
-            return false
-        }
-    }
-
-    private func completeExplicitPermissionRequest(after error: Error) {
-        guard explicitPermissionRequest else { return }
-        explicitPermissionRequest = false
-        permissionProbeRequested = false
-        if case AudioRuntimeError.permissionDenied = error {
-            state.setPermissionStatus(.denied)
-        } else {
-            state.setPermissionStatus(.unknown)
-        }
-    }
-
-    private func scheduleRetry(reason: String, output: OutputDeviceDescriptor?) {
-        guard retryToken == nil,
-              effectReadiness.hasSelectedEffect || permissionProbeRequested,
-              permissionGranted, !sleeping, !terminated else { return }
-        let delay = retryDelays[min(retryAttempt, retryDelays.count - 1)]
-        retryAttempt += 1
-        let scheduledGeneration = generation
-        let permission: AudioRuntimeState.PermissionStatus? = state.permissionStatus == .granted
-            ? nil
-            : .unknown
-        state.publish(
-            .recovering(reason: "\(reason) Retrying in \(Int(delay))s."),
-            output: output,
-            permission: permission
-        )
-        retryToken = scheduler.schedule(after: delay) { [weak self] in
-            guard let self, scheduledGeneration == self.generation else { return }
-            self.retryToken = nil
-            self.reconcile()
-        }
-    }
-
-    private func scheduleStabilityReset(for generation: Int) {
-        stabilityToken?.cancel()
-        stabilityToken = scheduler.schedule(after: 30) { [weak self] in
-            guard let self, generation == self.generation, self.state.status.isProcessing else { return }
-            self.retryAttempt = 0
-            self.stabilityToken = nil
-        }
+    private func validate(_ output: OutputDeviceDescriptor) -> Bool {
+        guard let reason = output.unsupportedProfileReason else { return true }
+        state.publish(.nativePassthrough(reason: reason), output: output, captureAccess: .failed(reason: reason))
+        return false
     }
 
     private func stopForInvalidation() -> Bool {
         generation += 1
-        captureVerified = false
-        permissionVerificationToken?.cancel()
-        permissionVerificationToken = nil
+        verificationTimeoutToken?.cancel(); verificationTimeoutToken = nil
+        stimulusToken?.cancel(); stimulusToken = nil
+        stimulusPlayer.stop()
         profilePreparer?.cancelPreparation()
-        cancelRetry()
-        cancelSoleEffectStop()
-        stabilityToken?.cancel()
-        stabilityToken = nil
-        if let pipeline {
-            do {
-                try pipeline.stop()
-                self.pipeline = nil
-            } catch {
-                scheduleCleanupRetry(error)
-                return false
-            }
+        retryToken?.cancel(); retryToken = nil
+        stabilityToken?.cancel(); stabilityToken = nil
+        guard let pipeline else { return true }
+        do { try pipeline.stop(); self.pipeline = nil; return true }
+        catch { scheduleCleanupRetry(error); return false }
+    }
+
+    private func scheduleRetry(reason: String, output: OutputDeviceDescriptor?) {
+        guard retryToken == nil, effectReadiness.hasSelectedEffect, !sleeping, !terminated else { return }
+        let delay = retryDelays[min(retryAttempt, retryDelays.count - 1)]
+        retryAttempt += 1
+        let retryGeneration = generation
+        state.publish(.recovering(reason: "(reason) Retrying in (Int(delay))s."), output: output)
+        retryToken = scheduler.schedule(after: delay) { [weak self] in
+            guard let self, self.generation == retryGeneration else { return }
+            self.retryToken = nil; self.captureProbeRequested = true; self.reconcile()
         }
-        return true
     }
 
     private func scheduleCleanupRetry(_ error: Error) {
         guard retryToken == nil else { return }
         let delay = retryDelays[min(retryAttempt, retryDelays.count - 1)]
         retryAttempt += 1
-        let cleanupGeneration = generation
-        state.publish(.recovering(reason: "Releasing audio resources. Retrying in \(Int(delay))s."))
+        let retryGeneration = generation
+        state.publish(.recovering(reason: "Releasing audio resources. Retrying in (Int(delay))s."))
         retryToken = scheduler.schedule(after: delay) { [weak self] in
-            guard let self, cleanupGeneration == self.generation else { return }
-            self.retryToken = nil
-            guard self.stopForInvalidation() else { return }
-            if !self.sleeping && !self.terminated { self.reconcile() }
+            guard let self, self.generation == retryGeneration else { return }
+            self.retryToken = nil; guard self.stopForInvalidation() else { return }; self.reconcile()
         }
     }
 
-    private func cancelRetry() {
-        retryToken?.cancel()
-        retryToken = nil
-    }
-
-    private func cancelSoleEffectStop() {
-        soleEffectStopToken?.cancel()
-        soleEffectStopToken = nil
+    private func scheduleStabilityReset(for currentGeneration: Int) {
+        stabilityToken?.cancel()
+        stabilityToken = scheduler.schedule(after: 30) { [weak self] in
+            guard let self, self.generation == currentGeneration, self.state.status.isProcessing else { return }
+            self.retryAttempt = 0; self.stabilityToken = nil
+        }
     }
 
     private func handleLiveEffectUpdate(_ result: AudioEffectPreparationResult) {
-        let output = state.currentOutput
-        if result.noEffectCanRun {
-            if !effectReadiness.spatialReady {
-                state.publish(
-                    .nativePassthrough(
-                        reason: result.equalizerWarning?.errorDescription
-                            ?? "No compatible audio effect is available for this output."
-                    ),
-                    output: output
-                )
-                scheduleSoleEffectStop()
-            }
+        if result.noEffectCanRun, !effectReadiness.spatialReady {
+            state.publish(.nativePassthrough(reason: result.equalizerWarning?.errorDescription ?? "No compatible audio effect is available for this output."), output: state.currentOutput)
             return
         }
-
-        state.publish(
-            .processing,
-            output: output,
-            warning: result.equalizerWarning?.errorDescription ?? effectReadiness.spatialError
-        )
+        state.publish(.processing, output: state.currentOutput, warning: result.equalizerWarning?.errorDescription, captureAccess: .verified)
         scheduleStabilityReset(for: generation)
-    }
-
-    private func scheduleSoleEffectStop() {
-        cancelSoleEffectStop()
-        let scheduledGeneration = generation
-        soleEffectStopToken = scheduler.schedule(after: 0.020) { [weak self] in
-            guard let self,
-                  scheduledGeneration == self.generation,
-                  !self.effectReadiness.hasSelectedEffect,
-                  !self.sleeping,
-                  !self.terminated else { return }
-            self.soleEffectStopToken = nil
-            guard self.stopForInvalidation() else { return }
-            self.reconcile()
-        }
     }
 
     private func failureMessage(_ error: Error) -> String {
         switch error {
         case AudioRuntimeError.noOutputDevice, AudioRuntimeError.deviceLost:
-            "No usable output is currently available."
-        default:
-            "Audio processing stopped safely."
+            return "No usable output is currently available."
+        case let error as AudioRuntimeError:
+            switch error {
+            case .tapCreationFailed(let reason), .aggregateCreationFailed(let reason), .ioCreationFailed(let reason), .ioStartFailed(let reason):
+                return reason
+            case .formatMismatch(let expected, let actual):
+                return "Capture format mismatch (expected (expected), actual (actual))."
+            default: return "Audio capture test failed safely."
+            }
+        default: return "Audio capture test failed safely."
         }
     }
 }

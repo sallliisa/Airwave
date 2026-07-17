@@ -59,6 +59,44 @@ final class AudioPipelineTests: XCTestCase {
         XCTAssertTrue(platform.hasNoLiveResources)
     }
 
+    func testExplicitVerificationIncludesOwnProcessAndWritesUnmutedSilence() throws {
+        let platform = RecordingAudioPlatformClient()
+        let processor = RecordingProcessor()
+        let pipeline = AudioPipeline(platform: platform, processor: processor)
+
+        try pipeline.start(on: platform.output, purpose: .verification(includeOwnProcess: true), verificationHandler: { _ in })
+
+        XCTAssertEqual(platform.tapRequests[0].excludedProcesses, [])
+        XCTAssertEqual(platform.tapRequests[0].muteBehavior, .unmuted)
+        var left = [Float](repeating: 9, count: 4)
+        var right = [Float](repeating: 8, count: 4)
+        var inputLeft = [Float](repeating: 1, count: 4)
+        var inputRight = [Float](repeating: 1, count: 4)
+        inputLeft.withUnsafeBufferPointer { inL in
+            inputRight.withUnsafeBufferPointer { inR in
+                left.withUnsafeMutableBufferPointer { outL in
+                    right.withUnsafeMutableBufferPointer { outR in
+                        platform.ioCallback?(inL.baseAddress!, inR.baseAddress, outL.baseAddress!, outR.baseAddress!, 4)
+                    }
+                }
+            }
+        }
+        XCTAssertEqual(left, [0, 0, 0, 0])
+        XCTAssertEqual(right, [0, 0, 0, 0])
+        XCTAssertEqual(processor.callCount, 0)
+        try pipeline.stop()
+    }
+
+    func testPassiveVerificationExcludesOwnProcess() throws {
+        let platform = RecordingAudioPlatformClient()
+        let pipeline = AudioPipeline(platform: platform, processor: PassthroughProcessor())
+
+        try pipeline.start(on: platform.output, purpose: .verification(includeOwnProcess: false), verificationHandler: { _ in })
+
+        XCTAssertEqual(platform.tapRequests[0].excludedProcesses, [platform.process])
+        try pipeline.stop()
+    }
+
     func testInterleavedTapIsAcceptedWhenAUHALCanConvertIt() throws {
         let platform = RecordingAudioPlatformClient()
         platform.tapStreamFormat = AudioStreamFormat(
@@ -280,6 +318,14 @@ private final class PassthroughProcessor: StereoAudioProcessing {
     ) {}
 }
 
+private final class RecordingProcessor: StereoAudioProcessing {
+    var callCount = 0
+    func process(
+        inputLeft: UnsafePointer<Float>, inputRight: UnsafePointer<Float>?,
+        outputLeft: UnsafeMutablePointer<Float>, outputRight: UnsafeMutablePointer<Float>, frameCount: Int
+    ) { callCount += 1 }
+}
+
 private final class RecordingAudioPlatformClient: AudioPlatformClient {
     enum Resource: Hashable { case tap, aggregate, io }
     enum FailurePoint {
@@ -303,6 +349,7 @@ private final class RecordingAudioPlatformClient: AudioPlatformClient {
     var aggregateStreamFormat = AudioStreamFormat.stereo(sampleRate: 48_000)
     private(set) var liveResources: Set<Resource> = []
     private(set) var verificationHandler: AudioCaptureVerificationHandler?
+    private(set) var ioCallback: AudioIOCallback?
     private var ioIsStarted = false
 
     var hasNoLiveResources: Bool { liveResources.isEmpty && !ioIsStarted }
@@ -351,6 +398,7 @@ private final class RecordingAudioPlatformClient: AudioPlatformClient {
         events.append("createIO")
         if failurePoint == .createIO { throw AudioRuntimeError.ioCreationFailed("test") }
         liveResources.insert(.io)
+        self.ioCallback = callback
         self.verificationHandler = verificationHandler
         return io
     }

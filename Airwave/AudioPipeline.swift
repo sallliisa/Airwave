@@ -34,10 +34,28 @@ nonisolated protocol AudioPipelineControlling: AnyObject {
         muteBehavior: AudioTapMuteBehavior,
         verificationHandler: @escaping AudioCaptureVerificationHandler
     ) throws
+    func start(
+        on output: OutputDeviceDescriptor,
+        purpose: AudioPipelinePurpose,
+        verificationHandler: @escaping AudioCaptureVerificationHandler
+    ) throws
     func stop() throws
 }
 
 extension AudioPipelineControlling {
+    func start(
+        on output: OutputDeviceDescriptor,
+        purpose: AudioPipelinePurpose,
+        verificationHandler: @escaping AudioCaptureVerificationHandler
+    ) throws {
+        switch purpose {
+        case .verification:
+            try start(on: output, muteBehavior: .unmuted, verificationHandler: verificationHandler)
+        case .processing:
+            try start(on: output, muteBehavior: .mutedWhenTapped, verificationHandler: verificationHandler)
+        }
+    }
+
     func start(
         on output: OutputDeviceDescriptor,
         verificationHandler: @escaping AudioCaptureVerificationHandler
@@ -108,6 +126,18 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
         muteBehavior: AudioTapMuteBehavior,
         verificationHandler: @escaping AudioCaptureVerificationHandler
     ) throws {
+        try start(
+            on: output,
+            purpose: muteBehavior == .unmuted ? .verification(includeOwnProcess: true) : .processing,
+            verificationHandler: verificationHandler
+        )
+    }
+
+    func start(
+        on output: OutputDeviceDescriptor,
+        purpose: AudioPipelinePurpose,
+        verificationHandler: @escaping AudioCaptureVerificationHandler
+    ) throws {
         guard tap == nil, aggregate == nil, io == nil else { return }
 
         do {
@@ -115,11 +145,17 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
                 throw AudioRuntimeError.unsupportedOutput(output.name)
             }
 
-            let process = try platform.resolveOwnProcess()
+            let excludedProcesses: [AudioProcessHandle]
+            switch purpose {
+            case .verification(let includeOwnProcess):
+                excludedProcesses = includeOwnProcess ? [] : [try platform.resolveOwnProcess()]
+            case .processing:
+                excludedProcesses = [try platform.resolveOwnProcess()]
+            }
             let request = GlobalStereoTapRequest(
-                excludedProcess: process,
+                excludedProcesses: excludedProcesses,
                 output: output,
-                muteBehavior: muteBehavior
+                muteBehavior: purpose == .processing ? .mutedWhenTapped : .unmuted
             )
             let createdTap = try platform.createGlobalStereoTap(request)
             tap = createdTap
@@ -141,13 +177,18 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
             let createdIO = try platform.createIO(
                 aggregate: createdAggregate,
                 callback: { [processor] inLeft, inRight, outLeft, outRight, frames in
-                    processor.process(
-                        inputLeft: inLeft,
-                        inputRight: inRight,
-                        outputLeft: outLeft,
-                        outputRight: outRight,
-                        frameCount: frames
-                    )
+                    switch purpose {
+                    case .processing:
+                        processor.process(
+                            inputLeft: inLeft,
+                            inputRight: inRight,
+                            outputLeft: outLeft,
+                            outputRight: outRight,
+                            frameCount: frames
+                        )
+                    case .verification:
+                        StereoCallbackBridge.zero(left: outLeft, right: outRight, frameCount: frames)
+                    }
                 },
                 verificationHandler: verificationHandler
             )

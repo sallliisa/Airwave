@@ -12,6 +12,7 @@ mkdir -p "$fixture/Airwave" "$fixture/docs" "$fixture/Casks" "$fixture/Airwave.x
 cp "$root/Airwave/Info.plist" "$fixture/Airwave/Info.plist"
 cp "$root/Airwave.xcodeproj/project.pbxproj" "$fixture/Airwave.xcodeproj/project.pbxproj"
 printf '%s\n' 'AudioObjectSetPropertyData(object, &address, 0, nil, size, value)' > "$fixture/Airwave/Unsafe.swift"
+printf '%s\n' 'TCCAccessPreflight(service, nil)' > "$fixture/Airwave/Private.swift"
 printf '%s\n' '# safe fixture' > "$fixture/README.md"
 
 if "$checker" "$fixture" >/dev/null 2>&1; then

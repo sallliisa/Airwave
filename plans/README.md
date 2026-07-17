@@ -26,6 +26,7 @@ stop old processing and wait for the latest target pair before starting.
 | [003](003-discover-available-output-devices.md) | Discover and configure selectable output devices before switching macOS output | P1 | M | 001, 002 | DONE |
 | [004](004-reset-permission-and-tap-health.md) | Reset permission and audio-tap health | P1 | M | 001, 003 | DONE |
 | [005](005-authoritative-permission-and-fail-safe-probe.md) | Make permission authoritative and audio fail-safe | P1 | M | 004 | DONE |
+| [006](006-public-capture-self-test.md) | Replace private TCC checks with a public capture self-test | P1 | L | 004, 005 | IN PROGRESS |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) |
 REJECTED (with one-line rationale)
@@ -44,6 +45,10 @@ REJECTED (with one-line rationale)
   builds on the process-tap lifecycle and selectable-output runtime from 001/003.
 - 005 makes TCC the sole permission authority and keeps permission probes
   unmuted so denied or unverifiable access cannot silence system audio.
+- 006 supersedes 005's private-TCC authority after implementation. It removes
+  private preflight/request SPI, proves capture with a known bundled signal,
+  coalesces permission and tap health into one behavioral capture state, and
+  preserves fail-safe unmuted verification before any muted processing tap.
 
 ## Verification baseline
 
