@@ -62,7 +62,7 @@ Airwave plays a short test sound and checks that it can receive captured audio. 
 
 ### 3. Choose an HRIR preset
 
-Choose an HRIR preset from the list. Airwave includes `Neutral`, `Room`, and `Stage` presets to get you started. You can listen to audio while switching presets so you can choose the one you prefer.
+Choose an HRIR preset from the list. Airwave includes `NeutralSH1.0`, `RoomSH1.0`, and `StageSH1.0` presets to get you started. You can listen to audio while switching presets so you can choose the one you prefer.
 
 Airwave also accepts compatible HeSuVi HRIR `.wav` files. Use **Import…** to add files, **Manage…** to open Airwave's preset folder, or **Get more HRIRs…** to visit the [HeSuVi HRTF Database](https://airtable.com/embed/appac4r1cu9UpBNAN/shrpUAbtyZxhDDMjg/tblopH2GznvFipWjq/viwnouWPGDuYEd8Go).
 
