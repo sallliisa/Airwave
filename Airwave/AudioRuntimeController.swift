@@ -54,6 +54,7 @@ private final class DispatchRuntimeScheduler: AudioRuntimeScheduling {
 @MainActor
 final class AudioRuntimeController {
     typealias PipelineFactory = () -> AudioPipelineControlling
+    static let captureVerificationTimeout: TimeInterval = 2.5
 
     static let shared: AudioRuntimeController = {
         let platform = CoreAudioPlatformClient()
@@ -172,9 +173,10 @@ final class AudioRuntimeController {
     func reprepareCurrentOutput() {
         guard launched, !sleeping, !terminated, stopForInvalidation() else { return }
         hasPreparedDesiredOutput = false
-        captureVerified = false
-        captureProbeRequested = effectReadiness.hasSelectedEffect
-        state.setCaptureAccess(.unverified)
+        // Rebuilding the effect graph does not revoke capture capability. Keep
+        // verified state so HRIR swaps restart processing directly instead of
+        // waiting for another unrelated passive signal.
+        captureProbeRequested = explicitCaptureTest || (effectReadiness.hasSelectedEffect && !captureVerified)
         reconcile()
     }
 
@@ -224,13 +226,15 @@ final class AudioRuntimeController {
 
     func applicationWillResignActive() {
         appIsActive = false
+        replayedAfterActivation = false
         stimulusToken?.cancel()
         stimulusToken = nil
+        verificationTimeoutToken?.cancel()
+        verificationTimeoutToken = nil
         stimulusPlayer.stop()
     }
 
     func openSystemAudioRecordingSettings() {
-        state.setCaptureAccess(.unverified)
         platform.openAudioCapturePermissionSettings()
     }
 
@@ -344,7 +348,14 @@ final class AudioRuntimeController {
         try? pipeline?.stop()
         let candidate = pipelineFactory()
         pipeline = candidate
-        state.publish(.starting, output: output, warning: preparation?.equalizerWarning?.errorDescription, captureAccess: .checking)
+        let captureAccess: AudioRuntimeState.CaptureAccess?
+        switch purpose {
+        case .verification:
+            captureAccess = explicitCaptureTest ? .checking : .unverified
+        case .processing:
+            captureAccess = nil
+        }
+        state.publish(.starting, output: output, warning: preparation?.equalizerWarning?.errorDescription, captureAccess: captureAccess)
         do {
             try candidate.start(on: output, purpose: purpose) { [weak self] event in
                 guard let self else { return }
@@ -354,7 +365,8 @@ final class AudioRuntimeController {
             }
             guard currentGeneration == generation, !sleeping, !terminated else { try? candidate.stop(); return }
             if case .verification = purpose {
-                state.setCaptureAccess(.checking)
+                guard !captureVerified else { return }
+                state.setCaptureAccess(explicitCaptureTest ? .checking : .unverified)
                 if explicitCaptureTest { scheduleStimulus(for: currentGeneration) }
             } else {
                 state.publish(.processing, output: output, warning: preparation?.equalizerWarning?.errorDescription, captureAccess: .verified)
@@ -380,7 +392,7 @@ final class AudioRuntimeController {
 
     private func scheduleVerificationTimeout(for currentGeneration: Int) {
         verificationTimeoutToken?.cancel()
-        verificationTimeoutToken = scheduler.schedule(after: 5) { [weak self] in
+        verificationTimeoutToken = scheduler.schedule(after: Self.captureVerificationTimeout) { [weak self] in
             guard let self, currentGeneration == self.generation, !self.captureVerified else { return }
             guard self.appIsActive else { return }
             self.stimulusPlayer.stop()

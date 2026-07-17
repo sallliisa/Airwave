@@ -139,27 +139,66 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: AirwaveLayout.sectionContentSpacing) {
             Text("Allow Airwave to capture system audio so it can apply the selected HRIR preset. Airwave does not use microphone access.")
             captureAccessCard
+            if let guidance = viewModel.captureFailureGuidance {
+                captureFailureGuidance(guidance)
+            }
+            captureTestControls
+        }
+    }
 
-            HStack {
-                switch viewModel.captureAccessPresentation {
-                case .permissionRequired:
-                    Button("Open System Settings") { viewModel.openPermissionSettings() }
+    @ViewBuilder
+    private var captureTestControls: some View {
+        HStack {
+            switch viewModel.captureAccessPresentation {
+            case .checking:
+                ProgressView().controlSize(.small)
+                Text("Playing a short test sound…").font(.callout).foregroundStyle(.secondary)
+            case .unverified:
+                if viewModel.captureFailureGuidance == nil {
+                    Button("Test System Audio Capture") { viewModel.requestPermission() }
                         .buttonStyle(.borderedProminent)
-                    Button("Test Again") { viewModel.requestPermission() }.buttonStyle(.bordered)
-                case .checking:
-                    ProgressView().controlSize(.small)
-                    Text("Playing a short test sound…").font(.callout).foregroundStyle(.secondary)
-                case .unverified, .verified, .failed:
-                    Button(
-                        viewModel.captureAccessPresentation == .verified
-                            ? "System Audio Capture Verified"
-                            : "Test System Audio Capture"
-                    ) { viewModel.requestPermission() }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(viewModel.captureAccessPresentation == .verified)
                 }
+            case .verified:
+                Button("System Audio Capture Verified") {}
+                    .buttonStyle(.borderedProminent)
+                    .disabled(true)
+            case .permissionRequired, .failed:
+                EmptyView()
             }
         }
+    }
+
+    private func captureFailureGuidance(_ guidance: CaptureFailureGuidance) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Try these fixes")
+                .font(.system(size: 13, weight: .medium))
+
+            if let reason = guidance.reason {
+                Text(reason)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
+                ForEach(guidance.suggestions, id: \.self) { suggestion in
+                    Label(suggestion, systemImage: "checkmark.circle")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            HStack(spacing: 14) {
+                Button("Open System Settings") { viewModel.openPermissionSettings() }
+                    .buttonStyle(.link)
+                Button("Test Again") { viewModel.requestPermission() }
+                    .buttonStyle(.link)
+            }
+        }
+        .padding(AirwaveLayout.cardPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: AirwaveLayout.cardCornerRadius))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Capture troubleshooting suggestions")
     }
 
     private var hrirStep: some View {
@@ -186,14 +225,16 @@ struct OnboardingView: View {
         let presentation = readinessPresentation
         return VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
             statusCard(
-                icon: viewModel.canComplete ? "checkmark.seal.fill" : "exclamationmark.triangle.fill",
-                color: viewModel.canComplete ? .green : .orange,
-                title: viewModel.canComplete ? "Setup complete" : "Setup needs attention",
+                icon: viewModel.canComplete
+                    ? "checkmark.seal.fill"
+                    : (presentation.isAttention ? "exclamationmark.triangle.fill" : "info.circle.fill"),
+                color: viewModel.canComplete ? .green : (presentation.isAttention ? .orange : .secondary),
+                title: presentation.title,
                 detail: presentation.detail
             )
 
             if let actionStep = presentation.actionStep {
-                Button(actionStep == .systemAudio ? "Review Permission" : "Choose a Preset") {
+                Button(presentation.actionTitle ?? (actionStep == .systemAudio ? "Review Capture" : "Choose a Preset")) {
                     navigate(to: actionStep)
                 }
                 .buttonStyle(.borderedProminent)
@@ -381,8 +422,7 @@ struct OnboardingProgressIndicator: View {
             switch permission {
             case .verified: .complete
             case .permissionRequired, .failed: .attention
-            case .checking: .checking
-            case .unverified: .incomplete
+            case .checking, .unverified: .unknown
             }
         case .hrirPreset: .complete
         case .liveHealth: isReady ? .complete : .incomplete
@@ -392,6 +432,7 @@ struct OnboardingProgressIndicator: View {
 
 private enum ProgressStatus {
     case checking
+    case unknown
     case incomplete
     case attention
     case complete
@@ -430,7 +471,8 @@ private struct OnboardingProgressItem: View {
         switch status {
         case .complete: return Color.white
         case .attention: return Color.orange
-        case .checking, .incomplete: return Color.secondary
+        case .checking, .unknown: return Color.primary
+        case .incomplete: return Color.secondary
         }
     }
 
@@ -442,6 +484,7 @@ private struct OnboardingProgressItem: View {
     private var statusDescription: String {
         switch status {
         case .checking: "Checking"
+        case .unknown: "Not checked"
         case .incomplete: "Needs setup"
         case .attention: "Action needed"
         case .complete: "Complete"
