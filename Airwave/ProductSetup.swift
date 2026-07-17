@@ -47,7 +47,7 @@ final class MenuBarVisibilityManager: ObservableObject {
 }
 
 protocol LaunchAtLoginResetting: AnyObject {
-    func disableForSchemaReset() throws
+    func enableForFirstRun() throws
 }
 
 struct SettingsSchemaV2Migrator {
@@ -68,7 +68,7 @@ struct SettingsSchemaV2Migrator {
     @discardableResult
     func migrateIfNeeded() throws -> Bool {
         guard !defaults.bool(forKey: Self.markerKey) else { return false }
-        try launchAtLogin.disableForSchemaReset()
+        try launchAtLogin.enableForFirstRun()
         Self.legacyKeys.forEach(defaults.removeObject(forKey:))
         defaults.set(true, forKey: Self.markerKey)
         return true

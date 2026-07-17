@@ -201,8 +201,10 @@ final class SettingsWindowContentState: ObservableObject {
     }
 
     func show(_ mode: Mode, canReturnToSettings: Bool = false) {
-        let duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.12 : 0.2
-        withAnimation(.easeOut(duration: duration)) {
+        let animation: Animation = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            ? .easeOut(duration: 0.12)
+            : AirwaveMotion.pageTransition
+        withAnimation(animation) {
             self.mode = mode
             self.canReturnToSettings = mode == .setup && canReturnToSettings
             if mode == .settings {

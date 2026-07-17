@@ -35,9 +35,9 @@ final class LaunchAtLoginManager: ObservableObject, LaunchAtLoginResetting {
         isEnabled = resolvedAdapter.isEnabled
     }
 
-    func disableForSchemaReset() throws {
-        if adapter.isEnabled { try adapter.unregister() }
-        setPublishedValue(false)
+    func enableForFirstRun() throws {
+        if !adapter.isEnabled { try adapter.register() }
+        setPublishedValue(true)
     }
 
     private func updateLoginItem() {

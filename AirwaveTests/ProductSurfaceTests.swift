@@ -34,6 +34,28 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertTrue(settings.contains("isReady: onboarding.runtime.isSetupHealthy"))
     }
 
+    func testRegisteredDevicesUsesSelectableRowsAndPickerFooterActions() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("Airwave/DeviceManagementView.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains("@State private var selectedDeviceUID: String?"))
+        XCTAssertTrue(source.contains(".accessibilityAddTraits(selectedDeviceUID == row.id ? .isSelected : [])"))
+        XCTAssertTrue(source.contains("private var actionFooter: some View"))
+        XCTAssertTrue(source.contains(".disabled(selectedRow?.canReset != true)"))
+        XCTAssertTrue(source.contains(".disabled(selectedRow?.canForget != true)"))
+
+        let row = try XCTUnwrap(source.range(of: "private func deviceRow"))
+        let footer = try XCTUnwrap(source.range(of: "private var actionFooter"))
+        let rowSource = String(source[row.lowerBound..<footer.lowerBound])
+        XCTAssertFalse(rowSource.contains("Button(\"Reset Profile\")"))
+        XCTAssertFalse(rowSource.contains("Button(\"Forget Device\")"))
+        XCTAssertFalse(rowSource.contains("Image(systemName: \"checkmark\")"))
+        XCTAssertTrue(source[source.startIndex..<row.lowerBound].contains("Divider()"))
+    }
+
     func testOnboardingHasOneCaptureCardAndNoSplitHealthCopy() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let source = try String(contentsOf: root.appendingPathComponent("Airwave/OnboardingView.swift"), encoding: .utf8)
@@ -370,11 +392,57 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertNil(persistence.persistedCaptureFailure)
     }
 
+    func testFirstRunDefaultsEnableLaunchAtLoginAndHideMenuBarItem() throws {
+        let suite = "Airwave.ProductSetupDefaultsTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let loginItem = LoginItemAdapterFake()
+        let launchAtLogin = LaunchAtLoginManager(adapter: loginItem)
+        let migrated = try SettingsSchemaV2Migrator(
+            defaults: defaults,
+            launchAtLogin: launchAtLogin
+        ).migrateIfNeeded()
+        let menuVisibility = MenuBarVisibilityManager(defaults: defaults, visibilityDidChange: {})
+
+        XCTAssertTrue(migrated)
+        XCTAssertTrue(launchAtLogin.isEnabled)
+        XCTAssertEqual(loginItem.registerCount, 1)
+        XCTAssertFalse(menuVisibility.isVisible)
+    }
+
+    func testExistingMenuBarPreferenceIsPreserved() throws {
+        let suite = "Airwave.ProductSetupDefaultsTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        defaults.set(true, forKey: MenuBarVisibilityManager.defaultsKey)
+
+        let menuVisibility = MenuBarVisibilityManager(defaults: defaults, visibilityDidChange: {})
+
+        XCTAssertTrue(menuVisibility.isVisible)
+    }
+
     private func output(channels: Int = 2) -> OutputDeviceDescriptor {
         OutputDeviceDescriptor(
             id: .init(1), uid: "built-in", name: "Built-in Output", transport: "Built-in",
             outputChannelCount: channels, nominalSampleRate: 48_000, isVirtual: false, isAggregate: false
         )
+    }
+}
+
+@MainActor
+private final class LoginItemAdapterFake: LoginItemAdapting {
+    var isEnabled = false
+    var registerCount = 0
+
+    func register() throws {
+        registerCount += 1
+        isEnabled = true
+    }
+
+    func unregister() throws {
+        isEnabled = false
     }
 }
 

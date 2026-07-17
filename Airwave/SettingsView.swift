@@ -38,9 +38,10 @@ struct SettingsWindowContent: View {
                 } trailing: {
                     topBarTrailing
                 }
-                .transaction { transaction in
-                    transaction.animation = nil
-                }
+                .animation(
+                    reduceMotion ? nil : AirwaveMotion.pageTransition,
+                    value: state.settingsPage
+                )
                 Spacer(minLength: 0)
             }
         }
@@ -71,7 +72,7 @@ struct SettingsWindowContent: View {
                 onComplete: { state.show(.settings) },
                 onReturnToSettings: { state.show(.settings) }
             )
-            .transition(.opacity)
+            .transition(pageRevealTransition)
         case .settings:
             SettingsView(showSetup: {
                 OnboardingViewModel.shared.prepareForPresentation(.voluntary)
@@ -80,8 +81,12 @@ struct SettingsWindowContent: View {
                 get: { state.settingsPage },
                 set: { state.selectSettingsPage($0) }
             ))
-            .transition(.opacity)
+            .transition(pageRevealTransition)
         }
+    }
+
+    private var pageRevealTransition: AnyTransition {
+        reduceMotion ? .opacity : .airwaveBlurScaleReveal
     }
 
     @ViewBuilder
@@ -172,7 +177,7 @@ struct SettingsWindowContent: View {
     }
 
     private var onboardingPageAnimation: Animation {
-        reduceMotion ? .easeOut(duration: 0.16) : .smooth(duration: 0.26)
+        reduceMotion ? .easeOut(duration: 0.16) : AirwaveMotion.pageTransition
     }
 
     private func onboardingIndex(of step: OnboardingStepV2) -> Int {
@@ -202,7 +207,7 @@ struct SettingsView: View {
                     ZStack(alignment: .topLeading) {
                         pageHeader
                             .id(page.wrappedValue)
-                            .transition(.opacity)
+                            .transition(pageRevealTransition)
                     }
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                     .animation(settingsPageAnimation, value: page.wrappedValue)
@@ -239,7 +244,11 @@ struct SettingsView: View {
     }
 
     private var settingsPageAnimation: Animation? {
-        reduceMotion ? nil : .easeOut(duration: 0.16)
+        reduceMotion ? nil : AirwaveMotion.pageTransition
+    }
+
+    private var pageRevealTransition: AnyTransition {
+        reduceMotion ? .opacity : .airwaveBlurScaleReveal
     }
 
     @ViewBuilder
@@ -247,15 +256,16 @@ struct SettingsView: View {
         switch page.wrappedValue {
         case .general:
             generalPage
+                .transition(pageRevealTransition)
         case .equalizer:
             EqualizerSettingsView()
-                .transition(.opacity)
+                .transition(pageRevealTransition)
         case .devices:
             DeviceManagementView()
-                .transition(.opacity)
+                .transition(pageRevealTransition)
         case .application:
             applicationPage
-                .transition(.opacity)
+                .transition(pageRevealTransition)
         }
     }
 

@@ -34,6 +34,11 @@ enum AirwaveLayout {
     static let menuDividerInset: CGFloat = 10
 }
 
+enum AirwaveMotion {
+    static let pageTransitionDuration: TimeInterval = 0.3
+    static let pageTransition: Animation = .smooth(duration: pageTransitionDuration)
+}
+
 enum AirwavePageLayoutMode: Equatable {
     case fullScreen
     case compact
@@ -69,6 +74,26 @@ struct AirwavePageLayout<Content: View>: View {
             .padding(mode.contentPadding)
             .frame(maxWidth: mode.maxContentWidth, maxHeight: .infinity, alignment: .topLeading)
             .frame(maxWidth: .infinity, alignment: .top)
+    }
+}
+
+private struct AirwaveBlurScaleTransitionModifier: ViewModifier {
+    let isIdentity: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(isIdentity ? 1 : 0.97)
+            .blur(radius: isIdentity ? 0 : 8)
+            .opacity(isIdentity ? 1 : 0)
+    }
+}
+
+extension AnyTransition {
+    static var airwaveBlurScaleReveal: AnyTransition {
+        .modifier(
+            active: AirwaveBlurScaleTransitionModifier(isIdentity: false),
+            identity: AirwaveBlurScaleTransitionModifier(isIdentity: true)
+        )
     }
 }
 

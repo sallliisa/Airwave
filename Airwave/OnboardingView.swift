@@ -59,11 +59,11 @@ struct OnboardingView: View {
     }
 
     private var pageTransition: AnyTransition {
-        .opacity
+        reduceMotion ? .opacity : .airwaveBlurScaleReveal
     }
 
     private var pageAnimation: Animation {
-        reduceMotion ? .easeOut(duration: 0.16) : .smooth(duration: 0.26)
+        reduceMotion ? .easeOut(duration: 0.16) : AirwaveMotion.pageTransition
     }
 
     private func navigate(to step: OnboardingStepV2) {
@@ -132,14 +132,14 @@ struct OnboardingView: View {
 
             VStack(spacing: AirwaveLayout.cardSpacing) {
                 infoCard(
-                    "One macOS permission",
+                    "Allow system audio capture",
                     systemImage: "waveform.badge.mic",
-                    text: "Allow System Audio Capture so Airwave can apply spatial processing to sound from your Mac."
+                    text: "Airwave requires permission to capture system audio so it can apply spatial processing to sound from your Mac."
                 )
                 infoCard(
-                    "Choose a spatial profile",
-                    systemImage: "waveform.circle",
-                    text: "Pick the HRIR preset that sounds best to you. You can change it any time from the menu bar or Settings."
+                    "Use stereo headphones",
+                    systemImage: "headphones",
+                    text: "HRIR works best with stereo headphones. Speakers and other outputs may not produce the intended spatial effect."
                 )
             }
         }
@@ -422,7 +422,6 @@ struct OnboardingProgressIndicator: View {
                 )
             }
         }
-        .animation(nil, value: currentStep)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Onboarding progress")
     }
