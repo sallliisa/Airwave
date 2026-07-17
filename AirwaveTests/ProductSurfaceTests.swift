@@ -115,6 +115,17 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertFalse(source.contains(["macOS", "Permission"].joined(separator: " ")))
     }
 
+    func testVerifiedOnboardingControlIsEnabledTestAgainButton() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("Airwave/OnboardingView.swift"), encoding: .utf8)
+        let verifiedStart = try XCTUnwrap(source.range(of: "case .verified:"))
+        let failureStart = try XCTUnwrap(source.range(of: "case .permissionRequired, .failed:", range: verifiedStart.upperBound..<source.endIndex))
+        let verifiedControls = String(source[verifiedStart.lowerBound..<failureStart.lowerBound])
+
+        XCTAssertTrue(verifiedControls.contains("Button(\"Test Again\") { viewModel.requestPermission() }"))
+        XCTAssertFalse(verifiedControls.contains(".disabled(true)"))
+    }
+
     func testOnboardingHRIRDescriptionCanWrap() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let source = try String(contentsOf: root.appendingPathComponent("Airwave/OnboardingView.swift"), encoding: .utf8)
@@ -379,6 +390,20 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertNil(viewModel.captureFailureGuidance)
         XCTAssertNil(persistence.persistedCaptureFailure)
         XCTAssertEqual(viewModel.captureAccessPresentation, .verified)
+    }
+
+    func testSuccessfulForcedTestClearsPersistedWarningGuidance() {
+        let runtime = AudioRuntimeState(captureAccess: .failed(reason: "previous timeout"))
+        let persistence = PersistenceFake()
+        let viewModel = OnboardingViewModel(runtime: runtime, actions: ActionsFake(), persistence: persistence)
+
+        runtime.setCaptureAccess(.checking)
+        XCTAssertNotNil(viewModel.captureFailureGuidance)
+
+        runtime.setCaptureAccess(.verified)
+
+        XCTAssertNil(viewModel.captureFailureGuidance)
+        XCTAssertNil(persistence.persistedCaptureFailure)
     }
 
     func testPersistedCaptureFailureRoundTripsAcrossPersistenceInstances() throws {

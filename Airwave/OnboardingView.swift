@@ -169,9 +169,8 @@ struct OnboardingView: View {
                         .buttonStyle(.borderedProminent)
                 }
             case .verified:
-                Button("System Audio Capture Verified") {}
+                Button("Test Again") { viewModel.requestPermission() }
                     .buttonStyle(.borderedProminent)
-                    .disabled(true)
             case .permissionRequired, .failed:
                 EmptyView()
             }

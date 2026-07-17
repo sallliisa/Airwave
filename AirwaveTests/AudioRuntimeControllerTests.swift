@@ -100,6 +100,98 @@ final class AudioRuntimeControllerTests: XCTestCase {
         XCTAssertEqual(h.state.status, .processing)
     }
 
+    func testTestAgainFromVerifiedProcessingStartsFreshExplicitProbe() {
+        let h = Harness(effect: true)
+        h.pipelines.automaticEvent = nil
+        h.controller.launch(presetReady: true, captureVerified: true)
+
+        XCTAssertEqual(h.state.captureAccess, .verified)
+        XCTAssertEqual(h.state.status, .processing)
+
+        h.controller.requestSystemAudioAccess()
+
+        XCTAssertEqual(h.pipelines.purposes, [
+            .processing,
+            .verification(includeOwnProcess: true)
+        ])
+        XCTAssertEqual(h.state.captureAccess, .checking)
+        XCTAssertEqual(h.state.status, .starting)
+    }
+
+    func testTestAgainRepreparesSelectedEffectAfterInvalidation() {
+        let h = Harness(effect: true)
+        h.pipelines.automaticEvent = nil
+        let preparer = ProfilePreparerFake(
+            readiness: AudioRuntimeEffectReadiness(spatialReady: true, equalizerDefinition: nil)
+        )
+        h.controller.setProfilePreparer(preparer)
+        h.controller.launch(
+            effectReadiness: AudioRuntimeEffectReadiness(spatialReady: true, equalizerDefinition: nil),
+            captureVerified: true
+        )
+
+        XCTAssertEqual(preparer.prepareCount, 1)
+        h.controller.requestSystemAudioAccess()
+
+        XCTAssertEqual(preparer.prepareCount, 2)
+        XCTAssertEqual(h.pipelines.purposes, [
+            .processing,
+            .verification(includeOwnProcess: true)
+        ])
+
+        h.pipelines.emit(.signalDetected)
+        XCTAssertEqual(h.pipelines.purposes, [
+            .processing,
+            .verification(includeOwnProcess: true),
+            .processing
+        ])
+        XCTAssertEqual(h.state.status, .processing)
+    }
+
+    func testSuccessfulTestAgainReturnsToProcessingAndVerified() {
+        let h = Harness(effect: true)
+        h.pipelines.automaticEvent = nil
+        h.controller.launch(presetReady: true, captureVerified: true)
+
+        h.controller.requestSystemAudioAccess()
+        h.pipelines.emit(.signalDetected)
+
+        XCTAssertEqual(h.pipelines.purposes, [
+            .processing,
+            .verification(includeOwnProcess: true),
+            .processing
+        ])
+        XCTAssertEqual(h.state.captureAccess, .verified)
+        XCTAssertEqual(h.state.status, .processing)
+    }
+
+    func testPermissionDenialAfterVerifiedTestAgainNeverReturnsVerified() {
+        let h = Harness(effect: true)
+        h.pipelines.automaticEvent = nil
+        h.controller.launch(presetReady: true, captureVerified: true)
+
+        h.controller.requestSystemAudioAccess()
+        h.pipelines.emit(.permissionDenied)
+
+        XCTAssertEqual(h.state.captureAccess, .permissionRequired)
+        XCTAssertEqual(h.state.status, .needsPermission)
+        XCTAssertNotEqual(h.state.captureAccess, .verified)
+    }
+
+    func testStaleProcessingCallbackCannotVerifyDeniedTestAgain() {
+        let h = Harness(effect: true)
+        h.pipelines.automaticEvent = nil
+        h.controller.launch(presetReady: true, captureVerified: true)
+        let oldProcessingHandler = h.pipelines.handlers[0]
+
+        h.controller.requestSystemAudioAccess()
+        h.pipelines.emit(.permissionDenied)
+        oldProcessingHandler(.signalDetected)
+
+        XCTAssertEqual(h.state.captureAccess, .permissionRequired)
+        XCTAssertEqual(h.state.status, .needsPermission)
+    }
+
     func testSilentExplicitTestTimesOutWithoutVerification() {
         let h = Harness()
         h.controller.launch(presetReady: false)
@@ -297,6 +389,24 @@ private final class PlayerFake: AudioProbeStimulusPlaying {
     var stopCount = 0
     func play() throws { playCount += 1 }
     func stop() { stopCount += 1 }
+}
+
+@MainActor
+private final class ProfilePreparerFake: OutputEffectProfilePreparing {
+    let readiness: AudioRuntimeEffectReadiness
+    var prepareCount = 0
+
+    init(readiness: AudioRuntimeEffectReadiness) {
+        self.readiness = readiness
+    }
+
+    func prepare(output: OutputDeviceDescriptor, completion: @escaping (AudioRuntimeEffectReadiness) -> Void) {
+        prepareCount += 1
+        completion(readiness)
+    }
+
+    func cancelPreparation() {}
+    func outputBecameUnsupportedOrUnavailable() {}
 }
 
 private func output(id: UInt64 = 1, name: String = "Built-in") -> OutputDeviceDescriptor {
