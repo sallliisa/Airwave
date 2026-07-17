@@ -35,6 +35,7 @@ final class DeviceProfileManagementTests: XCTestCase {
         XCTAssertEqual(coordinator.rows[0].equalizerName, "None")
         XCTAssertEqual(coordinator.rows[1].hrirName, "Concert Hall")
         XCTAssertEqual(coordinator.rows[1].equalizerName, "Warm")
+        XCTAssertEqual(coordinator.rows[1].transport, "Built-in")
         XCTAssertEqual(coordinator.rows[1].status, "Not Current")
     }
 

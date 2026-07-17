@@ -70,13 +70,29 @@ final class DeviceManagementCoordinator: ObservableObject {
             return DeviceManagementRow(
                 id: profile.deviceUID,
                 deviceName: profile.deviceName,
-                transport: profile.transport.isEmpty ? "Unknown transport" : profile.transport,
+                transport: displayTransport(profile.transport),
                 status: profile.deviceUID == profileManager.currentDeviceUID ? "Current" : "Not Current",
                 hrirName: hrirName,
                 equalizerName: equalizerName,
                 canReset: profile.hrirPresetID != nil || profile.equalizerPresetID != nil,
                 canForget: profile.deviceUID != profileManager.currentDeviceUID
             )
+        }
+    }
+
+    private func displayTransport(_ transport: String) -> String {
+        switch transport.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "buil", "built", "built-in", "builtin": "Built-in"
+        case "blth", "bluetooth": "Bluetooth"
+        case "usb": "USB"
+        case "fire", "firewire": "FireWire"
+        case "dprt", "displayport": "DisplayPort"
+        case "hdmi": "HDMI"
+        case "thun", "thunderbolt": "Thunderbolt"
+        case "airp", "airplay": "AirPlay"
+        case "virt", "virtual": "Virtual"
+        case "grup", "aggregate": "Aggregate"
+        default: transport.isEmpty ? "Unknown transport" : transport
         }
     }
 
@@ -140,6 +156,7 @@ final class DeviceManagementCoordinator: ObservableObject {
 
 struct DeviceManagementView: View {
     @StateObject private var coordinator: DeviceManagementCoordinator
+    @State private var selectedDeviceUID: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(
@@ -173,25 +190,40 @@ struct DeviceManagementView: View {
                 .transition(.opacity)
             }
 
-            Group {
-                if coordinator.rows.isEmpty {
-                    emptyState
-                } else {
-                    ScrollView {
-                        LazyVStack(spacing: 0) {
-                            ForEach(coordinator.rows) { row in
-                                deviceRow(row)
-                                if row.id != coordinator.rows.last?.id {
-                                    Divider().padding(.leading, 16)
+            VStack(spacing: 0) {
+                ZStack {
+                    if coordinator.rows.isEmpty {
+                        emptyState
+                    } else {
+                        ScrollView {
+                            LazyVStack(spacing: 0) {
+                                ForEach(coordinator.rows) { row in
+                                    deviceRow(row)
+                                    if row.id != coordinator.rows.last?.id {
+                                        Divider().padding(.leading, 16)
+                                    }
                                 }
                             }
+                            .padding(.vertical, 4)
                         }
-                        .padding(.vertical, 4)
                     }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                Divider()
+
+                actionFooter
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: AirwaveLayout.cardCornerRadius))
+        }
+        .onAppear { selectedDeviceUID = nil }
+        .onChange(of: coordinator.rows) { _, rows in
+            guard let selectedDeviceUID,
+                  rows.contains(where: { $0.id == selectedDeviceUID }) else {
+                self.selectedDeviceUID = nil
+                return
+            }
         }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: coordinator.result)
         .confirmationDialog(
@@ -236,7 +268,9 @@ struct DeviceManagementView: View {
     }
 
     private func deviceRow(_ row: DeviceManagementRow) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        Button {
+            selectedDeviceUID = row.id
+        } label: {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(row.deviceName)
@@ -256,23 +290,53 @@ struct DeviceManagementView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             }
-
-            HStack(spacing: 8) {
-                Spacer()
-                Button("Reset Profile") { coordinator.requestReset(deviceUID: row.id) }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(!row.canReset)
-                    .accessibilityLabel("Reset Profile for \(row.deviceName)")
-                Button("Forget Device") { coordinator.requestForget(deviceUID: row.id) }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(!row.canForget)
-                    .accessibilityLabel("Forget \(row.deviceName)")
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, AirwaveLayout.rowHorizontalPadding)
+            .padding(.vertical, 11)
+            .contentShape(Rectangle())
         }
-        .padding(.horizontal, AirwaveLayout.rowHorizontalPadding)
-        .padding(.vertical, 11)
-        .accessibilityElement(children: .contain)
+        .buttonStyle(.plain)
+        .background(
+            selectedDeviceUID == row.id
+                ? AirwavePalette.hover
+                : .clear,
+            in: RoundedRectangle(cornerRadius: 6)
+        )
+        .accessibilityAddTraits(selectedDeviceUID == row.id ? .isSelected : [])
+        .accessibilityValue(selectedDeviceUID == row.id ? "Selected" : "Not selected")
+    }
+
+    private var selectedRow: DeviceManagementRow? {
+        guard let selectedDeviceUID else { return nil }
+        return coordinator.rows.first { $0.id == selectedDeviceUID }
+    }
+
+    private var actionFooter: some View {
+        HStack(spacing: 8) {
+            Spacer(minLength: 0)
+            Button("Reset Profile") {
+                if let selectedDeviceUID {
+                    coordinator.requestReset(deviceUID: selectedDeviceUID)
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(selectedRow?.canReset != true)
+            .accessibilityLabel(
+                selectedRow.map { "Reset Profile for \($0.deviceName)" } ?? "Reset Profile"
+            )
+            Button("Forget Device") {
+                if let selectedDeviceUID {
+                    coordinator.requestForget(deviceUID: selectedDeviceUID)
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(selectedRow?.canForget != true)
+            .accessibilityLabel(
+                selectedRow.map { "Forget \($0.deviceName)" } ?? "Forget Device"
+            )
+        }
+        .padding(AirwaveLayout.cardPadding)
     }
 }

@@ -1,0 +1,3 @@
+- Use full Xcode (`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`), not Command Line Tools.
+- Run XCTest in `Debug`; build `Release` separately.
+- After a failed test/build, clean the build folder before retrying; stale `AirwaveTests.xctest` can break app signing.

@@ -13,7 +13,7 @@ struct AirwaveApp: App {
                 launchAtLogin: LaunchAtLoginManager.shared
             ).migrateIfNeeded()
         } catch {
-            Logger.log("[Migration] Could not disable launch at login: \(error)")
+            Logger.log("[Migration] Could not enable launch at login: \(error)")
         }
         _ = UpdateManager.shared
     }
