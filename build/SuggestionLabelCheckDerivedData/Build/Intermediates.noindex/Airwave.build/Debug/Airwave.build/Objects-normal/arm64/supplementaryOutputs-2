@@ -1,0 +1,37 @@
+{
+  "/Users/gamer/Documents/projects/Airwave/Airwave/AudioEffectGraph.swift" : {
+    "const-values" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/AudioEffectGraph.swiftconstvalues",
+    "dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/AudioEffectGraph.d",
+    "diagnostics" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/AudioEffectGraph.dia",
+    "object" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/AudioEffectGraph.o",
+    "swift-dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/AudioEffectGraph.swiftdeps"
+  },
+  "/Users/gamer/Documents/projects/Airwave/Airwave/AudioPipeline.swift" : {
+    "const-values" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/AudioPipeline.swiftconstvalues",
+    "dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/AudioPipeline.d",
+    "diagnostics" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/AudioPipeline.dia",
+    "object" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/AudioPipeline.o",
+    "swift-dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/AudioPipeline.swiftdeps"
+  },
+  "/Users/gamer/Documents/projects/Airwave/Airwave/AudioPlatformClient.swift" : {
+    "const-values" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/AudioPlatformClient.swiftconstvalues",
+    "dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/AudioPlatformClient.d",
+    "diagnostics" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/AudioPlatformClient.dia",
+    "object" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/AudioPlatformClient.o",
+    "swift-dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/AudioPlatformClient.swiftdeps"
+  },
+  "/Users/gamer/Documents/projects/Airwave/Airwave/AudioRuntimeController.swift" : {
+    "const-values" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/AudioRuntimeController.swiftconstvalues",
+    "dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/AudioRuntimeController.d",
+    "diagnostics" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/AudioRuntimeController.dia",
+    "object" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/AudioRuntimeController.o",
+    "swift-dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/AudioRuntimeController.swiftdeps"
+  },
+  "/Users/gamer/Documents/projects/Airwave/Airwave/AudioRuntimeState.swift" : {
+    "const-values" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/AudioRuntimeState.swiftconstvalues",
+    "dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/AudioRuntimeState.d",
+    "diagnostics" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/AudioRuntimeState.dia",
+    "object" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/AudioRuntimeState.o",
+    "swift-dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/AudioRuntimeState.swiftdeps"
+  }
+}

@@ -64,6 +64,7 @@ final class AudioRuntimeControllerTests: XCTestCase {
 
     func testCaptureVerificationTimeoutMatchesProbeBudget() {
         XCTAssertEqual(AudioRuntimeController.captureVerificationTimeout, 2.5)
+        XCTAssertEqual(AudioRuntimeController.outputLossGracePeriod, 1)
     }
 
     func testSignalPromotesToProcessingOnlyAfterVerification() {
@@ -175,6 +176,7 @@ final class AudioRuntimeControllerTests: XCTestCase {
 
         XCTAssertEqual(h.state.captureAccess, .permissionRequired)
         XCTAssertEqual(h.state.status, .needsPermission)
+        XCTAssertEqual(h.state.healthIssues, [.permissionRequired])
         XCTAssertNotEqual(h.state.captureAccess, .verified)
     }
 
@@ -201,6 +203,7 @@ final class AudioRuntimeControllerTests: XCTestCase {
 
         guard case .failed(let reason) = h.state.captureAccess else { return XCTFail("expected failed capture state") }
         XCTAssertTrue(reason.contains("timed out"))
+        XCTAssertEqual(h.state.healthIssues, [.captureTestFailed(reason: reason)])
         XCTAssertEqual(h.pipelines.liveCount, 0)
         XCTAssertGreaterThanOrEqual(h.player.stopCount, 1)
     }
@@ -214,6 +217,38 @@ final class AudioRuntimeControllerTests: XCTestCase {
         XCTAssertEqual(h.state.status, .needsPermission)
     }
 
+    func testPermissionIssueStaysDuringRetestAndClearsAfterSuccessfulSignal() {
+        let h = Harness()
+        h.pipelines.startError = .permissionDenied
+        h.controller.launch(presetReady: true)
+
+        h.controller.requestSystemAudioAccess()
+        XCTAssertEqual(h.state.healthIssues, [.permissionRequired])
+
+        h.pipelines.emit(.signalDetected)
+
+        XCTAssertTrue(h.state.healthIssues.isEmpty)
+        XCTAssertEqual(h.state.captureAccess, .verified)
+    }
+
+    func testCaptureTimeoutIssueStaysDuringRetestAndClearsAfterSuccessfulSignal() {
+        let h = Harness()
+        h.controller.launch(presetReady: false)
+        h.controller.requestSystemAudioAccess()
+        h.scheduler.runNext()
+        h.scheduler.runNext()
+
+        h.controller.requestSystemAudioAccess()
+        guard case .captureTestFailed = h.state.healthIssues.first else {
+            return XCTFail("capture issue should remain while the retest is in progress")
+        }
+
+        h.pipelines.emit(.signalDetected)
+
+        XCTAssertTrue(h.state.healthIssues.isEmpty)
+        XCTAssertEqual(h.state.captureAccess, .verified)
+    }
+
     func testOpeningSystemSettingsPreservesKnownPermissionFailure() {
         let h = Harness()
         h.pipelines.startError = .permissionDenied
@@ -225,16 +260,79 @@ final class AudioRuntimeControllerTests: XCTestCase {
         XCTAssertEqual(h.state.status, .needsPermission)
     }
 
-    func testGenericFailureIsFailedAndStaleSignalCannotVerify() {
+    func testTransientMissingOutputDoesNotPublishHealthIssue() {
         let h = Harness()
-        h.pipelines.automaticEvent = nil
-        h.controller.launch(presetReady: true)
-        let old = h.pipelines.handlers[0]
-        h.platform.emit(nil)
-        old(.signalDetected)
+        h.controller.setProfilePreparer(ProfilePreparerFake(
+            readiness: AudioRuntimeEffectReadiness(spatialReady: false, equalizerDefinition: nil)
+        ))
+        h.controller.launch(presetReady: false)
 
-        guard case .failed = h.state.captureAccess else { return XCTFail("expected failed capture state") }
-        XCTAssertNotEqual(h.state.captureAccess, .verified)
+        h.platform.emit(nil)
+        h.platform.emit(output(id: 2, name: "USB"))
+        h.scheduler.runNext()
+
+        XCTAssertFalse(h.state.hasBlockingHealthIssue)
+        XCTAssertEqual(h.state.currentOutput?.name, "USB")
+    }
+
+    func testSustainedMissingOutputPublishesIssueAndReconnectClearsIt() {
+        let h = Harness()
+        h.controller.setProfilePreparer(ProfilePreparerFake(
+            readiness: AudioRuntimeEffectReadiness(spatialReady: false, equalizerDefinition: nil)
+        ))
+        h.controller.launch(presetReady: false)
+
+        h.platform.emit(nil)
+        XCTAssertFalse(h.state.hasBlockingHealthIssue)
+        h.scheduler.runNext()
+
+        XCTAssertEqual(h.state.healthIssues, [.noUsableOutput])
+
+        h.platform.emit(output(id: 2, name: "USB"))
+
+        XCTAssertFalse(h.state.hasBlockingHealthIssue)
+        XCTAssertEqual(h.state.currentOutput?.name, "USB")
+    }
+
+    func testUnsupportedOutputIssueClearsWhenSupportedOutputArrives() {
+        let h = Harness()
+        h.controller.setProfilePreparer(ProfilePreparerFake(
+            readiness: AudioRuntimeEffectReadiness(spatialReady: false, equalizerDefinition: nil)
+        ))
+        h.controller.launch(presetReady: false)
+
+        h.platform.emit(output(id: 2, name: "Virtual", isVirtual: true))
+        guard case .unsupportedOutput = h.state.healthIssues.first else {
+            return XCTFail("expected unsupported-output health issue")
+        }
+
+        h.platform.emit(output(id: 3, name: "Headphones"))
+
+        XCTAssertFalse(h.state.hasBlockingHealthIssue)
+        XCTAssertEqual(h.state.currentOutput?.name, "Headphones")
+    }
+
+    func testSpatialPreparationFailurePublishesAndSuccessfulPreparationClearsIssue() {
+        let h = Harness()
+        let failingPreparer = ProfilePreparerFake(
+            readiness: AudioRuntimeEffectReadiness(
+                spatialReady: false,
+                equalizerDefinition: nil,
+                spatialError: "HRIR file is unreadable"
+            )
+        )
+        h.controller.setProfilePreparer(failingPreparer)
+        h.controller.launch(presetReady: true)
+
+        XCTAssertEqual(h.state.healthIssues, [.spatialPresetFailed(reason: "HRIR file is unreadable")])
+
+        let successfulPreparer = ProfilePreparerFake(
+            readiness: AudioRuntimeEffectReadiness(spatialReady: false, equalizerDefinition: nil)
+        )
+        h.controller.setProfilePreparer(successfulPreparer)
+        h.controller.reprepareCurrentOutput()
+
+        XCTAssertFalse(h.state.hasBlockingHealthIssue)
     }
 
     func testRenderFailureIncludesOSStatusInFailureMessage() {
@@ -244,11 +342,29 @@ final class AudioRuntimeControllerTests: XCTestCase {
 
         h.pipelines.emit(.renderFailed(-50))
 
-        guard case .failed(let reason) = h.state.captureAccess else {
-            return XCTFail("expected failed capture state")
+        guard case .audioPipelineFailed(let reason) = h.state.healthIssues.first else {
+            return XCTFail("expected pipeline health issue")
         }
         XCTAssertEqual(reason, "Render system audio failed (OSStatus -50)")
+        XCTAssertEqual(h.state.captureAccess, .unverified)
         XCTAssertEqual(h.state.status, .nativePassthrough(reason: reason))
+    }
+
+    func testCleanupFailurePublishesRecoveryIssueAndSuccessfulRetryClearsIt() {
+        let h = Harness(effect: true)
+        h.controller.launch(presetReady: true)
+        h.pipelines.stopError = .cleanupFailed("busy")
+
+        h.platform.emit(output(id: 2, name: "USB"))
+
+        guard case .resourceRecovery = h.state.healthIssues.first else {
+            return XCTFail("expected resource-recovery health issue")
+        }
+
+        h.scheduler.runNext() // canceled processing-stability timer
+        h.scheduler.runNext() // cleanup retry
+
+        XCTAssertFalse(h.state.healthIssues.contains { $0.category == .recovery })
     }
 
     func testFormatMismatchIncludesExpectedAndActualFormatsInFailureMessage() {
@@ -259,10 +375,11 @@ final class AudioRuntimeControllerTests: XCTestCase {
 
         h.controller.launch(presetReady: true)
 
-        guard case .failed(let reason) = h.state.captureAccess else {
-            return XCTFail("expected failed capture state")
+        guard case .audioPipelineFailed(let reason) = h.state.healthIssues.first else {
+            return XCTFail("expected pipeline health issue")
         }
         XCTAssertEqual(reason, "Capture format mismatch (expected \(expected), actual \(actual)).")
+        XCTAssertEqual(h.state.captureAccess, .unverified)
         XCTAssertEqual(h.state.status, .nativePassthrough(reason: reason))
     }
 
@@ -306,6 +423,7 @@ private final class Harness {
 private final class PipelineFactoryFake {
     var automaticEvent: AudioCaptureVerificationEvent?
     var startError: AudioRuntimeError?
+    var stopError: AudioRuntimeError?
     var purposes: [AudioPipelinePurpose] = []
     var muteBehaviors: [AudioTapMuteBehavior] = []
     var handlers: [AudioCaptureVerificationHandler] = []
@@ -337,7 +455,14 @@ private final class PipelineFake: AudioPipelineControlling {
         if let event = owner.automaticEvent { verificationHandler(event) }
     }
 
-    func stop() throws { if let owner, owner.liveCount > 0 { owner.liveCount -= 1 } }
+    func stop() throws {
+        guard let owner else { return }
+        if let error = owner.stopError {
+            owner.stopError = nil
+            throw error
+        }
+        if owner.liveCount > 0 { owner.liveCount -= 1 }
+    }
 }
 
 private final class PlatformFake: AudioPlatformClient {
@@ -409,6 +534,6 @@ private final class ProfilePreparerFake: OutputEffectProfilePreparing {
     func outputBecameUnsupportedOrUnavailable() {}
 }
 
-private func output(id: UInt64 = 1, name: String = "Built-in") -> OutputDeviceDescriptor {
-    OutputDeviceDescriptor(id: .init(id), uid: "output-\(id)", name: name, transport: "built-in", outputChannelCount: 2, nominalSampleRate: 48_000, isVirtual: false, isAggregate: false)
+private func output(id: UInt64 = 1, name: String = "Built-in", isVirtual: Bool = false) -> OutputDeviceDescriptor {
+    OutputDeviceDescriptor(id: .init(id), uid: "output-\(id)", name: name, transport: "built-in", outputChannelCount: 2, nominalSampleRate: 48_000, isVirtual: isVirtual, isAggregate: false)
 }

@@ -1,0 +1,168 @@
+{
+  "source": "/Users/gamer/Documents/projects/Airwave/Airwave/SettingsView.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "Quit Airwave?",
+        "location": {
+          "startingColumn": 13,
+          "startingLine": 52
+        }
+      },
+      {
+        "comment": "",
+        "key": "Page %lld of %lld",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 160
+        }
+      },
+      {
+        "comment": "",
+        "key": "Quit Airwave and stop processing",
+        "location": {
+          "startingColumn": 33,
+          "startingLine": 174
+        }
+      },
+      {
+        "comment": "",
+        "key": "Quit Airwave and stop audio processing",
+        "location": {
+          "startingColumn": 19,
+          "startingLine": 175
+        }
+      },
+      {
+        "comment": "",
+        "key": "Quit Airwave",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 55
+        }
+      },
+      {
+        "comment": "",
+        "key": "Cancel",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 58
+        }
+      },
+      {
+        "comment": "",
+        "key": "Audio processing will stop and Airwave will quit.",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 60
+        }
+      },
+      {
+        "comment": "",
+        "key": "No Supported Output",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 150
+        }
+      },
+      {
+        "comment": "",
+        "key": "No supported output device",
+        "location": {
+          "startingColumn": 41,
+          "startingLine": 151
+        }
+      },
+      {
+        "comment": "",
+        "key": "Editing audio device",
+        "location": {
+          "startingColumn": 37,
+          "startingLine": 147
+        }
+      },
+      {
+        "comment": "",
+        "key": "Current",
+        "location": {
+          "startingColumn": 60,
+          "startingLine": 133
+        }
+      },
+      {
+        "comment": "",
+        "key": "Airwave needs attention",
+        "location": {
+          "startingColumn": 49,
+          "startingLine": 304
+        }
+      },
+      {
+        "comment": "",
+        "key": "Complete setup",
+        "location": {
+          "startingColumn": 77,
+          "startingLine": 304
+        }
+      },
+      {
+        "comment": "",
+        "key": "",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 422
+        }
+      },
+      {
+        "comment": "",
+        "key": "Launch at Login",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 415
+        }
+      },
+      {
+        "comment": "",
+        "key": "Open Airwave automatically when you log in",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 416
+        }
+      },
+      {
+        "comment": "",
+        "key": "",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 438
+        }
+      },
+      {
+        "comment": "",
+        "key": "Show in Menu Bar",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 434
+        }
+      },
+      {
+        "comment": "",
+        "key": "Keep Airwave in the macOS menu bar.",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 435
+        }
+      },
+      {
+        "comment": "",
+        "key": "Software Update",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 451
+        }
+      }
+    ]
+  },
+  "version": 1
+}

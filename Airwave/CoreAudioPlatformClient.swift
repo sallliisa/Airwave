@@ -154,6 +154,20 @@ nonisolated enum StereoCallbackBridge {
     }
 }
 
+nonisolated enum DefaultOutputObservationDecision: Equatable {
+    case output(OutputDeviceDescriptor)
+    case missing
+    case retainLastValid
+
+    static func make(from result: Result<OutputDeviceDescriptor, Error>) -> Self {
+        switch result {
+        case .success(let output): .output(output)
+        case .failure(AudioRuntimeError.noOutputDevice): .missing
+        case .failure: .retainLastValid
+        }
+    }
+}
+
 nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDeviceDiscovering {
     fileprivate final class IOContext {
         let unit: AudioUnit
@@ -310,7 +324,17 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
 
     private lazy var defaultOutputListener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
         guard let self else { return }
-        self.defaultOutputHandler?(try? self.defaultOutputDevice())
+        let result = Result { try self.defaultOutputDevice() }
+        switch DefaultOutputObservationDecision.make(from: result) {
+        case .output(let output):
+            self.defaultOutputHandler?(output)
+        case .missing:
+            self.defaultOutputHandler?(nil)
+        case .retainLastValid:
+            // A property notification can race the device graph becoming readable.
+            // Preserve the last valid output; a later notification will retry.
+            Logger.log("[CoreAudio] Default output changed before its descriptor was readable: \(result)")
+        }
     }
 
     private lazy var availableOutputListener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in

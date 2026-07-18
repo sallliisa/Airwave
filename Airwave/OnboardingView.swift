@@ -11,6 +11,7 @@ struct OnboardingView: View {
     var canReturnToSettings = false
     var onComplete: () -> Void = {}
     var onReturnToSettings: () -> Void = {}
+    var onOpenEqualizerSettings: () -> Void = {}
     @ObservedObject private var runtime = AudioRuntimeState.shared
     @ObservedObject private var hrirManager = HRIRManager.shared
     @ObservedObject private var profiles = DeviceProfileManager.shared
@@ -94,6 +95,7 @@ struct OnboardingView: View {
     }
 
     private var currentStepTitle: String {
+        if viewModel.currentStep == .liveHealth, runtime.hasBlockingHealthIssue { return "Airwave needs attention" }
         if viewModel.currentStep == .liveHealth { return readinessPresentation.title }
         return viewModel.currentStep.title
     }
@@ -101,7 +103,10 @@ struct OnboardingView: View {
     private var stepProgressLabel: String {
         switch viewModel.currentStep {
         case .welcome: "Before you begin"
-        case .liveHealth: isRuntimeReady ? "All is set. Airwave is now set up." : "Finish setup to use Airwave."
+        case .liveHealth:
+            runtime.hasBlockingHealthIssue
+                ? "Health & Troubleshooting"
+                : (isRuntimeReady ? "All is set. Airwave is now set up." : "Finish setup to use Airwave.")
         default: "Step \(currentPageNumber - 1) of 2"
         }
     }
@@ -120,7 +125,12 @@ struct OnboardingView: View {
         case .welcome: welcomeStep
         case .systemAudio: systemAudioStep
         case .hrirPreset: hrirStep
-        case .liveHealth: liveHealthStep
+        case .liveHealth:
+            ScrollView {
+                liveHealthStep
+                    .padding(.bottom, 88)
+            }
+            .scrollIndicators(.hidden)
         }
     }
 
@@ -190,9 +200,7 @@ struct OnboardingView: View {
 
             VStack(alignment: .leading, spacing: 5) {
                 ForEach(guidance.suggestions, id: \.self) { suggestion in
-                    Label(suggestion, systemImage: "checkmark.circle")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                    suggestionRow(suggestion)
                 }
             }
 
@@ -235,24 +243,30 @@ struct OnboardingView: View {
     private var liveHealthStep: some View {
         let presentation = readinessPresentation
         return VStack(alignment: .leading, spacing: AirwaveLayout.sectionSpacing) {
-            statusCard(
-                icon: isRuntimeReady
-                    ? "checkmark.seal.fill"
-                    : (presentation.isAttention ? "exclamationmark.triangle.fill" : "info.circle.fill"),
-                color: isRuntimeReady ? .green : (presentation.isAttention ? .orange : .secondary),
-                title: presentation.title,
-                detail: presentation.detail
-            )
+            if runtime.healthIssues.isEmpty {
+                statusCard(
+                    icon: isRuntimeReady
+                        ? "checkmark.seal.fill"
+                        : (presentation.isAttention ? "exclamationmark.triangle.fill" : "info.circle.fill"),
+                    color: isRuntimeReady ? .green : (presentation.isAttention ? .orange : .secondary),
+                    title: presentation.title,
+                    detail: presentation.detail
+                )
 
-            if let actionStep = presentation.actionStep {
-                Button(presentation.actionTitle ?? (actionStep == .systemAudio ? "Review Capture" : "Choose a Preset")) {
-                    navigate(to: actionStep)
+                if let actionStep = presentation.actionStep {
+                    Button(presentation.actionTitle ?? (actionStep == .systemAudio ? "Review Capture" : "Choose a Preset")) {
+                        navigate(to: actionStep)
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
-                .buttonStyle(.borderedProminent)
-            }
 
-            if presentation.canRetry {
-                Button("Retry") { viewModel.retry() }.buttonStyle(.borderedProminent)
+                if presentation.canRetry {
+                    Button("Retry") { viewModel.retry() }.buttonStyle(.borderedProminent)
+                }
+            } else {
+                ForEach(Array(runtime.healthIssues.enumerated()), id: \.offset) { _, issue in
+                    healthIssueCard(RuntimeHealthIssuePresentation.make(for: issue))
+                }
             }
 
             VStack(alignment: .leading, spacing: AirwaveLayout.sectionContentSpacing) {
@@ -268,6 +282,42 @@ struct OnboardingView: View {
                 }
                 .background(AirwavePalette.raised, in: RoundedRectangle(cornerRadius: AirwaveLayout.cardCornerRadius))
             }
+        }
+    }
+
+    private func healthIssueCard(_ presentation: RuntimeHealthIssuePresentation) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(presentation.title, systemImage: "exclamationmark.triangle.fill")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.orange)
+            Text(presentation.detail).font(.callout).foregroundStyle(.secondary)
+            ForEach(presentation.suggestions, id: \.self) { suggestion in
+                suggestionRow(suggestion)
+            }
+            Button(presentation.actionTitle) { perform(presentation.action) }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+        }
+        .padding(AirwaveLayout.cardPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.09), in: RoundedRectangle(cornerRadius: AirwaveLayout.cardCornerRadius))
+    }
+
+    private func suggestionRow(_ suggestion: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 7) {
+            Text("•")
+            Text(suggestion)
+        }
+        .font(.callout)
+        .foregroundStyle(.secondary)
+    }
+
+    private func perform(_ action: RuntimeHealthRecoveryAction) {
+        switch action {
+        case .reviewCapture: navigate(to: .systemAudio)
+        case .retry: viewModel.retry()
+        case .chooseHRIR: navigate(to: .hrirPreset)
+        case .openEqualizer: onOpenEqualizerSettings()
         }
     }
 

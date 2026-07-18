@@ -282,13 +282,12 @@ final class ProductSurfaceTests: XCTestCase {
         let permissionGuidance = CaptureFailureGuidance.make(for: .permissionRequired)
         XCTAssertNotNil(permissionGuidance)
         XCTAssertNil(permissionGuidance?.reason)
-        XCTAssertEqual(permissionGuidance?.suggestions.count, 2)
+        XCTAssertEqual(permissionGuidance?.suggestions.count, 1)
 
         let failureGuidance = CaptureFailureGuidance.make(for: .failed(reason: "Capture test timed out."))
         XCTAssertEqual(failureGuidance?.reason, "Capture test timed out.")
-        XCTAssertEqual(failureGuidance?.suggestions.count, 3)
+        XCTAssertEqual(failureGuidance?.suggestions.count, 2)
         XCTAssertTrue(failureGuidance?.suggestions.contains("Enable Airwave under Privacy & Security → System Audio Capture.") == true)
-        XCTAssertTrue(failureGuidance?.suggestions.contains("Have another app actively playing audio.") == true)
         XCTAssertTrue(failureGuidance?.suggestions.contains("Use a supported physical stereo output; virtual and aggregate outputs are unsupported.") == true)
     }
 
@@ -395,13 +394,13 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertFalse(unsupportedViewModel.canComplete(allowingUnknownCapture: true))
     }
 
-    func testPersistedWarningBlocksSubsequentUnknownCaptureCompletion() {
+    func testLiveHealthIssueBlocksSubsequentUnknownCaptureCompletion() {
         let persistence = PersistenceFake()
-        persistence.persistedCaptureFailure = PersistedCaptureFailure(kind: .failed, reason: "previous timeout")
         let runtime = AudioRuntimeState(
             status: .inactive,
             currentOutput: output(),
-            captureAccess: .unverified
+            captureAccess: .unverified,
+            healthIssues: [.captureTestFailed(reason: "current timeout")]
         )
         let viewModel = OnboardingViewModel(runtime: runtime, actions: ActionsFake(), persistence: persistence)
 
@@ -435,7 +434,7 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertEqual(actions.requestCount, 1)
     }
 
-    func testCaptureFailureGuidanceStaysUntilVerified() {
+    func testCaptureFailureGuidanceTracksOnlyLiveCaptureState() {
         let runtime = AudioRuntimeState(captureAccess: .failed(reason: "first failure"))
         let persistence = PersistenceFake()
         let viewModel = OnboardingViewModel(
@@ -445,75 +444,48 @@ final class ProductSurfaceTests: XCTestCase {
         )
 
         XCTAssertEqual(viewModel.captureFailureGuidance?.reason, "first failure")
-        XCTAssertEqual(persistence.persistedCaptureFailure?.reason, "first failure")
 
         runtime.setCaptureAccess(.unverified)
-        XCTAssertEqual(viewModel.captureFailureGuidance?.reason, "first failure")
-        XCTAssertEqual(viewModel.captureAccessPresentation, .failed(reason: "first failure"))
+        XCTAssertNil(viewModel.captureFailureGuidance)
+        XCTAssertEqual(viewModel.captureAccessPresentation, .unverified)
         runtime.setCaptureAccess(.checking)
-        XCTAssertEqual(viewModel.captureFailureGuidance?.reason, "first failure")
+        XCTAssertNil(viewModel.captureFailureGuidance)
         XCTAssertEqual(viewModel.captureAccessPresentation, .checking)
 
         runtime.setCaptureAccess(.failed(reason: "second failure"))
         XCTAssertEqual(viewModel.captureFailureGuidance?.reason, "second failure")
-        XCTAssertEqual(persistence.persistedCaptureFailure?.reason, "second failure")
 
         runtime.setCaptureAccess(.verified)
         XCTAssertNil(viewModel.captureFailureGuidance)
-        XCTAssertNil(persistence.persistedCaptureFailure)
         XCTAssertEqual(viewModel.captureAccessPresentation, .verified)
     }
 
-    func testSuccessfulForcedTestClearsPersistedWarningGuidance() {
+    func testStartingForcedTestClearsPreviousGuidance() {
         let runtime = AudioRuntimeState(captureAccess: .failed(reason: "previous timeout"))
         let persistence = PersistenceFake()
         let viewModel = OnboardingViewModel(runtime: runtime, actions: ActionsFake(), persistence: persistence)
 
         runtime.setCaptureAccess(.checking)
-        XCTAssertNotNil(viewModel.captureFailureGuidance)
+        XCTAssertNil(viewModel.captureFailureGuidance)
 
         runtime.setCaptureAccess(.verified)
 
         XCTAssertNil(viewModel.captureFailureGuidance)
-        XCTAssertNil(persistence.persistedCaptureFailure)
     }
 
-    func testPersistedCaptureFailureRoundTripsAcrossPersistenceInstances() throws {
+    func testLegacyPersistedCaptureFailureIsRemovedWithoutResettingCompletion() throws {
         let suite = "Airwave.ProductSetupTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
 
+        defaults.set(UserDefaultsOnboardingPersistenceV2.currentVersion, forKey: "Airwave.OnboardingV2.Version")
+        defaults.set(true, forKey: "Airwave.OnboardingV2.Completed")
+        defaults.set(Data("legacy failure".utf8), forKey: "Airwave.OnboardingV2.CaptureFailure")
+
         let persistence = UserDefaultsOnboardingPersistenceV2(defaults: defaults)
-        persistence.persistedCaptureFailure = PersistedCaptureFailure(kind: .failed, reason: "capture timed out")
 
-        let relaunchedPersistence = UserDefaultsOnboardingPersistenceV2(defaults: defaults)
-
-        XCTAssertEqual(
-            relaunchedPersistence.persistedCaptureFailure,
-            PersistedCaptureFailure(kind: .failed, reason: "capture timed out")
-        )
-    }
-
-    func testPersistedFailureRestoresGuidanceWithoutChangingUnknownRuntime() {
-        let persistence = PersistenceFake()
-        persistence.persistedCaptureFailure = PersistedCaptureFailure(kind: .failed, reason: "previous timeout")
-        let runtime = AudioRuntimeState(captureAccess: .unverified)
-        let viewModel = OnboardingViewModel(runtime: runtime, actions: ActionsFake(), persistence: persistence)
-
-        XCTAssertEqual(viewModel.captureFailureGuidance?.reason, "previous timeout")
-        XCTAssertEqual(viewModel.captureAccessPresentation, .failed(reason: "previous timeout"))
-        XCTAssertEqual(runtime.captureAccess, .unverified)
-        XCTAssertTrue(viewModel.needsSetupAttention)
-    }
-
-    func testPersistedPermissionFailureRestoresPermissionPresentation() {
-        let persistence = PersistenceFake()
-        persistence.persistedCaptureFailure = PersistedCaptureFailure(kind: .permissionRequired, reason: nil)
-        let runtime = AudioRuntimeState(captureAccess: .unverified)
-        let viewModel = OnboardingViewModel(runtime: runtime, actions: ActionsFake(), persistence: persistence)
-
-        XCTAssertEqual(viewModel.captureAccessPresentation, .permissionRequired)
-        XCTAssertEqual(runtime.captureAccess, .unverified)
+        XCTAssertTrue(persistence.isComplete)
+        XCTAssertNil(defaults.object(forKey: "Airwave.OnboardingV2.CaptureFailure"))
     }
 
     func testUnknownCaptureWithoutPersistedFailureRemainsUnverifiedPresentation() {
@@ -523,28 +495,41 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertEqual(viewModel.captureAccessPresentation, .unverified)
     }
 
-    func testPersistedFailureMakesFinalReadinessAttentionState() {
-        let presentation = OnboardingReadinessPresentation.make(
-            captureAccess: .unverified,
-            hasPreset: true,
-            runtimeStatus: .inactive,
-            isReady: false,
-            hasCaptureFailureGuidance: true
-        )
-
-        XCTAssertTrue(presentation.isAttention)
-        XCTAssertEqual(presentation.actionStep, .systemAudio)
-    }
-
-    func testVerifiedRuntimeClearsPersistedFailureDuringViewModelInitialization() {
+    func testCurrentHealthIssueShowsAttentionAndRoutesCompletedSetupToHealth() {
         let persistence = PersistenceFake()
-        persistence.persistedCaptureFailure = PersistedCaptureFailure(kind: .failed, reason: "old failure")
-        let runtime = AudioRuntimeState(currentOutput: output(), captureAccess: .verified)
+        persistence.isComplete = true
+        let runtime = AudioRuntimeState(
+            currentOutput: output(),
+            captureAccess: .verified,
+            healthIssues: [.equalizerFailed(reason: "invalid filter")]
+        )
 
         let viewModel = OnboardingViewModel(runtime: runtime, actions: ActionsFake(), persistence: persistence)
 
-        XCTAssertNil(viewModel.captureFailureGuidance)
-        XCTAssertNil(persistence.persistedCaptureFailure)
+        XCTAssertTrue(viewModel.needsSetupAttention)
+        XCTAssertEqual(viewModel.recommendedVoluntaryEntryStep, .liveHealth)
+        XCTAssertEqual(RuntimeHealthIssuePresentation.make(for: runtime.healthIssues[0]).action, .openEqualizer)
+    }
+
+    func testEveryHealthIssueHasCategorySpecificRecoveryPresentation() {
+        let cases: [(RuntimeHealthIssue, RuntimeHealthRecoveryAction)] = [
+            (.permissionRequired, .reviewCapture),
+            (.captureTestFailed(reason: "timeout"), .reviewCapture),
+            (.noUsableOutput, .retry),
+            (.unsupportedOutput(reason: "virtual"), .retry),
+            (.audioPipelineFailed(reason: "format"), .retry),
+            (.resourceRecovery(reason: "cleanup"), .retry),
+            (.spatialPresetFailed(reason: "HRIR"), .chooseHRIR),
+            (.equalizerFailed(reason: "filter"), .openEqualizer)
+        ]
+
+        for (issue, expectedAction) in cases {
+            let presentation = RuntimeHealthIssuePresentation.make(for: issue)
+            XCTAssertEqual(presentation.action, expectedAction)
+            XCTAssertFalse(presentation.title.isEmpty)
+            XCTAssertFalse(presentation.detail.isEmpty)
+            XCTAssertFalse(presentation.suggestions.isEmpty)
+        }
     }
 
     func testFirstRunDefaultsEnableLaunchAtLoginAndHideMenuBarItem() throws {
@@ -622,5 +607,4 @@ private final class PersistenceFake: OnboardingPersisting {
     var checkpoint: OnboardingStepV2 = .welcome
     var isComplete = false
     var isDeferred = false
-    var persistedCaptureFailure: PersistedCaptureFailure?
 }

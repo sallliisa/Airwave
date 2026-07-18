@@ -70,7 +70,11 @@ struct SettingsWindowContent: View {
                 navigationDirection: $onboardingNavigationDirection,
                 canReturnToSettings: state.canReturnToSettings,
                 onComplete: { state.show(.settings) },
-                onReturnToSettings: { state.show(.settings) }
+                onReturnToSettings: { state.show(.settings) },
+                onOpenEqualizerSettings: {
+                    state.show(.settings)
+                    state.selectSettingsPage(.equalizer)
+                }
             )
             .transition(pageRevealTransition)
         case .settings:
@@ -296,7 +300,10 @@ struct SettingsView: View {
                 }
                 Text(pageTitle).font(.largeTitle.weight(.semibold))
                 if page.wrappedValue == .general, onboardingNeedsAttention {
-                    Label("Reopen setup", systemImage: "exclamationmark.triangle.fill")
+                    Label(
+                        onboarding.isComplete ? "Airwave needs attention" : "Complete setup",
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
                         .font(.callout.weight(.medium))
                         .foregroundStyle(.orange)
                 }
@@ -377,7 +384,9 @@ struct SettingsView: View {
                 AirwaveNavigationCard(
                     systemImage: "sparkles",
                     title: "Setup & Troubleshooting",
-                    subtitle: "Revisit the Airwave setup wizard.",
+                    subtitle: onboarding.isComplete && onboardingNeedsAttention
+                        ? "Review current Airwave health issues and recovery steps."
+                        : "Revisit the Airwave setup wizard.",
                     showsWarning: onboardingNeedsAttention
                 ) {
                     showSetup()

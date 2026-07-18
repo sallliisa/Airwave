@@ -30,6 +30,29 @@ final class AudioRuntimeStateTests: XCTestCase {
         XCTAssertEqual(runtime.captureAccess, .permissionRequired)
     }
 
+    func testHealthIssuesAreUniqueByCategoryAndStablyOrdered() {
+        let runtime = AudioRuntimeState(currentOutput: output(), captureAccess: .verified)
+
+        runtime.setHealthIssue(.equalizerFailed(reason: "first"), for: .equalizer)
+        runtime.setHealthIssue(.noUsableOutput, for: .output)
+        runtime.setHealthIssue(.permissionRequired, for: .permission)
+        runtime.setHealthIssue(.equalizerFailed(reason: "latest"), for: .equalizer)
+
+        XCTAssertEqual(runtime.healthIssues, [
+            .permissionRequired,
+            .noUsableOutput,
+            .equalizerFailed(reason: "latest")
+        ])
+        XCTAssertTrue(runtime.hasBlockingHealthIssue)
+        XCTAssertFalse(runtime.isSetupHealthy)
+
+        runtime.setHealthIssue(nil, for: .permission)
+        runtime.setHealthIssue(nil, for: .output)
+        runtime.setHealthIssue(nil, for: .equalizer)
+        XCTAssertFalse(runtime.hasBlockingHealthIssue)
+        XCTAssertTrue(runtime.isSetupHealthy)
+    }
+
     private func output(channels: Int = 2) -> OutputDeviceDescriptor {
         OutputDeviceDescriptor(
             id: .init(1), uid: "built-in", name: "Built-in Output", transport: "Built-in",

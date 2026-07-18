@@ -1,6 +1,39 @@
 import Foundation
 import Combine
 
+nonisolated enum RuntimeHealthIssue: Equatable, Sendable {
+    enum Category: Int, CaseIterable, Sendable {
+        case permission
+        case output
+        case capture
+        case pipeline
+        case recovery
+        case spatial
+        case equalizer
+    }
+
+    case permissionRequired
+    case noUsableOutput
+    case unsupportedOutput(reason: String)
+    case captureTestFailed(reason: String)
+    case audioPipelineFailed(reason: String)
+    case resourceRecovery(reason: String)
+    case spatialPresetFailed(reason: String)
+    case equalizerFailed(reason: String)
+
+    var category: Category {
+        switch self {
+        case .permissionRequired: .permission
+        case .noUsableOutput, .unsupportedOutput: .output
+        case .captureTestFailed: .capture
+        case .audioPipelineFailed: .pipeline
+        case .resourceRecovery: .recovery
+        case .spatialPresetFailed: .spatial
+        case .equalizerFailed: .equalizer
+        }
+    }
+}
+
 @MainActor
 final class AudioRuntimeState: ObservableObject {
     enum CaptureAccess: Equatable {
@@ -56,17 +89,20 @@ final class AudioRuntimeState: ObservableObject {
     @Published private(set) var captureAccess: CaptureAccess
     @Published private(set) var currentOutput: OutputDeviceDescriptor?
     @Published private(set) var warningMessage: String?
+    @Published private(set) var healthIssues: [RuntimeHealthIssue]
 
     init(
         status: Status = .unavailable("Airwave 2.0 audio backend is not installed yet"),
         currentOutput: OutputDeviceDescriptor? = nil,
         warningMessage: String? = nil,
-        captureAccess: CaptureAccess = .unverified
+        captureAccess: CaptureAccess = .unverified,
+        healthIssues: [RuntimeHealthIssue] = []
     ) {
         self.status = status
         self.captureAccess = captureAccess
         self.currentOutput = currentOutput
         self.warningMessage = warningMessage
+        self.healthIssues = Self.sortedIssues(healthIssues)
     }
 
     func setCaptureAccess(_ captureAccess: CaptureAccess) {
@@ -74,7 +110,21 @@ final class AudioRuntimeState: ObservableObject {
     }
 
     var isSetupHealthy: Bool {
-        captureAccess == .verified && (currentOutput?.isSupportedProfileOutput == true)
+        captureAccess == .verified
+            && (currentOutput?.isSupportedProfileOutput == true)
+            && healthIssues.isEmpty
+    }
+
+    var hasBlockingHealthIssue: Bool { !healthIssues.isEmpty }
+
+    func setHealthIssue(_ issue: RuntimeHealthIssue?, for category: RuntimeHealthIssue.Category) {
+        var issuesByCategory = Dictionary(uniqueKeysWithValues: healthIssues.map { ($0.category, $0) })
+        issuesByCategory[category] = issue
+        healthIssues = Self.sortedIssues(Array(issuesByCategory.values))
+    }
+
+    func clearHealthIssues() {
+        healthIssues = []
     }
 
     func publish(
@@ -87,5 +137,10 @@ final class AudioRuntimeState: ObservableObject {
         self.currentOutput = output
         self.status = status
         self.warningMessage = warning
+    }
+
+    private static func sortedIssues(_ issues: [RuntimeHealthIssue]) -> [RuntimeHealthIssue] {
+        let issuesByCategory = Dictionary(uniqueKeysWithValues: issues.map { ($0.category, $0) })
+        return RuntimeHealthIssue.Category.allCases.compactMap { issuesByCategory[$0] }
     }
 }
