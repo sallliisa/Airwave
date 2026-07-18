@@ -10,6 +10,48 @@ protocol ApplicationLifecycleApplication: ApplicationActivationPolicyApplying {
 
 extension NSApplication: ApplicationLifecycleApplication {}
 
+nonisolated enum LaunchWindowAction: Equatable {
+    case none
+    case setup
+    case settings
+}
+
+nonisolated enum LaunchWindowPolicy {
+    static func initialLaunch(
+        isLoginItem: Bool,
+        setupIsComplete: Bool,
+        showsMenuBar: Bool
+    ) -> LaunchWindowAction {
+        guard !isLoginItem else { return .none }
+        return userOpen(setupIsComplete: setupIsComplete, showsMenuBar: showsMenuBar)
+    }
+
+    static func subsequentOpen(
+        setupIsComplete: Bool,
+        showsMenuBar: Bool
+    ) -> LaunchWindowAction {
+        userOpen(setupIsComplete: setupIsComplete, showsMenuBar: showsMenuBar)
+    }
+
+    private static func userOpen(
+        setupIsComplete: Bool,
+        showsMenuBar: Bool
+    ) -> LaunchWindowAction {
+        _ = showsMenuBar // User opens always present a window, independent of menu-bar visibility.
+        return setupIsComplete ? .settings : .setup
+    }
+}
+
+enum ApplicationLaunchEventDetector {
+    static func isLoginItemLaunch(
+        event: NSAppleEventDescriptor? = NSAppleEventManager.shared().currentAppleEvent
+    ) -> Bool {
+        guard event?.eventClass == AEEventClass(kCoreEventClass),
+              event?.eventID == AEEventID(kAEOpenApplication) else { return false }
+        return event?.paramDescriptor(forKeyword: AEKeyword(keyAELaunchedAsLogInItem)) != nil
+    }
+}
+
 @MainActor
 final class ApplicationLifecycleCoordinator: NSObject {
     static let shared = ApplicationLifecycleCoordinator(
@@ -328,6 +370,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let isLoginItemLaunch = ApplicationLaunchEventDetector.isLoginItemLaunch()
         Logger.log("[AppDelegate] Airwave safe shell launched")
         ApplicationLifecycleCoordinator.shared.updateActivationPolicy()
         DeviceProfileRuntimeCoordinator.shared.launch()
@@ -347,10 +390,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
 
         DispatchQueue.main.async {
-            if OnboardingViewModel.shared.shouldPresentAutomatically {
-                OnboardingViewModel.shared.prepareForPresentation(.automaticFirstSetup)
-                SettingsWindowPresenter.present(.setup)
-            }
+            self.presentWindow(for: LaunchWindowPolicy.initialLaunch(
+                isLoginItem: isLoginItemLaunch,
+                setupIsComplete: OnboardingViewModel.shared.isComplete,
+                showsMenuBar: MenuBarVisibilityManager.shared.isVisible
+            ))
         }
     }
 
@@ -374,14 +418,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !MenuBarVisibilityManager.shared.isVisible { SettingsWindowPresenter.present() }
+        presentWindow(for: LaunchWindowPolicy.subsequentOpen(
+            setupIsComplete: OnboardingViewModel.shared.isComplete,
+            showsMenuBar: MenuBarVisibilityManager.shared.isVisible
+        ))
         return true
     }
 
     func applicationOpenUntitledFile(_ sender: NSApplication) -> Bool {
-        guard !MenuBarVisibilityManager.shared.isVisible else { return false }
-        SettingsWindowPresenter.present()
+        // Initial launch and subsequent reopen callbacks own window presentation.
+        // Consuming this event avoids a second presentation during startup.
         return true
+    }
+
+    private func presentWindow(for action: LaunchWindowAction) {
+        switch action {
+        case .none:
+            break
+        case .setup:
+            OnboardingViewModel.shared.prepareForPresentation(.automaticFirstSetup)
+            SettingsWindowPresenter.present(.setup)
+        case .settings:
+            SettingsWindowPresenter.present(.settings)
+        }
     }
 
     @objc private func willSleep() { AudioRuntimeController.shared.willSleep() }

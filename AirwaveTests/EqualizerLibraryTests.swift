@@ -147,6 +147,19 @@ final class EqualizerLibraryTests: XCTestCase {
         XCTAssertEqual(relaunched.libraryError?.filename, "Selected.txt")
     }
 
+    func testExternalManagedFolderChangesReloadLibrary() throws {
+        let context = try TestContext(startWatcher: true)
+        let external = context.managed.appendingPathComponent("External.txt")
+
+        try Data("Preamp: 3 dB\n".utf8).write(to: external)
+        waitForEqualizerPreset(named: "External", in: context.manager)
+        XCTAssertEqual(context.manager.presets.first?.definition.preampDB, 3)
+
+        try FileManager.default.removeItem(at: external)
+        waitForEqualizerPreset(named: "External", in: context.manager, shouldExist: false)
+        XCTAssertFalse(context.manager.presets.contains { $0.displayName == "External" })
+    }
+
     func testPreflightAndBatchImportCopySourceAndBalanceSecurityScope() throws {
         let context = try TestContext()
         let valid = try context.writePreset(named: "Valid.txt", preamp: 1)
@@ -319,7 +332,8 @@ private final class TestContext {
 
     init(
         manifestWriter: EqualizerManifestWriting = DefaultEqualizerManifestWriter(),
-        bundledPresetCatalog: BundledPresetCatalog? = nil
+        bundledPresetCatalog: BundledPresetCatalog? = nil,
+        startWatcher: Bool = false
     ) throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         managed = root.appendingPathComponent("Equalizer Presets", isDirectory: true)
@@ -333,7 +347,8 @@ private final class TestContext {
             defaults: defaults,
             securityScope: securityScope,
             manifestWriter: manifestWriter,
-            bundledPresetCatalog: bundledPresetCatalog
+            bundledPresetCatalog: bundledPresetCatalog,
+            startWatcher: startWatcher
         )
     }
 
@@ -349,6 +364,18 @@ private final class TestContext {
         let contents = preamp.map { "Preamp: \($0) dB\n" } ?? "Include: invalid\n"
         try Data(contents.utf8).write(to: url)
         return url
+    }
+}
+
+@MainActor
+private func waitForEqualizerPreset(
+    named name: String,
+    in manager: EqualizerManager,
+    shouldExist: Bool = true
+) {
+    let deadline = Date().addingTimeInterval(3)
+    while (manager.presets.contains { $0.displayName == name }) != shouldExist && Date() < deadline {
+        RunLoop.main.run(until: Date().addingTimeInterval(0.01))
     }
 }
 

@@ -1,4 +1,5 @@
 import Combine
+import CoreServices
 import Foundation
 
 nonisolated protocol EqualizerSecurityScopeAccessing {
@@ -72,6 +73,8 @@ final class EqualizerManager: ObservableObject {
     private let manifestWriter: any EqualizerManifestWriting
     private let manifestURL: URL
     private let bundledPresetCatalog: BundledPresetCatalog
+    private var eventStream: FSEventStreamRef?
+    private var directoryDebounceTask: DispatchWorkItem?
 
     init(
         managedDirectory: URL? = nil,
@@ -80,7 +83,8 @@ final class EqualizerManager: ObservableObject {
         securityScope: any EqualizerSecurityScopeAccessing = DefaultEqualizerSecurityScope(),
         manifestWriter: any EqualizerManifestWriting = DefaultEqualizerManifestWriter(),
         runtimeEffect: EqualizerRuntimeEffect = EqualizerRuntimeEffect(),
-        bundledPresetCatalog: BundledPresetCatalog? = nil
+        bundledPresetCatalog: BundledPresetCatalog? = nil,
+        startWatcher: Bool = true
     ) {
         self.fileManager = fileManager
         self.securityScope = securityScope
@@ -97,6 +101,16 @@ final class EqualizerManager: ObservableObject {
         try? fileManager.createDirectory(at: self.managedDirectory, withIntermediateDirectories: true)
         seedBundledPresets()
         reload()
+        if startWatcher { startDirectoryWatcher() }
+    }
+
+    deinit {
+        directoryDebounceTask?.cancel()
+        if let stream = eventStream {
+            FSEventStreamStop(stream)
+            FSEventStreamInvalidate(stream)
+            FSEventStreamRelease(stream)
+        }
     }
 
     private func seedBundledPresets() {
@@ -162,6 +176,57 @@ final class EqualizerManager: ObservableObject {
         if let first = errors.first {
             libraryError = first
         }
+    }
+
+    private func startDirectoryWatcher() {
+        let pathsToWatch = [managedDirectory.path] as CFArray
+        var context = FSEventStreamContext(
+            version: 0,
+            info: Unmanaged.passUnretained(self).toOpaque(),
+            retain: nil,
+            release: nil,
+            copyDescription: nil
+        )
+
+        let callback: FSEventStreamCallback = { (
+            _,
+            clientCallBackInfo,
+            _,
+            _,
+            _,
+            _
+        ) in
+            guard let info = clientCallBackInfo else { return }
+            let manager = Unmanaged<EqualizerManager>.fromOpaque(info).takeUnretainedValue()
+            DispatchQueue.main.async { [weak manager] in
+                manager?.scheduleDirectoryReload()
+            }
+        }
+
+        let stream = FSEventStreamCreate(
+            kCFAllocatorDefault,
+            callback,
+            &context,
+            pathsToWatch,
+            FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+            0.1,
+            UInt32(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagUseCFTypes)
+        )
+
+        if let stream {
+            FSEventStreamSetDispatchQueue(stream, DispatchQueue.global(qos: .utility))
+            FSEventStreamStart(stream)
+            eventStream = stream
+        }
+    }
+
+    private func scheduleDirectoryReload() {
+        directoryDebounceTask?.cancel()
+        let task = DispatchWorkItem { [weak self] in
+            self?.reload()
+        }
+        directoryDebounceTask = task
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: task)
     }
 
     func preset(id: UUID?) -> EqualizerPreset? {
