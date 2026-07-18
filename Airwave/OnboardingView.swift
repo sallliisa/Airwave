@@ -24,14 +24,11 @@ struct OnboardingView: View {
             AirwavePalette.canvas.ignoresSafeArea()
             content
             AirwaveScrollEdgeFades()
-
-            VStack(spacing: 0) {
-                Spacer(minLength: 0)
-                footer
-                    .padding(.horizontal, 24)
-                    .padding(.top, 24)
-                    .padding(.bottom, 24)
-            }
+        }
+        .overlay(alignment: .bottom) {
+            footer
+                .padding(.horizontal, 24)
+                .padding(.bottom, 24)
         }
         .frame(
             width: SettingsWindowPresenter.contentSize.width,
