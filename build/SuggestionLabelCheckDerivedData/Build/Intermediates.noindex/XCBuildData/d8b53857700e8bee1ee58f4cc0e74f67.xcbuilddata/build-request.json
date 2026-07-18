@@ -1,0 +1,67 @@
+{
+  "buildCommand" : {
+    "command" : "build",
+    "skipDependencies" : false,
+    "style" : "buildOnly"
+  },
+  "configuredTargets" : [
+    {
+      "guid" : "c3ea84bee3e3bc67bdb4008411cc26a4c6bcb17466eaf83bf4e5c78f91cd99b9"
+    }
+  ],
+  "containerPath" : "/Users/gamer/Documents/projects/Airwave/Airwave.xcodeproj",
+  "continueBuildingAfterErrors" : false,
+  "dependencyScope" : "workspace",
+  "enableIndexBuildArena" : false,
+  "hideShellScriptEnvironment" : false,
+  "parameters" : {
+    "action" : "build",
+    "activeArchitecture" : "arm64",
+    "activeRunDestination" : {
+      "disableOnlyActiveArch" : false,
+      "hostTargetedPlatform" : null,
+      "platform" : "macosx",
+      "sdk" : "macosx26.5",
+      "sdkVariant" : "macos",
+      "supportedArchitectures" : [
+        "arm64e",
+        "arm64",
+        "x86_64"
+      ],
+      "targetArchitecture" : "arm64"
+    },
+    "arenaInfo" : {
+      "buildIntermediatesPath" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex",
+      "buildProductsPath" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Products",
+      "derivedDataPath" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData",
+      "indexDataStoreFolderPath" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Index.noindex/DataStore",
+      "indexEnableDataStore" : true,
+      "indexPCHPath" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Index.noindex/PrecompiledHeaders",
+      "pchPath" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/PrecompiledHeaders"
+    },
+    "configurationName" : "Debug",
+    "overrides" : {
+      "commandLine" : {
+        "table" : {
+          "CODE_SIGNING_ALLOWED" : "NO"
+        }
+      },
+      "synthesized" : {
+        "table" : {
+          "ACTION" : "build",
+          "CLANG_COVERAGE_MAPPING" : "YES",
+          "CLANG_PROFILE_DATA_DIRECTORY" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/ProfileData",
+          "ENABLE_PREVIEWS" : "NO",
+          "ENABLE_XOJIT_PREVIEWS" : "YES",
+          "ONLY_ACTIVE_ARCH" : "YES"
+        }
+      }
+    }
+  },
+  "schemeCommand" : "launch",
+  "showNonLoggedProgress" : true,
+  "useDryRun" : false,
+  "useImplicitDependencies" : true,
+  "useLegacyBuildLocations" : false,
+  "useParallelTargets" : true
+}

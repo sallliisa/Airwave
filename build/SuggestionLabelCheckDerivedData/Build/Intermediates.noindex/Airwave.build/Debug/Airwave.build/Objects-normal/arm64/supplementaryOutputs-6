@@ -1,0 +1,37 @@
+{
+  "/Users/gamer/Documents/projects/Airwave/Airwave/Logger.swift" : {
+    "const-values" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/Logger.swiftconstvalues",
+    "dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/Logger.d",
+    "diagnostics" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/Logger.dia",
+    "object" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/Logger.o",
+    "swift-dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/Logger.swiftdeps"
+  },
+  "/Users/gamer/Documents/projects/Airwave/Airwave/MenuBarViewModel.swift" : {
+    "const-values" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/MenuBarViewModel.swiftconstvalues",
+    "dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/MenuBarViewModel.d",
+    "diagnostics" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/MenuBarViewModel.dia",
+    "object" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/MenuBarViewModel.o",
+    "swift-dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/MenuBarViewModel.swiftdeps"
+  },
+  "/Users/gamer/Documents/projects/Airwave/Airwave/OnboardingView.swift" : {
+    "const-values" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/OnboardingView.swiftconstvalues",
+    "dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/OnboardingView.d",
+    "diagnostics" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/OnboardingView.dia",
+    "object" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/OnboardingView.o",
+    "swift-dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/OnboardingView.swiftdeps"
+  },
+  "/Users/gamer/Documents/projects/Airwave/Airwave/OutputDeviceDiscoveryCoordinator.swift" : {
+    "const-values" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/OutputDeviceDiscoveryCoordinator.swiftconstvalues",
+    "dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/OutputDeviceDiscoveryCoordinator.d",
+    "diagnostics" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/OutputDeviceDiscoveryCoordinator.dia",
+    "object" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/OutputDeviceDiscoveryCoordinator.o",
+    "swift-dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/OutputDeviceDiscoveryCoordinator.swiftdeps"
+  },
+  "/Users/gamer/Documents/projects/Airwave/Airwave/ParametricEqualizerProcessor.swift" : {
+    "const-values" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/ParametricEqualizerProcessor.swiftconstvalues",
+    "dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/ParametricEqualizerProcessor.d",
+    "diagnostics" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/ParametricEqualizerProcessor.dia",
+    "object" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/ParametricEqualizerProcessor.o",
+    "swift-dependencies" : "/Users/gamer/Documents/projects/Airwave/build/SuggestionLabelCheckDerivedData/Build/Intermediates.noindex/Airwave.build/Debug/Airwave.build/Objects-normal/arm64/ParametricEqualizerProcessor.swiftdeps"
+  }
+}

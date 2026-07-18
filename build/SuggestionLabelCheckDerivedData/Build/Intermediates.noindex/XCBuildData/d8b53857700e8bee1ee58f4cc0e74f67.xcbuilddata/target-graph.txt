@@ -1,0 +1,4 @@
+Target dependency graph (2 targets)
+Target 'Airwave' in project 'Airwave'
+➜ Explicit dependency on target 'Sparkle' in project 'Sparkle'
+Target 'Sparkle' in project 'Sparkle' (no dependencies)

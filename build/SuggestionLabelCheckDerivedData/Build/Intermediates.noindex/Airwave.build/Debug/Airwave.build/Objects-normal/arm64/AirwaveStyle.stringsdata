@@ -1,0 +1,192 @@
+{
+  "source": "/Users/gamer/Documents/projects/Airwave/Airwave/AirwaveStyle.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "Airwave",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 156
+        }
+      },
+      {
+        "comment": "",
+        "key": "Airwave",
+        "location": {
+          "startingColumn": 41,
+          "startingLine": 155
+        }
+      },
+      {
+        "comment": "",
+        "key": "%@. %@",
+        "location": {
+          "startingColumn": 29,
+          "startingLine": 338
+        }
+      },
+      {
+        "comment": "",
+        "key": "%@: %@",
+        "location": {
+          "startingColumn": 29,
+          "startingLine": 550
+        }
+      },
+      {
+        "comment": "",
+        "key": "Open %@ settings",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 551
+        }
+      },
+      {
+        "comment": "",
+        "key": "Replace existing preset?",
+        "location": {
+          "startingColumn": 19,
+          "startingLine": 644
+        }
+      },
+      {
+        "comment": "",
+        "key": "Replace %lld existing presets?",
+        "location": {
+          "startingColumn": 19,
+          "startingLine": 645
+        }
+      },
+      {
+        "comment": "",
+        "key": "Delete %@?",
+        "location": {
+          "startingColumn": 13,
+          "startingLine": 663
+        }
+      },
+      {
+        "comment": "",
+        "key": "Import…",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 591
+        }
+      },
+      {
+        "comment": "",
+        "key": "Manage…",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 594
+        }
+      },
+      {
+        "comment": "",
+        "key": "Reveal the managed HRIR Presets folder",
+        "location": {
+          "startingColumn": 27,
+          "startingLine": 597
+        }
+      },
+      {
+        "comment": "",
+        "key": "Get more HRIRs…",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 598
+        }
+      },
+      {
+        "comment": "",
+        "key": "Open the HeSuVi HRTF Database",
+        "location": {
+          "startingColumn": 27,
+          "startingLine": 602
+        }
+      },
+      {
+        "comment": "",
+        "key": "Delete",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 604
+        }
+      },
+      {
+        "comment": "",
+        "key": "Delete the selected managed HRIR preset",
+        "location": {
+          "startingColumn": 23,
+          "startingLine": 610
+        }
+      },
+      {
+        "comment": "",
+        "key": "Drop HRIR WAV files",
+        "location": {
+          "startingColumn": 23,
+          "startingLine": 624
+        }
+      },
+      {
+        "comment": "",
+        "key": "Replace",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 655
+        }
+      },
+      {
+        "comment": "",
+        "key": "Keep Existing",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 656
+        }
+      },
+      {
+        "comment": "",
+        "key": "Files with the same name can replace the managed copy. Other valid files will still import.",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 660
+        }
+      },
+      {
+        "comment": "",
+        "key": "Delete",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 670
+        }
+      },
+      {
+        "comment": "",
+        "key": "Cancel",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 676
+        }
+      },
+      {
+        "comment": "",
+        "key": "This deletes the managed copy of %@ from Airwave’s HRIR Presets folder.",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 678
+        }
+      },
+      {
+        "comment": "",
+        "key": "Dismiss",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 686
+        }
+      }
+    ]
+  },
+  "version": 1
+}

@@ -176,7 +176,10 @@ struct AirwaveMenuView: View {
 
             VStack(spacing: 2) {
                 if onboarding.shouldShowSetupMenuItem {
-                    MenuActionRow(title: "Complete Set Up…", showWarning: true) {
+                    MenuActionRow(
+                        title: onboarding.isComplete ? "Troubleshoot Airwave…" : "Complete Set Up…",
+                        showWarning: true
+                    ) {
                         viewModel.closeMenuBarPopover()
                         onboarding.prepareForPresentation(.voluntary)
                         SettingsWindowPresenter.present(.setup)

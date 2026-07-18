@@ -105,7 +105,6 @@ protocol OnboardingPersisting: AnyObject {
     var checkpoint: OnboardingStepV2 { get set }
     var isComplete: Bool { get set }
     var isDeferred: Bool { get set }
-    var persistedCaptureFailure: PersistedCaptureFailure? { get set }
 }
 
 final class UserDefaultsOnboardingPersistenceV2: OnboardingPersisting {
@@ -115,16 +114,18 @@ final class UserDefaultsOnboardingPersistenceV2: OnboardingPersisting {
     private let checkpointKey = "Airwave.OnboardingV2.Checkpoint"
     private let completionKey = "Airwave.OnboardingV2.Completed"
     private let deferredKey = "Airwave.OnboardingV2.Deferred"
-    private let captureFailureKey = "Airwave.OnboardingV2.CaptureFailure"
+    private let legacyCaptureFailureKey = "Airwave.OnboardingV2.CaptureFailure"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        // Runtime failures are live state. Older builds persisted them and could
+        // resurrect a warning after the underlying condition had recovered.
+        defaults.removeObject(forKey: legacyCaptureFailureKey)
         if defaults.integer(forKey: versionKey) != Self.currentVersion {
             defaults.set(Self.currentVersion, forKey: versionKey)
             defaults.set(OnboardingStepV2.welcome.rawValue, forKey: checkpointKey)
             defaults.set(false, forKey: completionKey)
             defaults.set(false, forKey: deferredKey)
-            defaults.removeObject(forKey: captureFailureKey)
         }
     }
 
@@ -148,20 +149,6 @@ final class UserDefaultsOnboardingPersistenceV2: OnboardingPersisting {
         set { defaults.set(newValue, forKey: deferredKey) }
     }
 
-    var persistedCaptureFailure: PersistedCaptureFailure? {
-        get {
-            guard let data = defaults.data(forKey: captureFailureKey) else { return nil }
-            return try? JSONDecoder().decode(PersistedCaptureFailure.self, from: data)
-        }
-        set {
-            guard let newValue,
-                  let data = try? JSONEncoder().encode(newValue) else {
-                defaults.removeObject(forKey: captureFailureKey)
-                return
-            }
-            defaults.set(data, forKey: captureFailureKey)
-        }
-    }
 }
 
 @MainActor
@@ -232,8 +219,7 @@ struct CaptureFailureGuidance: Equatable {
             return Self(
                 reason: nil,
                 suggestions: [
-                    "Enable Airwave under Privacy & Security → System Audio Capture.",
-                    "Have another app actively playing audio."
+                    "Enable Airwave under Privacy & Security → System Audio Capture."
                 ]
             )
         case .failed(let reason):
@@ -241,49 +227,9 @@ struct CaptureFailureGuidance: Equatable {
                 reason: reason,
                 suggestions: [
                     "Enable Airwave under Privacy & Security → System Audio Capture.",
-                    "Have another app actively playing audio.",
                     "Use a supported physical stereo output; virtual and aggregate outputs are unsupported."
                 ]
             )
-        case .unverified, .checking, .verified:
-            return nil
-        }
-    }
-}
-
-struct PersistedCaptureFailure: Codable, Equatable {
-    enum Kind: String, Codable {
-        case permissionRequired
-        case failed
-    }
-
-    let kind: Kind
-    let reason: String?
-
-    var presentation: CaptureAccessPresentation {
-        switch kind {
-        case .permissionRequired:
-            return .permissionRequired
-        case .failed:
-            return .failed(reason: reason ?? "Audio capture test failed safely.")
-        }
-    }
-
-    var guidance: CaptureFailureGuidance {
-        switch kind {
-        case .permissionRequired:
-            return CaptureFailureGuidance.make(for: .permissionRequired)!
-        case .failed:
-            return CaptureFailureGuidance.make(for: .failed(reason: reason ?? "Audio capture test failed safely."))!
-        }
-    }
-
-    static func make(for captureAccess: AudioRuntimeState.CaptureAccess) -> Self? {
-        switch captureAccess {
-        case .permissionRequired:
-            return Self(kind: .permissionRequired, reason: nil)
-        case .failed(let reason):
-            return Self(kind: .failed, reason: reason)
         case .unverified, .checking, .verified:
             return nil
         }
@@ -325,32 +271,17 @@ final class OnboardingViewModel: ObservableObject {
         self.persistence = persistence
         self.focusRestorer = focusRestorer ?? PermissionWindowFocusRestorer.shared
         currentStep = persistence.checkpoint
-        if runtime.captureAccess == .verified {
-            persistence.persistedCaptureFailure = nil
-            captureFailureGuidance = nil
-        } else if let currentFailure = PersistedCaptureFailure.make(for: runtime.captureAccess) {
-            persistence.persistedCaptureFailure = currentFailure
-            captureFailureGuidance = currentFailure.guidance
-        } else {
-            captureFailureGuidance = persistence.persistedCaptureFailure?.guidance
-        }
+        captureFailureGuidance = Self.failureGuidance(for: runtime.captureAccess)
         runtime.$captureAccess
             .sink { [weak self] captureAccess in
                 guard let self else { return }
                 switch captureAccess {
                 case .permissionRequired:
-                    let failure = PersistedCaptureFailure(kind: .permissionRequired, reason: nil)
-                    self.persistence.persistedCaptureFailure = failure
-                    self.captureFailureGuidance = failure.guidance
+                    self.captureFailureGuidance = CaptureFailureGuidance.make(for: .permissionRequired)
                 case .failed(let reason):
-                    let failure = PersistedCaptureFailure(kind: .failed, reason: reason)
-                    self.persistence.persistedCaptureFailure = failure
-                    self.captureFailureGuidance = failure.guidance
-                case .verified:
-                    self.persistence.persistedCaptureFailure = nil
+                    self.captureFailureGuidance = CaptureFailureGuidance.make(for: .failed(reason: reason))
+                case .unverified, .checking, .verified:
                     self.captureFailureGuidance = nil
-                case .unverified, .checking:
-                    break
                 }
                 guard self.captureFocusRestorationPending,
                       captureAccess != .checking else { return }
@@ -373,17 +304,12 @@ final class OnboardingViewModel: ObservableObject {
     var isConfigurationHealthy: Bool { runtime.isSetupHealthy }
     var needsSetupAttention: Bool {
         if !persistence.isComplete { return true }
-        if captureFailureGuidance != nil { return true }
-        switch runtime.captureAccess {
-        case .permissionRequired, .failed: return true
-        case .unverified, .checking: return false
-        case .verified: break
-        }
-        return false
+        return runtime.hasBlockingHealthIssue
     }
 
     var recommendedVoluntaryEntryStep: OnboardingStepV2 {
-        if persistence.isComplete && !needsSetupAttention { return .welcome }
+        if persistence.isComplete && runtime.hasBlockingHealthIssue { return .liveHealth }
+        if persistence.isComplete { return .welcome }
         if runtime.status == .needsPermission { return .systemAudio }
         if case .failed = runtime.captureAccess { return .systemAudio }
         if let output = runtime.currentOutput,
@@ -396,12 +322,24 @@ final class OnboardingViewModel: ObservableObject {
 
     var captureAccessPresentation: CaptureAccessPresentation {
         switch runtime.captureAccess {
-        case .unverified:
-            return persistence.persistedCaptureFailure?.presentation ?? .unverified
+        case .unverified: return .unverified
         case .checking: return .checking
         case .verified: return .verified
         case .permissionRequired: return .permissionRequired
         case .failed(let reason): return .failed(reason: reason)
+        }
+    }
+
+    private static func failureGuidance(
+        for captureAccess: AudioRuntimeState.CaptureAccess
+    ) -> CaptureFailureGuidance? {
+        switch captureAccess {
+        case .permissionRequired:
+            CaptureFailureGuidance.make(for: .permissionRequired)
+        case .failed(let reason):
+            CaptureFailureGuidance.make(for: .failed(reason: reason))
+        case .unverified, .checking, .verified:
+            nil
         }
     }
 
@@ -410,6 +348,7 @@ final class OnboardingViewModel: ObservableObject {
 
     func canComplete(allowingUnknownCapture: Bool) -> Bool {
         guard runtime.currentOutput?.isSupportedProfileOutput == true else { return false }
+        guard !runtime.hasBlockingHealthIssue else { return false }
 
         switch runtime.captureAccess {
         case .verified:
@@ -524,6 +463,90 @@ struct RuntimeMenuPresentation: Equatable {
             healthDetail: detail,
             canRetry: retryable
         )
+    }
+}
+
+enum RuntimeHealthRecoveryAction: Equatable {
+    case reviewCapture
+    case retry
+    case chooseHRIR
+    case openEqualizer
+}
+
+struct RuntimeHealthIssuePresentation: Equatable {
+    let title: String
+    let detail: String
+    let suggestions: [String]
+    let actionTitle: String
+    let action: RuntimeHealthRecoveryAction
+
+    static func make(for issue: RuntimeHealthIssue) -> Self {
+        switch issue {
+        case .permissionRequired:
+            Self(
+                title: "System Audio Capture permission is required",
+                detail: "Airwave cannot capture system audio until access is enabled.",
+                suggestions: ["Enable Airwave in Privacy & Security → System Audio Capture, then run the test again."],
+                actionTitle: "Review Permission",
+                action: .reviewCapture
+            )
+        case .noUsableOutput:
+            Self(
+                title: "No usable audio output",
+                detail: "Airwave is waiting for a physical stereo output.",
+                suggestions: ["Connect or select your headphones or another physical stereo output in macOS."],
+                actionTitle: "Retry",
+                action: .retry
+            )
+        case .unsupportedOutput(let reason):
+            Self(
+                title: "Unsupported audio output",
+                detail: reason,
+                suggestions: ["Select a physical stereo output; virtual, aggregate, and non-stereo outputs are unsupported."],
+                actionTitle: "Retry",
+                action: .retry
+            )
+        case .captureTestFailed(let reason):
+            Self(
+                title: "System Audio Capture test failed",
+                detail: reason,
+                suggestions: ["Test again. If it repeats, confirm capture permission and select a supported output."],
+                actionTitle: "Review Capture",
+                action: .reviewCapture
+            )
+        case .audioPipelineFailed(let reason):
+            Self(
+                title: "Audio processing could not start",
+                detail: reason,
+                suggestions: ["Retry, reconnect or switch the output, and relaunch Airwave if the problem persists."],
+                actionTitle: "Retry",
+                action: .retry
+            )
+        case .resourceRecovery(let reason):
+            Self(
+                title: "Airwave is recovering audio resources",
+                detail: reason,
+                suggestions: ["Airwave retries automatically. Use Retry if recovery does not complete."],
+                actionTitle: "Retry",
+                action: .retry
+            )
+        case .spatialPresetFailed(let reason):
+            Self(
+                title: "Spatial profile could not be loaded",
+                detail: reason,
+                suggestions: ["Choose another HRIR preset or re-import the affected file."],
+                actionTitle: "Choose HRIR Preset",
+                action: .chooseHRIR
+            )
+        case .equalizerFailed(let reason):
+            Self(
+                title: "Equalizer preset could not be applied",
+                detail: reason,
+                suggestions: ["Choose another preset, re-import it, or select None to disable EQ."],
+                actionTitle: "Open Equalizer",
+                action: .openEqualizer
+            )
+        }
     }
 }
 

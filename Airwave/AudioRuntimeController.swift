@@ -55,6 +55,7 @@ private final class DispatchRuntimeScheduler: AudioRuntimeScheduling {
 final class AudioRuntimeController {
     typealias PipelineFactory = () -> AudioPipelineControlling
     static let captureVerificationTimeout: TimeInterval = 2.5
+    static let outputLossGracePeriod: TimeInterval = 1
 
     static let shared: AudioRuntimeController = {
         let platform = CoreAudioPlatformClient()
@@ -82,6 +83,7 @@ final class AudioRuntimeController {
     private var stabilityToken: AudioRuntimeCancellation?
     private var stimulusToken: AudioRuntimeCancellation?
     private var verificationTimeoutToken: AudioRuntimeCancellation?
+    private var outputLossToken: AudioRuntimeCancellation?
     private var retryAttempt = 0
     private var generation = 0
     private var effectReadiness = AudioRuntimeEffectReadiness(spatialReady: false, equalizerDefinition: nil)
@@ -193,6 +195,7 @@ final class AudioRuntimeController {
     func presetActivationFailed(_ message: String) {
         effectReadiness = AudioRuntimeEffectReadiness(spatialReady: false, equalizerDefinition: nil, spatialError: message)
         guard stopForInvalidation() else { return }
+        state.setHealthIssue(.spatialPresetFailed(reason: message), for: .spatial)
         state.publish(.nativePassthrough(reason: message), output: state.currentOutput)
     }
 
@@ -201,7 +204,7 @@ final class AudioRuntimeController {
         retryToken?.cancel()
         retryToken = nil
         captureProbeRequested = explicitCaptureTest || effectReadiness.hasSelectedEffect
-        state.setCaptureAccess(.checking)
+        if captureProbeRequested { state.setCaptureAccess(.checking) }
         reconcile()
     }
 
@@ -242,6 +245,8 @@ final class AudioRuntimeController {
 
     func willSleep() {
         sleeping = true
+        outputLossToken?.cancel()
+        outputLossToken = nil
         guard stopForInvalidation() else { return }
         explicitCaptureTest = false
         captureProbeRequested = false
@@ -259,6 +264,8 @@ final class AudioRuntimeController {
 
     func terminate() {
         terminated = true
+        outputLossToken?.cancel()
+        outputLossToken = nil
         stimulusPlayer.stop()
         platform.stopObservingDefaultOutput()
         _ = stopForInvalidation()
@@ -267,6 +274,8 @@ final class AudioRuntimeController {
 
     private func defaultOutputChanged(_ output: OutputDeviceDescriptor?) {
         guard launched, !sleeping, !terminated else { return }
+        outputLossToken?.cancel()
+        outputLossToken = nil
         if let output, output == state.currentOutput, pipeline != nil, state.status == .processing { return }
         desiredOutput = output
         hasPreparedDesiredOutput = false
@@ -276,9 +285,22 @@ final class AudioRuntimeController {
         state.setCaptureAccess(.unverified)
         guard let output else {
             profilePreparer?.outputBecameUnsupportedOrUnavailable()
-            handleFailure(AudioRuntimeError.noOutputDevice, output: nil)
+            state.publish(.recovering(reason: "Waiting for the new audio output…"), output: nil)
+            let lossGeneration = generation
+            outputLossToken = scheduler.schedule(after: Self.outputLossGracePeriod) { [weak self] in
+                guard let self, self.generation == lossGeneration,
+                      self.desiredOutput == nil, !self.sleeping, !self.terminated else { return }
+                self.outputLossToken = nil
+                self.state.setHealthIssue(.noUsableOutput, for: .output)
+                self.state.publish(
+                    .nativePassthrough(reason: "No usable output is currently available."),
+                    output: nil,
+                    captureAccess: .unverified
+                )
+            }
             return
         }
+        state.setHealthIssue(nil, for: .output)
         transition(to: output)
     }
 
@@ -316,6 +338,10 @@ final class AudioRuntimeController {
             guard let self, preparationGeneration == self.generation,
                   self.desiredOutput?.uid == output.uid, !self.sleeping, !self.terminated else { return }
             self.effectReadiness = readiness
+            self.state.setHealthIssue(
+                readiness.spatialError.map(RuntimeHealthIssue.spatialPresetFailed(reason:)),
+                for: .spatial
+            )
             self.hasPreparedDesiredOutput = true
             if readiness.hasSelectedEffect { self.captureProbeRequested = !self.captureVerified }
             guard readiness.hasSelectedEffect || self.captureProbeRequested else {
@@ -328,7 +354,10 @@ final class AudioRuntimeController {
 
     private func publishInactive(output: OutputDeviceDescriptor) {
         if let error = effectReadiness.spatialError { state.publish(.nativePassthrough(reason: error), output: output) }
-        else { state.publish(.inactive, output: output) }
+        else {
+            state.setHealthIssue(nil, for: .spatial)
+            state.publish(.inactive, output: output)
+        }
     }
 
     private func start(on output: OutputDeviceDescriptor) {
@@ -339,6 +368,7 @@ final class AudioRuntimeController {
         let preparation: AudioEffectPreparationResult?
         if let effectGraph {
             let result = effectGraph.prepare(for: output, equalizerDefinition: effectReadiness.equalizerDefinition)
+            publishEqualizerIssue(result.equalizerWarning)
             guard purpose != .processing || !result.noEffectCanRun else {
                 state.publish(.nativePassthrough(reason: result.equalizerWarning?.errorDescription ?? "No compatible audio effect is available for this output."), output: output)
                 return
@@ -371,6 +401,7 @@ final class AudioRuntimeController {
                 state.setCaptureAccess(explicitCaptureTest ? .checking : .unverified)
                 if explicitCaptureTest { scheduleStimulus(for: currentGeneration) }
             } else {
+                clearCaptureAndPipelineIssuesAfterSuccess()
                 state.publish(.processing, output: output, warning: preparation?.equalizerWarning?.errorDescription, captureAccess: .verified)
                 scheduleStabilityReset(for: currentGeneration)
             }
@@ -401,6 +432,10 @@ final class AudioRuntimeController {
             self.captureProbeRequested = false
             self.explicitCaptureTest = false
             _ = self.stopForInvalidation()
+            self.state.setHealthIssue(
+                .captureTestFailed(reason: "Capture test timed out. Retry the test sound."),
+                for: .capture
+            )
             self.state.publish(.nativePassthrough(reason: "Capture test timed out. Retry the test sound."), output: self.state.currentOutput, captureAccess: .failed(reason: "Capture test timed out. Retry the test sound."))
         }
     }
@@ -417,6 +452,7 @@ final class AudioRuntimeController {
             stimulusPlayer.stop()
             guard (try? pipeline?.stop()) != nil else { handleFailure(AudioRuntimeError.cleanupFailed("Stop verification pipeline"), output: output); return }
             pipeline = nil
+            clearCaptureAndPipelineIssuesAfterSuccess()
             state.setCaptureAccess(.verified)
             if effectReadiness.hasSelectedEffect { start(on: output) }
             else { state.publish(.inactive, output: output, captureAccess: .verified) }
@@ -428,6 +464,7 @@ final class AudioRuntimeController {
     }
 
     private func handleFailure(_ error: Error, output: OutputDeviceDescriptor?) {
+        let wasExplicitCaptureTest = explicitCaptureTest
         stimulusPlayer.stop()
         verificationTimeoutToken?.cancel(); verificationTimeoutToken = nil
         stimulusToken?.cancel(); stimulusToken = nil
@@ -436,23 +473,41 @@ final class AudioRuntimeController {
             captureVerified = false
             captureProbeRequested = false
             explicitCaptureTest = false
+            state.setHealthIssue(.permissionRequired, for: .permission)
+            state.setHealthIssue(nil, for: .capture)
+            state.setHealthIssue(nil, for: .pipeline)
             state.publish(.needsPermission, output: output, captureAccess: .permissionRequired)
             return
         }
         if case AudioRuntimeError.unsupportedOutput = error {
-            state.publish(.nativePassthrough(reason: "Unsupported output. Change output in macOS Settings."), output: output, captureAccess: .failed(reason: "Unsupported output."))
+            let reason = output?.unsupportedProfileReason ?? "Unsupported output. Change output in macOS Settings."
+            state.setHealthIssue(.unsupportedOutput(reason: reason), for: .output)
+            state.publish(.nativePassthrough(reason: reason), output: output, captureAccess: .unverified)
             return
         }
         let reason = failureMessage(error)
         captureVerified = false
         captureProbeRequested = false
         explicitCaptureTest = false
-        state.publish(.nativePassthrough(reason: reason), output: output, captureAccess: .failed(reason: reason))
+        if error as? AudioRuntimeError == .noOutputDevice || error as? AudioRuntimeError == .deviceLost {
+            state.setHealthIssue(.noUsableOutput, for: .output)
+            state.publish(.nativePassthrough(reason: reason), output: output, captureAccess: .unverified)
+        } else if wasExplicitCaptureTest {
+            state.setHealthIssue(.captureTestFailed(reason: reason), for: .capture)
+            state.publish(.nativePassthrough(reason: reason), output: output, captureAccess: .failed(reason: reason))
+        } else {
+            state.setHealthIssue(.audioPipelineFailed(reason: reason), for: .pipeline)
+            state.publish(.nativePassthrough(reason: reason), output: output, captureAccess: .unverified)
+        }
     }
 
     private func validate(_ output: OutputDeviceDescriptor) -> Bool {
-        guard let reason = output.unsupportedProfileReason else { return true }
-        state.publish(.nativePassthrough(reason: reason), output: output, captureAccess: .failed(reason: reason))
+        guard let reason = output.unsupportedProfileReason else {
+            state.setHealthIssue(nil, for: .output)
+            return true
+        }
+        state.setHealthIssue(.unsupportedOutput(reason: reason), for: .output)
+        state.publish(.nativePassthrough(reason: reason), output: output, captureAccess: .unverified)
         return false
     }
 
@@ -468,7 +523,12 @@ final class AudioRuntimeController {
         retryToken?.cancel(); retryToken = nil
         stabilityToken?.cancel(); stabilityToken = nil
         guard let pipeline else { return true }
-        do { try pipeline.stop(); self.pipeline = nil; return true }
+        do {
+            try pipeline.stop()
+            self.pipeline = nil
+            state.setHealthIssue(nil, for: .recovery)
+            return true
+        }
         catch { scheduleCleanupRetry(error); return false }
     }
 
@@ -489,7 +549,9 @@ final class AudioRuntimeController {
         let delay = retryDelays[min(retryAttempt, retryDelays.count - 1)]
         retryAttempt += 1
         let retryGeneration = generation
-        state.publish(.recovering(reason: "Releasing audio resources. Retrying in \(Int(delay))s."))
+        let reason = "Releasing audio resources. Retrying in \(Int(delay))s."
+        state.setHealthIssue(.resourceRecovery(reason: reason), for: .recovery)
+        state.publish(.recovering(reason: reason))
         retryToken = scheduler.schedule(after: delay) { [weak self] in
             guard let self, self.generation == retryGeneration else { return }
             self.retryToken = nil; guard self.stopForInvalidation() else { return }; self.reconcile()
@@ -505,10 +567,12 @@ final class AudioRuntimeController {
     }
 
     private func handleLiveEffectUpdate(_ result: AudioEffectPreparationResult) {
+        publishEqualizerIssue(result.equalizerWarning)
         if result.noEffectCanRun, !effectReadiness.spatialReady {
             state.publish(.nativePassthrough(reason: result.equalizerWarning?.errorDescription ?? "No compatible audio effect is available for this output."), output: state.currentOutput)
             return
         }
+        state.setHealthIssue(nil, for: .pipeline)
         state.publish(.processing, output: state.currentOutput, warning: result.equalizerWarning?.errorDescription, captureAccess: .verified)
         scheduleStabilityReset(for: generation)
     }
@@ -527,6 +591,20 @@ final class AudioRuntimeController {
             }
         default: return "Audio capture test failed safely."
         }
+    }
+
+    private func publishEqualizerIssue(_ warning: AudioEffectWarning?) {
+        state.setHealthIssue(
+            warning.map { .equalizerFailed(reason: $0.errorDescription ?? $0.reason) },
+            for: .equalizer
+        )
+    }
+
+    private func clearCaptureAndPipelineIssuesAfterSuccess() {
+        state.setHealthIssue(nil, for: .permission)
+        state.setHealthIssue(nil, for: .capture)
+        state.setHealthIssue(nil, for: .pipeline)
+        state.setHealthIssue(nil, for: .recovery)
     }
 }
 

@@ -56,6 +56,26 @@ final class CoreAudioPlatformClientTests: XCTestCase {
         XCTAssertFalse(CoreAudioIOCleanup.disposition(uninitializeStatus: noErr, disposeStatus: -50).shouldRemoveContext)
     }
 
+    func testDefaultOutputObservationOnlyPublishesMissingForGenuineUnknownOutput() {
+        let valid = OutputDeviceDescriptor(
+            id: .init(1), uid: "built-in", name: "Built-in", transport: "built-in",
+            outputChannelCount: 2, nominalSampleRate: 48_000, isVirtual: false, isAggregate: false
+        )
+
+        XCTAssertEqual(
+            DefaultOutputObservationDecision.make(from: .success(valid)),
+            .output(valid)
+        )
+        XCTAssertEqual(
+            DefaultOutputObservationDecision.make(from: .failure(AudioRuntimeError.noOutputDevice)),
+            .missing
+        )
+        XCTAssertEqual(
+            DefaultOutputObservationDecision.make(from: .failure(AudioRuntimeError.deviceLost)),
+            .retainLastValid
+        )
+    }
+
     private func forRenderStatus(_ status: OSStatus) -> AudioCaptureVerificationEvent {
         AudioCaptureVerificationPolicy.event(forRenderStatus: status)
     }
