@@ -3,6 +3,78 @@ import XCTest
 
 @MainActor
 final class ProductSurfaceTests: XCTestCase {
+    func testLoginItemLaunchNeverPresentsWindow() {
+        for showsMenuBar in [false, true] {
+            for setupIsComplete in [false, true] {
+                XCTAssertEqual(
+                    LaunchWindowPolicy.initialLaunch(
+                        isLoginItem: true,
+                        setupIsComplete: setupIsComplete,
+                        showsMenuBar: showsMenuBar
+                    ),
+                    .none
+                )
+            }
+        }
+    }
+
+    func testExplicitColdLaunchPresentsSetupOrSettingsRegardlessOfMenuBar() {
+        for showsMenuBar in [false, true] {
+            XCTAssertEqual(
+                LaunchWindowPolicy.initialLaunch(
+                    isLoginItem: false,
+                    setupIsComplete: false,
+                    showsMenuBar: showsMenuBar
+                ),
+                .setup
+            )
+            XCTAssertEqual(
+                LaunchWindowPolicy.initialLaunch(
+                    isLoginItem: false,
+                    setupIsComplete: true,
+                    showsMenuBar: showsMenuBar
+                ),
+                .settings
+            )
+        }
+    }
+
+    func testSubsequentOpenPresentsSetupOrSettingsRegardlessOfMenuBar() {
+        for showsMenuBar in [false, true] {
+            XCTAssertEqual(
+                LaunchWindowPolicy.subsequentOpen(
+                    setupIsComplete: false,
+                    showsMenuBar: showsMenuBar
+                ),
+                .setup
+            )
+            XCTAssertEqual(
+                LaunchWindowPolicy.subsequentOpen(
+                    setupIsComplete: true,
+                    showsMenuBar: showsMenuBar
+                ),
+                .settings
+            )
+        }
+    }
+
+    func testLoginItemLaunchEventDetection() {
+        let event = NSAppleEventDescriptor(
+            eventClass: AEEventClass(kCoreEventClass),
+            eventID: AEEventID(kAEOpenApplication),
+            targetDescriptor: nil,
+            returnID: AEReturnID(kAutoGenerateReturnID),
+            transactionID: AETransactionID(kAnyTransactionID)
+        )
+        event.setParam(
+            NSAppleEventDescriptor(boolean: true),
+            forKeyword: AEKeyword(keyAELaunchedAsLogInItem)
+        )
+
+        XCTAssertTrue(ApplicationLaunchEventDetector.isLoginItemLaunch(event: event))
+        XCTAssertFalse(ApplicationLaunchEventDetector.isLoginItemLaunch(event: nil))
+    }
+
     func testSettingsSurfaceIncludesResourceLinksPickerLabelsIconsAndHitTargets() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let style = try String(contentsOf: root.appendingPathComponent("Airwave/AirwaveStyle.swift"), encoding: .utf8)
