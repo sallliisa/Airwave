@@ -197,6 +197,7 @@ final class ApplicationLifecycleCoordinator: NSObject {
     private let application: ApplicationLifecycleApplication
     private var explicitQuitRequested = false
     private var systemTerminationRequested = false
+    private var updateRelaunchTerminationRequested = false
     private var observesWindows = false
     private var appliedActivationPolicy: NSApplication.ActivationPolicy?
     private var pendingFocusedSpaceDeparture = false
@@ -261,6 +262,10 @@ final class ApplicationLifecycleCoordinator: NSObject {
         systemTerminationRequested = true
     }
 
+    func beginUpdateRelaunchTermination() {
+        updateRelaunchTerminationRequested = true
+    }
+
     func applicationWillResignActive() {
         guard let window = settingsWindow, window.isKeyWindow, !window.isMiniaturized else {
             pendingFocusedSpaceDeparture = false
@@ -277,8 +282,9 @@ final class ApplicationLifecycleCoordinator: NSObject {
     }
 
     func terminationReply() -> NSApplication.TerminateReply {
-        if explicitQuitRequested || systemTerminationRequested {
+        if explicitQuitRequested || systemTerminationRequested || updateRelaunchTerminationRequested {
             explicitQuitRequested = false
+            updateRelaunchTerminationRequested = false
             return .terminateNow
         }
         closeAllUserWindows()
