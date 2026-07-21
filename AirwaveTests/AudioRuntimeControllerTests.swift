@@ -347,7 +347,171 @@ final class AudioRuntimeControllerTests: XCTestCase {
         }
         XCTAssertEqual(reason, "Render system audio failed (OSStatus -50)")
         XCTAssertEqual(h.state.captureAccess, .unverified)
-        XCTAssertEqual(h.state.status, .nativePassthrough(reason: reason))
+        XCTAssertEqual(h.state.status, .recovering(reason: "\(reason) Retrying in 1s."))
+    }
+
+    func testProcessingRenderFailureAfterVerificationSchedulesRecovery() {
+        let h = Harness(effect: true)
+        h.controller.launch(presetReady: true)
+        XCTAssertEqual(h.state.status, .processing)
+        XCTAssertEqual(h.pipelines.liveCount, 1)
+
+        h.pipelines.emit(.renderFailed(-50))
+
+        XCTAssertEqual(h.pipelines.liveCount, 0)
+        guard case .recovering = h.state.status else {
+            return XCTFail("expected recovery state")
+        }
+
+        h.scheduler.runNext() // canceled stability reset
+        h.scheduler.runNext() // bounded retry: passive verification
+        XCTAssertEqual(h.pipelines.purposes, [
+            .verification(includeOwnProcess: false),
+            .processing,
+            .verification(includeOwnProcess: false),
+            .processing
+        ])
+        XCTAssertEqual(h.state.status, .processing)
+        XCTAssertEqual(h.pipelines.liveCount, 1)
+    }
+
+    func testReplacedVerificationCallbackCannotFailSameGenerationProcessing() {
+        let h = Harness(effect: true)
+        h.controller.launch(presetReady: true)
+        let oldVerificationHandler = h.pipelines.handlers[0]
+
+        XCTAssertEqual(h.state.status, .processing)
+        XCTAssertEqual(h.pipelines.liveCount, 1)
+
+        oldVerificationHandler(.renderFailed(-50))
+
+        XCTAssertEqual(h.state.status, .processing)
+        XCTAssertEqual(h.pipelines.liveCount, 1)
+        XCTAssertFalse(h.state.healthIssues.contains { $0.category == .pipeline })
+
+        h.pipelines.emit(.renderFailed(-50))
+
+        guard case .recovering = h.state.status else {
+            return XCTFail("current processing failure should enter recovery")
+        }
+        XCTAssertEqual(h.pipelines.liveCount, 0)
+    }
+
+    func testSleepWakeRenderFailureRecoversWithoutPresetToggle() {
+        let h = Harness(effect: true)
+        h.pipelines.automaticEvent = nil
+        h.controller.launch(presetReady: true)
+        h.pipelines.emit(.signalDetected)
+        XCTAssertEqual(h.state.status, .processing)
+
+        h.controller.willSleep()
+        XCTAssertEqual(h.pipelines.liveCount, 0)
+        h.controller.didWake()
+        XCTAssertEqual(h.pipelines.purposes.last, .verification(includeOwnProcess: false))
+        h.pipelines.emit(.signalDetected)
+        XCTAssertEqual(h.state.status, .processing)
+
+        h.pipelines.emit(.renderFailed(-50))
+        XCTAssertEqual(h.pipelines.liveCount, 0)
+        h.scheduler.runAll() // canceled stability reset(s), then retry verification
+        h.pipelines.emit(.signalDetected)
+
+        XCTAssertEqual(h.state.status, .processing)
+        XCTAssertEqual(h.pipelines.liveCount, 1)
+    }
+
+    func testPostWakeVerificationStartFailureSchedulesOneRetry() {
+        let h = Harness(effect: true)
+        h.pipelines.automaticEvent = nil
+        h.controller.launch(presetReady: true)
+        h.pipelines.emit(.signalDetected)
+        h.controller.willSleep()
+        h.pipelines.startError = .ioStartFailed("wake start failed")
+
+        h.controller.didWake()
+
+        XCTAssertEqual(h.pipelines.liveCount, 0)
+        h.scheduler.runNext() // canceled stability reset
+        h.scheduler.runNext() // one recovery retry
+        XCTAssertEqual(h.pipelines.purposes.last, .verification(includeOwnProcess: false))
+        h.pipelines.emit(.signalDetected)
+        XCTAssertEqual(h.state.status, .processing)
+    }
+
+    func testHistoricalPreSleepCallbackCannotFailCurrentPipeline() {
+        let h = Harness(effect: true)
+        h.pipelines.automaticEvent = nil
+        h.controller.launch(presetReady: true)
+        let oldHandler = h.pipelines.handlers[0]
+
+        h.controller.willSleep()
+        h.controller.didWake()
+        oldHandler(.renderFailed(-50))
+
+        XCTAssertEqual(h.pipelines.liveCount, 1)
+        XCTAssertFalse(h.state.healthIssues.contains { $0.category == .pipeline })
+    }
+
+    func testPermissionDenialDoesNotScheduleAutomaticRecovery() {
+        let h = Harness(effect: true)
+        h.pipelines.automaticEvent = nil
+        h.controller.launch(presetReady: true)
+
+        h.pipelines.emit(.permissionDenied)
+
+        XCTAssertEqual(h.state.status, .needsPermission)
+        XCTAssertEqual(h.pipelines.liveCount, 0)
+        let purposeCount = h.pipelines.purposes.count
+        h.scheduler.runAll()
+        XCTAssertEqual(h.pipelines.purposes.count, purposeCount)
+    }
+
+    func testExplicitCaptureFailureDoesNotScheduleAutomaticRecovery() {
+        let h = Harness()
+        h.controller.launch(presetReady: false)
+        h.controller.requestSystemAudioAccess()
+
+        h.pipelines.emit(.renderFailed(-50))
+
+        XCTAssertEqual(h.state.captureAccess, .failed(reason: "Render system audio failed (OSStatus -50)"))
+        let purposeCount = h.pipelines.purposes.count
+        h.scheduler.runAll()
+        XCTAssertEqual(h.pipelines.purposes.count, purposeCount)
+    }
+
+    func testClearingEffectCancelsPendingRecoveryAndLeavesNativeAudio() {
+        let h = Harness(effect: true)
+        h.controller.launch(presetReady: true)
+        h.pipelines.emit(.renderFailed(-50))
+        XCTAssertEqual(h.pipelines.liveCount, 0)
+        let purposeCount = h.pipelines.purposes.count
+
+        h.controller.presetDidChange(isReady: false)
+        h.scheduler.runAll()
+
+        XCTAssertEqual(h.pipelines.liveCount, 0)
+        XCTAssertEqual(h.pipelines.purposes.count, purposeCount)
+        switch h.state.status {
+        case .nativePassthrough, .inactive:
+            break
+        default:
+            XCTFail("expected native audio state")
+        }
+    }
+
+    func testCleanupFailureBlocksRecoveryPipelineUntilCleanupRetry() {
+        let h = Harness(effect: true)
+        h.controller.launch(presetReady: true)
+        h.pipelines.stopError = .cleanupFailed("busy")
+
+        h.pipelines.emit(.renderFailed(-50))
+
+        XCTAssertEqual(h.pipelines.liveCount, 1)
+        h.pipelines.automaticEvent = nil
+        h.scheduler.runNext() // canceled stability reset
+        h.scheduler.runNext() // cleanup retry
+        XCTAssertEqual(h.pipelines.liveCount, 1)
+        XCTAssertEqual(h.pipelines.purposes.last, .verification(includeOwnProcess: false))
     }
 
     func testCleanupFailurePublishesRecoveryIssueAndSuccessfulRetryClearsIt() {
@@ -380,7 +544,7 @@ final class AudioRuntimeControllerTests: XCTestCase {
         }
         XCTAssertEqual(reason, "Capture format mismatch (expected \(expected), actual \(actual)).")
         XCTAssertEqual(h.state.captureAccess, .unverified)
-        XCTAssertEqual(h.state.status, .nativePassthrough(reason: reason))
+        XCTAssertEqual(h.state.status, .recovering(reason: "\(reason) Retrying in 1s."))
     }
 
     func testOutputChangeSleepAndTerminationReleaseResources() {
@@ -434,6 +598,7 @@ private final class PipelineFactoryFake {
     }
 
     func emit(_ event: AudioCaptureVerificationEvent) { handlers.last?(event) }
+    func emit(_ event: AudioCaptureVerificationEvent, from index: Int) { handlers[index](event) }
 }
 
 private final class PipelineFake: AudioPipelineControlling {
@@ -506,6 +671,7 @@ private final class SchedulerFake: AudioRuntimeScheduling {
         return task
     }
     func runNext() { guard !tasks.isEmpty else { return }; let task = tasks.removeFirst(); task.run() }
+    func runAll() { while !tasks.isEmpty { runNext() } }
 }
 
 @MainActor

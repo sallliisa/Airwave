@@ -38,6 +38,26 @@ final class CoreAudioPlatformClientTests: XCTestCase {
         })
     }
 
+    func testSignalReportDoesNotSuppressLaterRenderFailureReport() {
+        var state = CoreAudioIOVerificationState()
+        let signal = [Float](repeating: CaptureSignalPolicy.sampleThreshold * 2, count: CaptureSignalPolicy.minimumSustainedFrames)
+
+        let signalEvent = signal.withUnsafeBufferPointer {
+            state.observeSignal(inputLeft: $0.baseAddress!, inputRight: $0.baseAddress, frameCount: $0.count)
+        }
+
+        XCTAssertEqual(signalEvent, .signalDetected)
+        XCTAssertEqual(state.observeRenderFailure(status: -50), .renderFailed(-50))
+        XCTAssertNil(state.observeRenderFailure(status: -51))
+    }
+
+    func testRenderFailureReportDoesNotRepeat() {
+        var state = CoreAudioIOVerificationState()
+
+        XCTAssertEqual(state.observeRenderFailure(status: -50), .renderFailed(-50))
+        XCTAssertNil(state.observeRenderFailure(status: -51))
+    }
+
     func testCoreAudioTapRequestSupportsAllProcessesAndOwnProcessExclusion() {
         let output = OutputDeviceDescriptor(
             id: .init(1), uid: "built-in", name: "Built-in", transport: "built-in",

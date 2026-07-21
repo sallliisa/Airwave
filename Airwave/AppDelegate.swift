@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import os
 import SwiftUI
 
 @MainActor
@@ -16,21 +17,43 @@ nonisolated enum LaunchWindowAction: Equatable {
     case settings
 }
 
-nonisolated enum LaunchWindowPolicy {
-    static func initialLaunch(
-        isLoginItem: Bool,
-        setupIsComplete: Bool,
-        showsMenuBar: Bool
-    ) -> LaunchWindowAction {
-        guard !isLoginItem else { return .none }
-        return userOpen(setupIsComplete: setupIsComplete, showsMenuBar: showsMenuBar)
-    }
+nonisolated enum LaunchWindowEvent: Equatable {
+    case loginItemLaunch
+    case userColdOpen
+    case userReopen
+}
 
-    static func subsequentOpen(
+nonisolated struct LaunchWindowPendingAction: Equatable {
+    let event: LaunchWindowEvent
+    let action: LaunchWindowAction
+}
+
+nonisolated struct AppleEventDeliveryToken: Hashable {
+    let eventClass: AEEventClass
+    let eventID: AEEventID
+    let returnID: AEReturnID
+    let transactionID: AETransactionID
+
+    init(event: NSAppleEventDescriptor) {
+        eventClass = event.eventClass
+        eventID = event.eventID
+        returnID = event.returnID
+        transactionID = event.transactionID
+    }
+}
+
+nonisolated enum LaunchWindowPolicy {
+    static func action(
+        for event: LaunchWindowEvent,
         setupIsComplete: Bool,
         showsMenuBar: Bool
     ) -> LaunchWindowAction {
-        userOpen(setupIsComplete: setupIsComplete, showsMenuBar: showsMenuBar)
+        switch event {
+        case .loginItemLaunch:
+            return .none
+        case .userColdOpen, .userReopen:
+            return userOpen(setupIsComplete: setupIsComplete, showsMenuBar: showsMenuBar)
+        }
     }
 
     private static func userOpen(
@@ -42,13 +65,124 @@ nonisolated enum LaunchWindowPolicy {
     }
 }
 
-enum ApplicationLaunchEventDetector {
-    static func isLoginItemLaunch(
-        event: NSAppleEventDescriptor? = NSAppleEventManager.shared().currentAppleEvent
-    ) -> Bool {
-        guard event?.eventClass == AEEventClass(kCoreEventClass),
-              event?.eventID == AEEventID(kAEOpenApplication) else { return false }
-        return event?.paramDescriptor(forKeyword: AEKeyword(keyAELaunchedAsLogInItem)) != nil
+nonisolated struct LaunchWindowCoordinator: Equatable {
+    private var handledDeliveryTokens: Set<AppleEventDeliveryToken> = []
+    private var pendingEvents: [LaunchWindowEvent] = []
+
+    mutating func action(
+        for event: LaunchWindowEvent,
+        setupIsComplete: Bool,
+        showsMenuBar: Bool,
+        isReady: Bool = true,
+        deliveryToken: AppleEventDeliveryToken? = nil
+    ) -> LaunchWindowAction {
+        guard accept(deliveryToken) else { return .none }
+        guard isReady else {
+            pendingEvents.append(event)
+            return .none
+        }
+        return LaunchWindowPolicy.action(
+            for: event,
+            setupIsComplete: setupIsComplete,
+            showsMenuBar: showsMenuBar
+        )
+    }
+
+    mutating func drainPendingActions(
+        setupIsComplete: Bool,
+        showsMenuBar: Bool
+    ) -> [LaunchWindowPendingAction] {
+        let events = pendingEvents
+        pendingEvents.removeAll()
+        return events.map {
+            LaunchWindowPendingAction(
+                event: $0,
+                action: LaunchWindowPolicy.action(
+                    for: $0,
+                    setupIsComplete: setupIsComplete,
+                    showsMenuBar: showsMenuBar
+                )
+            )
+        }
+    }
+
+    private mutating func accept(_ deliveryToken: AppleEventDeliveryToken?) -> Bool {
+        guard let deliveryToken else { return true }
+        return handledDeliveryTokens.insert(deliveryToken).inserted
+    }
+}
+
+nonisolated enum LaunchWindowAppleEventClassifier {
+    static let loginWindowBundleIdentifier = "com.apple.loginwindow"
+
+    static func event(
+        for descriptor: NSAppleEventDescriptor,
+        senderBundleIdentifier: String? = nil
+    ) -> LaunchWindowEvent? {
+        guard descriptor.eventClass == AEEventClass(kCoreEventClass) else { return nil }
+        switch descriptor.eventID {
+        case AEEventID(kAEOpenApplication):
+            if descriptor.paramDescriptor(forKeyword: AEKeyword(keyAELaunchedAsLogInItem)) != nil {
+                return .loginItemLaunch
+            }
+            if senderBundleIdentifier == loginWindowBundleIdentifier {
+                return .loginItemLaunch
+            }
+            return .userColdOpen
+        case AEEventID(kAEReopenApplication):
+            if senderBundleIdentifier == loginWindowBundleIdentifier {
+                return .loginItemLaunch
+            }
+            return .userReopen
+        default:
+            return nil
+        }
+    }
+}
+
+@MainActor
+protocol AppleEventSenderResolving {
+    func bundleIdentifier(for event: NSAppleEventDescriptor) -> String?
+}
+
+struct SystemAppleEventSenderResolver: AppleEventSenderResolving {
+    nonisolated init() {}
+
+    @MainActor
+    func bundleIdentifier(for event: NSAppleEventDescriptor) -> String? {
+        guard let pidDescriptor = event.attributeDescriptor(
+            forKeyword: AEKeyword(keySenderPIDAttr)
+        ) else { return nil }
+
+        let pid = pidDescriptor.int32Value
+        guard pid > 0 else { return nil }
+        return NSRunningApplication(processIdentifier: pid_t(pid))?.bundleIdentifier
+    }
+}
+
+@MainActor
+protocol ApplicationAppleEventRouting: AnyObject {
+    func register(
+        target: NSObject,
+        selector: Selector,
+        eventClass: AEEventClass,
+        eventID: AEEventID
+    )
+    func remove(eventClass: AEEventClass, eventID: AEEventID)
+}
+
+extension NSAppleEventManager: ApplicationAppleEventRouting {
+    func register(
+        target: NSObject,
+        selector: Selector,
+        eventClass: AEEventClass,
+        eventID: AEEventID
+    ) {
+        setEventHandler(target, andSelector: selector, forEventClass: eventClass, andEventID: eventID)
+    }
+
+    func remove(eventClass: AEEventClass, eventID: AEEventID) {
+        removeEventHandler(forEventClass: eventClass, andEventID: eventID)
     }
 }
 
@@ -364,17 +498,61 @@ private enum WindowFronting {
     }
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private static let launchRoutingLogger = os.Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.southneuhof.Airwave",
+        category: "LaunchRouting"
+    )
+
+    private let appleEventRouter: ApplicationAppleEventRouting
+    private let appleEventSenderResolver: AppleEventSenderResolving
+    private var launchWindowCoordinator = LaunchWindowCoordinator()
+    private var runtimeIsReady = false
+
+    init(
+        appleEventRouter: ApplicationAppleEventRouting = NSAppleEventManager.shared(),
+        senderResolver: AppleEventSenderResolving = SystemAppleEventSenderResolver()
+    ) {
+        self.appleEventRouter = appleEventRouter
+        self.appleEventSenderResolver = senderResolver
+        super.init()
+    }
+
+    override convenience init() {
+        self.init(
+            appleEventRouter: NSAppleEventManager.shared(),
+            senderResolver: SystemAppleEventSenderResolver()
+        )
+    }
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        let eventClass = AEEventClass(kCoreEventClass)
+        appleEventRouter.register(
+            target: self,
+            selector: #selector(handleOpenApplicationEvent(_:withReplyEvent:)),
+            eventClass: eventClass,
+            eventID: AEEventID(kAEOpenApplication)
+        )
+        appleEventRouter.register(
+            target: self,
+            selector: #selector(handleReopenApplicationEvent(_:withReplyEvent:)),
+            eventClass: eventClass,
+            eventID: AEEventID(kAEReopenApplication)
+        )
+    }
+
     func applicationDidBecomeActive(_ notification: Notification) {
         AudioRuntimeController.shared.refreshSystemAudioAccess()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let isLoginItemLaunch = ApplicationLaunchEventDetector.isLoginItemLaunch()
         Logger.log("[AppDelegate] Airwave safe shell launched")
         ApplicationLifecycleCoordinator.shared.updateActivationPolicy()
         DeviceProfileRuntimeCoordinator.shared.launch()
         OutputDeviceDiscoveryCoordinator.shared.launch()
+        runtimeIsReady = true
+        drainPendingLaunchWindowEvents()
 
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(willSleep),
@@ -389,16 +567,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             name: NSWorkspace.willPowerOffNotification, object: nil
         )
 
-        DispatchQueue.main.async {
-            self.presentWindow(for: LaunchWindowPolicy.initialLaunch(
-                isLoginItem: isLoginItemLaunch,
-                setupIsComplete: OnboardingViewModel.shared.isComplete,
-                showsMenuBar: MenuBarVisibilityManager.shared.isVisible
-            ))
-        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        let eventClass = AEEventClass(kCoreEventClass)
+        appleEventRouter.remove(eventClass: eventClass, eventID: AEEventID(kAEOpenApplication))
+        appleEventRouter.remove(eventClass: eventClass, eventID: AEEventID(kAEReopenApplication))
         AudioRuntimeController.shared.terminate()
         Logger.log("[AppDelegate] Airwave safe shell terminating")
     }
@@ -417,20 +591,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
 
-    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        presentWindow(for: LaunchWindowPolicy.subsequentOpen(
-            setupIsComplete: OnboardingViewModel.shared.isComplete,
-            showsMenuBar: MenuBarVisibilityManager.shared.isVisible
-        ))
-        return true
-    }
-
-    func applicationOpenUntitledFile(_ sender: NSApplication) -> Bool {
-        // Initial launch and subsequent reopen callbacks own window presentation.
-        // Consuming this event avoids a second presentation during startup.
-        return true
-    }
-
     private func presentWindow(for action: LaunchWindowAction) {
         switch action {
         case .none:
@@ -440,6 +600,100 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             SettingsWindowPresenter.present(.setup)
         case .settings:
             SettingsWindowPresenter.present(.settings)
+        }
+    }
+
+    @objc func handleOpenApplicationEvent(
+        _ event: NSAppleEventDescriptor,
+        withReplyEvent replyEvent: NSAppleEventDescriptor
+    ) {
+        route(event: event)
+    }
+
+    @objc func handleReopenApplicationEvent(
+        _ event: NSAppleEventDescriptor,
+        withReplyEvent replyEvent: NSAppleEventDescriptor
+    ) {
+        route(event: event)
+    }
+
+    private func route(event: NSAppleEventDescriptor) {
+        let senderBundleIdentifier = appleEventSenderResolver.bundleIdentifier(for: event)
+        guard let launchEvent = LaunchWindowAppleEventClassifier.event(
+            for: event,
+            senderBundleIdentifier: senderBundleIdentifier
+        ) else { return }
+        let action = launchWindowCoordinator.action(
+            for: launchEvent,
+            setupIsComplete: OnboardingViewModel.shared.isComplete,
+            showsMenuBar: MenuBarVisibilityManager.shared.isVisible,
+            isReady: runtimeIsReady,
+            deliveryToken: AppleEventDeliveryToken(event: event)
+        )
+        Logger.log("[AppDelegate] Apple event \(launchEvent) -> \(action)")
+        logLaunchRouting(
+            event: event,
+            intent: launchEvent,
+            action: action,
+            senderBundleIdentifier: senderBundleIdentifier,
+            phase: runtimeIsReady ? "routed" : "queued"
+        )
+        presentWindow(for: action)
+    }
+
+    private func drainPendingLaunchWindowEvents() {
+        let actions = launchWindowCoordinator.drainPendingActions(
+            setupIsComplete: OnboardingViewModel.shared.isComplete,
+            showsMenuBar: MenuBarVisibilityManager.shared.isVisible
+        )
+        actions.forEach {
+            Logger.log("[AppDelegate] Queued Apple event \($0.event) -> \($0.action)")
+            Self.launchRoutingLogger.info(
+                "event=\(self.eventKind(for: $0.event), privacy: .public) intent=\(self.intentName(for: $0.event), privacy: .public) action=\(self.actionName(for: $0.action), privacy: .public) phase=drained"
+            )
+            self.presentWindow(for: $0.action)
+        }
+    }
+
+    private func logLaunchRouting(
+        event: NSAppleEventDescriptor,
+        intent: LaunchWindowEvent,
+        action: LaunchWindowAction,
+        senderBundleIdentifier: String?,
+        phase: String
+    ) {
+        let markerPresent = event.paramDescriptor(
+            forKeyword: AEKeyword(keyAELaunchedAsLogInItem)
+        ) != nil
+        Self.launchRoutingLogger.info(
+            "event=\(self.eventKind(for: event.eventID), privacy: .public) marker=\(markerPresent, privacy: .public) sender=\(senderBundleIdentifier ?? "unresolved", privacy: .public) intent=\(self.intentName(for: intent), privacy: .public) action=\(self.actionName(for: action), privacy: .public) phase=\(phase, privacy: .public)"
+        )
+    }
+
+    private func eventKind(for eventID: AEEventID) -> String {
+        eventID == AEEventID(kAEOpenApplication) ? "open" : "reopen"
+    }
+
+    private func eventKind(for event: LaunchWindowEvent) -> String {
+        switch event {
+        case .loginItemLaunch, .userColdOpen: "open"
+        case .userReopen: "reopen"
+        }
+    }
+
+    private func intentName(for event: LaunchWindowEvent) -> String {
+        switch event {
+        case .loginItemLaunch: "loginItemLaunch"
+        case .userColdOpen: "userColdOpen"
+        case .userReopen: "userReopen"
+        }
+    }
+
+    private func actionName(for action: LaunchWindowAction) -> String {
+        switch action {
+        case .none: "none"
+        case .setup: "setup"
+        case .settings: "settings"
         }
     }
 

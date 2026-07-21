@@ -54,6 +54,35 @@ nonisolated enum AudioCaptureVerificationPolicy {
     }
 }
 
+/// One-shot callback state. Core Audio invokes this state only from its render
+/// callback; it performs no allocation or controller work on that realtime path.
+nonisolated struct CoreAudioIOVerificationState: Equatable, Sendable {
+    private(set) var signalReported = false
+    private(set) var renderFailureReported = false
+    private var captureSignalPolicy = CaptureSignalPolicy()
+
+    mutating func observeSignal(
+        inputLeft: UnsafePointer<Float>,
+        inputRight: UnsafePointer<Float>?,
+        frameCount: Int
+    ) -> AudioCaptureVerificationEvent? {
+        guard !signalReported,
+              captureSignalPolicy.observe(
+                  inputLeft: inputLeft,
+                  inputRight: inputRight,
+                  frameCount: frameCount
+              ) else { return nil }
+        signalReported = true
+        return .signalDetected
+    }
+
+    mutating func observeRenderFailure(status: OSStatus) -> AudioCaptureVerificationEvent? {
+        guard !renderFailureReported else { return nil }
+        renderFailureReported = true
+        return AudioCaptureVerificationPolicy.event(forRenderStatus: status)
+    }
+}
+
 nonisolated struct CoreAudioIOCleanupDisposition: Equatable {
     let shouldRemoveContext: Bool
     let error: AudioRuntimeError?
@@ -176,8 +205,7 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
         let inputLeft: UnsafeMutablePointer<Float>
         let inputRight: UnsafeMutablePointer<Float>
         let inputListStorage: UnsafeMutableRawPointer
-        var verificationReported = false
-        var captureSignalPolicy = CaptureSignalPolicy()
+        var verificationState = CoreAudioIOVerificationState()
 
         init(
             unit: AudioUnit,
@@ -734,20 +762,17 @@ nonisolated private func coreAudioRenderCallback(
     var flags: AudioUnitRenderActionFlags = []
     let status = AudioUnitRender(context.unit, &flags, inTimeStamp, 1, inNumberFrames, inputList)
     guard status == noErr else {
-        if !context.verificationReported {
-            context.verificationReported = true
-            context.verificationHandler(AudioCaptureVerificationPolicy.event(forRenderStatus: status))
+        if let event = context.verificationState.observeRenderFailure(status: status) {
+            context.verificationHandler(event)
         }
         return status
     }
-    if !context.verificationReported,
-       context.captureSignalPolicy.observe(
-           inputLeft: UnsafePointer<Float>(context.inputLeft),
-           inputRight: UnsafePointer<Float>(context.inputRight),
-           frameCount: output.frameCount
-       ) {
-        context.verificationReported = true
-        context.verificationHandler(.signalDetected)
+    if let event = context.verificationState.observeSignal(
+        inputLeft: UnsafePointer<Float>(context.inputLeft),
+        inputRight: UnsafePointer<Float>(context.inputRight),
+        frameCount: output.frameCount
+    ) {
+        context.verificationHandler(event)
     }
     context.callback(
         UnsafePointer<Float>(context.inputLeft),

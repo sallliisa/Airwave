@@ -7,8 +7,8 @@ final class ProductSurfaceTests: XCTestCase {
         for showsMenuBar in [false, true] {
             for setupIsComplete in [false, true] {
                 XCTAssertEqual(
-                    LaunchWindowPolicy.initialLaunch(
-                        isLoginItem: true,
+                    LaunchWindowPolicy.action(
+                        for: .loginItemLaunch,
                         setupIsComplete: setupIsComplete,
                         showsMenuBar: showsMenuBar
                     ),
@@ -21,16 +21,16 @@ final class ProductSurfaceTests: XCTestCase {
     func testExplicitColdLaunchPresentsSetupOrSettingsRegardlessOfMenuBar() {
         for showsMenuBar in [false, true] {
             XCTAssertEqual(
-                LaunchWindowPolicy.initialLaunch(
-                    isLoginItem: false,
+                LaunchWindowPolicy.action(
+                    for: .userColdOpen,
                     setupIsComplete: false,
                     showsMenuBar: showsMenuBar
                 ),
                 .setup
             )
             XCTAssertEqual(
-                LaunchWindowPolicy.initialLaunch(
-                    isLoginItem: false,
+                LaunchWindowPolicy.action(
+                    for: .userColdOpen,
                     setupIsComplete: true,
                     showsMenuBar: showsMenuBar
                 ),
@@ -42,14 +42,16 @@ final class ProductSurfaceTests: XCTestCase {
     func testSubsequentOpenPresentsSetupOrSettingsRegardlessOfMenuBar() {
         for showsMenuBar in [false, true] {
             XCTAssertEqual(
-                LaunchWindowPolicy.subsequentOpen(
+                LaunchWindowPolicy.action(
+                    for: .userReopen,
                     setupIsComplete: false,
                     showsMenuBar: showsMenuBar
                 ),
                 .setup
             )
             XCTAssertEqual(
-                LaunchWindowPolicy.subsequentOpen(
+                LaunchWindowPolicy.action(
+                    for: .userReopen,
                     setupIsComplete: true,
                     showsMenuBar: showsMenuBar
                 ),
@@ -58,7 +60,7 @@ final class ProductSurfaceTests: XCTestCase {
         }
     }
 
-    func testLoginItemLaunchEventDetection() {
+    func testAppleEventDescriptorRoutingUsesMarkerAndTrustedSenderPrecedence() {
         let event = NSAppleEventDescriptor(
             eventClass: AEEventClass(kCoreEventClass),
             eventID: AEEventID(kAEOpenApplication),
@@ -71,8 +73,237 @@ final class ProductSurfaceTests: XCTestCase {
             forKeyword: AEKeyword(keyAELaunchedAsLogInItem)
         )
 
-        XCTAssertTrue(ApplicationLaunchEventDetector.isLoginItemLaunch(event: event))
-        XCTAssertFalse(ApplicationLaunchEventDetector.isLoginItemLaunch(event: nil))
+        XCTAssertEqual(LaunchWindowAppleEventClassifier.event(for: event), .loginItemLaunch)
+        XCTAssertEqual(
+            LaunchWindowAppleEventClassifier.event(
+                for: applicationEvent(id: kAEOpenApplication),
+                senderBundleIdentifier: LaunchWindowAppleEventClassifier.loginWindowBundleIdentifier
+            ),
+            .loginItemLaunch
+        )
+        XCTAssertEqual(
+            LaunchWindowAppleEventClassifier.event(
+                for: applicationEvent(id: kAEReopenApplication),
+                senderBundleIdentifier: LaunchWindowAppleEventClassifier.loginWindowBundleIdentifier
+            ),
+            .loginItemLaunch
+        )
+        for sender in [String?("com.apple.finder"), "com.apple.dock", "com.apple.Spotlight", nil] {
+            XCTAssertEqual(
+                LaunchWindowAppleEventClassifier.event(
+                    for: applicationEvent(id: kAEOpenApplication),
+                    senderBundleIdentifier: sender
+                ),
+                .userColdOpen
+            )
+        }
+        XCTAssertEqual(
+            LaunchWindowAppleEventClassifier.event(
+                for: applicationEvent(id: kAEReopenApplication),
+                senderBundleIdentifier: "com.apple.finder"
+            ),
+            .userReopen
+        )
+    }
+
+    func testAppDelegateResolvesSenderOnceBeforeClassifying() {
+        let router = AppleEventRouterFake()
+        let resolver = AppleEventSenderResolverFake(bundleIdentifier: LaunchWindowAppleEventClassifier.loginWindowBundleIdentifier)
+        let delegate = AppDelegate(appleEventRouter: router, senderResolver: resolver)
+        let event = applicationEvent(id: kAEOpenApplication)
+
+        delegate.handleOpenApplicationEvent(event, withReplyEvent: event)
+
+        XCTAssertEqual(resolver.resolutionCount, 1)
+        XCTAssertEqual(
+            LaunchWindowAppleEventClassifier.event(
+                for: event,
+                senderBundleIdentifier: resolver.bundleIdentifier
+            ),
+            .loginItemLaunch
+        )
+    }
+
+    func testSystemSenderResolverReturnsNilWhenSenderPIDIsMissing() {
+        XCTAssertNil(SystemAppleEventSenderResolver().bundleIdentifier(for: applicationEvent(id: kAEOpenApplication)))
+    }
+
+    func testLoginWindowEventsNeverPresentAndUserReopenPresentsOnce() {
+        for event in [
+            applicationEvent(id: kAEOpenApplication),
+            applicationEvent(id: kAEReopenApplication)
+        ] {
+            let intent = LaunchWindowAppleEventClassifier.event(
+                for: event,
+                senderBundleIdentifier: LaunchWindowAppleEventClassifier.loginWindowBundleIdentifier
+            )
+            XCTAssertEqual(intent, .loginItemLaunch)
+            XCTAssertEqual(
+                LaunchWindowPolicy.action(for: intent!, setupIsComplete: true, showsMenuBar: true),
+                .none
+            )
+        }
+        let explicitReopen = LaunchWindowAppleEventClassifier.event(
+            for: applicationEvent(id: kAEReopenApplication),
+            senderBundleIdentifier: "com.apple.finder"
+        )
+        XCTAssertEqual(explicitReopen, .userReopen)
+        XCTAssertEqual(
+            LaunchWindowPolicy.action(for: explicitReopen!, setupIsComplete: true, showsMenuBar: true),
+            .settings
+        )
+    }
+
+    func testAppleEventDescriptorWithoutMarkerRemainsColdForNonLoginSender() {
+        XCTAssertEqual(
+            LaunchWindowAppleEventClassifier.event(
+                for: applicationEvent(id: kAEOpenApplication),
+                senderBundleIdentifier: "com.apple.Terminal"
+            ),
+            .userColdOpen
+        )
+        XCTAssertEqual(
+            LaunchWindowAppleEventClassifier.event(
+                for: applicationEvent(id: kAEReopenApplication),
+                senderBundleIdentifier: nil
+            ),
+            .userReopen
+        )
+    }
+
+    func testAppleEventRegistrationUsesOpenAndReopenHandlers() {
+        let router = AppleEventRouterFake()
+        let delegate = AppDelegate(appleEventRouter: router)
+
+        delegate.applicationWillFinishLaunching(Notification(name: .init("test")))
+
+        XCTAssertEqual(router.registrations.map(\.eventID), [
+            AEEventID(kAEOpenApplication),
+            AEEventID(kAEReopenApplication)
+        ])
+        XCTAssertEqual(router.registrations.map(\.eventClass), [AEEventClass(kCoreEventClass), AEEventClass(kCoreEventClass)])
+        XCTAssertEqual(router.registrations.map(\.selector), [
+            #selector(AppDelegate.handleOpenApplicationEvent(_:withReplyEvent:)),
+            #selector(AppDelegate.handleReopenApplicationEvent(_:withReplyEvent:))
+        ])
+    }
+
+    func testLoginItemIsSilentAndQueuedReopenPresentsAfterReadiness() {
+        var coordinator = LaunchWindowCoordinator()
+        let loginEvent = applicationEvent(id: kAEOpenApplication, loginItem: true)
+        let reopenEvent = applicationEvent(id: kAEReopenApplication)
+
+        XCTAssertEqual(
+            coordinator.action(
+                for: .loginItemLaunch,
+                setupIsComplete: true,
+                showsMenuBar: true,
+                isReady: false,
+                deliveryToken: AppleEventDeliveryToken(event: loginEvent)
+            ),
+            .none
+        )
+        XCTAssertEqual(
+            coordinator.action(
+                for: .userReopen,
+                setupIsComplete: true,
+                showsMenuBar: true,
+                isReady: false,
+                deliveryToken: AppleEventDeliveryToken(event: reopenEvent)
+            ),
+            .none
+        )
+        XCTAssertEqual(
+            coordinator.drainPendingActions(setupIsComplete: true, showsMenuBar: true),
+            [
+                LaunchWindowPendingAction(event: .loginItemLaunch, action: .none),
+                LaunchWindowPendingAction(event: .userReopen, action: .settings)
+            ]
+        )
+    }
+
+    func testColdOpenDeduplicatesSameDeliveryButAllowsLaterReopens() {
+        var coordinator = LaunchWindowCoordinator()
+        let coldOpen = applicationEvent(id: kAEOpenApplication)
+        let reopen = applicationEvent(id: kAEReopenApplication)
+        let laterReopen = NSAppleEventDescriptor(
+            eventClass: AEEventClass(kCoreEventClass),
+            eventID: AEEventID(kAEReopenApplication),
+            targetDescriptor: nil,
+            returnID: 7,
+            transactionID: 8
+        )
+
+        XCTAssertEqual(
+            coordinator.action(
+                for: .userColdOpen,
+                setupIsComplete: false,
+                showsMenuBar: false,
+                deliveryToken: AppleEventDeliveryToken(event: coldOpen)
+            ),
+            .setup
+        )
+        XCTAssertEqual(
+            coordinator.action(
+                for: .userColdOpen,
+                setupIsComplete: false,
+                showsMenuBar: false,
+                deliveryToken: AppleEventDeliveryToken(event: coldOpen)
+            ),
+            .none
+        )
+        XCTAssertEqual(
+            coordinator.action(
+                for: .userReopen,
+                setupIsComplete: true,
+                showsMenuBar: true,
+                deliveryToken: AppleEventDeliveryToken(event: reopen)
+            ),
+            .settings
+        )
+        XCTAssertEqual(
+            coordinator.action(
+                for: .userReopen,
+                setupIsComplete: true,
+                showsMenuBar: true,
+                deliveryToken: AppleEventDeliveryToken(event: reopen)
+            ),
+            .none
+        )
+        XCTAssertEqual(
+            coordinator.action(
+                for: .userReopen,
+                setupIsComplete: false,
+                showsMenuBar: false,
+                deliveryToken: AppleEventDeliveryToken(event: laterReopen)
+            ),
+            .setup
+        )
+        XCTAssertEqual(
+            coordinator.action(
+                for: .userReopen,
+                setupIsComplete: true,
+                showsMenuBar: true,
+                deliveryToken: AppleEventDeliveryToken(event: laterReopen)
+            ),
+            .none
+        )
+    }
+
+    func testUnknownAppleEventsProduceNoIntent() {
+        let event = NSAppleEventDescriptor(
+            eventClass: AEEventClass(kCoreEventClass),
+            eventID: AEEventID(kAEOpenDocuments),
+            targetDescriptor: nil,
+            returnID: AEReturnID(kAutoGenerateReturnID),
+            transactionID: AETransactionID(kAnyTransactionID)
+        )
+        event.setParam(
+            NSAppleEventDescriptor(boolean: true),
+            forKeyword: AEKeyword(keyAELaunchedAsLogInItem)
+        )
+
+        XCTAssertNil(LaunchWindowAppleEventClassifier.event(for: event))
     }
 
     func testSettingsSurfaceIncludesResourceLinksPickerLabelsIconsAndHitTargets() throws {
@@ -568,6 +799,63 @@ final class ProductSurfaceTests: XCTestCase {
             id: .init(1), uid: "built-in", name: "Built-in Output", transport: "Built-in",
             outputChannelCount: channels, nominalSampleRate: 48_000, isVirtual: false, isAggregate: false
         )
+    }
+}
+
+private func applicationEvent(
+    id: AEEventID,
+    loginItem: Bool = false
+) -> NSAppleEventDescriptor {
+    let event = NSAppleEventDescriptor(
+        eventClass: AEEventClass(kCoreEventClass),
+        eventID: id,
+        targetDescriptor: nil,
+        returnID: AEReturnID(kAutoGenerateReturnID),
+        transactionID: AETransactionID(kAnyTransactionID)
+    )
+    if loginItem {
+        event.setParam(
+            NSAppleEventDescriptor(boolean: true),
+            forKeyword: AEKeyword(keyAELaunchedAsLogInItem)
+        )
+    }
+    return event
+}
+
+@MainActor
+private final class AppleEventRouterFake: ApplicationAppleEventRouting {
+    struct Registration {
+        let selector: Selector
+        let eventClass: AEEventClass
+        let eventID: AEEventID
+    }
+
+    private(set) var registrations: [Registration] = []
+
+    func register(
+        target: NSObject,
+        selector: Selector,
+        eventClass: AEEventClass,
+        eventID: AEEventID
+    ) {
+        registrations.append(Registration(selector: selector, eventClass: eventClass, eventID: eventID))
+    }
+
+    func remove(eventClass: AEEventClass, eventID: AEEventID) {}
+}
+
+@MainActor
+private final class AppleEventSenderResolverFake: AppleEventSenderResolving {
+    var bundleIdentifier: String?
+    private(set) var resolutionCount = 0
+
+    init(bundleIdentifier: String?) {
+        self.bundleIdentifier = bundleIdentifier
+    }
+
+    func bundleIdentifier(for event: NSAppleEventDescriptor) -> String? {
+        resolutionCount += 1
+        return bundleIdentifier
     }
 }
 

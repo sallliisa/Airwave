@@ -379,6 +379,7 @@ final class AudioRuntimeController {
         let currentGeneration = generation
         try? pipeline?.stop()
         let candidate = pipelineFactory()
+        let candidateIdentity = ObjectIdentifier(candidate)
         pipeline = candidate
         let captureAccess: AudioRuntimeState.CaptureAccess?
         switch purpose {
@@ -391,7 +392,16 @@ final class AudioRuntimeController {
         do {
             try candidate.start(on: output, purpose: purpose) { [weak self] event in
                 guard let self else { return }
-                let work = { @MainActor in self.handleCaptureVerification(event, generation: currentGeneration, output: output, warning: preparation?.equalizerWarning?.errorDescription) }
+                let work = { @MainActor in
+                    self.handleCaptureVerification(
+                        event,
+                        purpose: purpose,
+                        generation: currentGeneration,
+                        pipelineIdentity: candidateIdentity,
+                        output: output,
+                        warning: preparation?.equalizerWarning?.errorDescription
+                    )
+                }
                 if Thread.isMainThread { MainActor.assumeIsolated { work() } }
                 else { DispatchQueue.main.async(execute: work) }
             }
@@ -408,7 +418,11 @@ final class AudioRuntimeController {
         } catch {
             pipeline = nil
             try? candidate.stop()
-            handleFailure(error, output: output)
+            handleFailure(
+                error,
+                output: output,
+                shouldScheduleRetry: !explicitCaptureTest && effectReadiness.hasSelectedEffect
+            )
         }
     }
 
@@ -440,10 +454,20 @@ final class AudioRuntimeController {
         }
     }
 
-    private func handleCaptureVerification(_ event: AudioCaptureVerificationEvent, generation eventGeneration: Int, output: OutputDeviceDescriptor, warning: String?) {
-        guard eventGeneration == generation, pipeline != nil, !captureVerified else { return }
+    private func handleCaptureVerification(
+        _ event: AudioCaptureVerificationEvent,
+        purpose: AudioPipelinePurpose,
+        generation eventGeneration: Int,
+        pipelineIdentity eventPipelineIdentity: ObjectIdentifier,
+        output: OutputDeviceDescriptor,
+        warning: String?
+    ) {
+        guard eventGeneration == generation,
+              let currentPipeline = pipeline,
+              ObjectIdentifier(currentPipeline) == eventPipelineIdentity else { return }
         switch event {
         case .signalDetected:
+            guard case .verification = purpose, !captureVerified else { return }
             captureVerified = true
             captureProbeRequested = false
             explicitCaptureTest = false
@@ -459,16 +483,24 @@ final class AudioRuntimeController {
         case .permissionDenied:
             handleFailure(AudioRuntimeError.permissionDenied, output: output)
         case .renderFailed(let status):
-            handleFailure(AudioRuntimeError.ioStartFailed("Render system audio failed (OSStatus \(status))"), output: output)
+            handleFailure(
+                AudioRuntimeError.ioStartFailed("Render system audio failed (OSStatus \(status))"),
+                output: output,
+                shouldScheduleRetry: !explicitCaptureTest && effectReadiness.hasSelectedEffect
+            )
         }
     }
 
-    private func handleFailure(_ error: Error, output: OutputDeviceDescriptor?) {
+    private func handleFailure(
+        _ error: Error,
+        output: OutputDeviceDescriptor?,
+        shouldScheduleRetry: Bool = false
+    ) {
         let wasExplicitCaptureTest = explicitCaptureTest
         stimulusPlayer.stop()
         verificationTimeoutToken?.cancel(); verificationTimeoutToken = nil
         stimulusToken?.cancel(); stimulusToken = nil
-        _ = stopForInvalidation()
+        let didStop = stopForInvalidation()
         if case AudioRuntimeError.permissionDenied = error {
             captureVerified = false
             captureProbeRequested = false
@@ -498,6 +530,9 @@ final class AudioRuntimeController {
         } else {
             state.setHealthIssue(.audioPipelineFailed(reason: reason), for: .pipeline)
             state.publish(.nativePassthrough(reason: reason), output: output, captureAccess: .unverified)
+            if shouldScheduleRetry && didStop {
+                scheduleRetry(reason: reason, output: output)
+            }
         }
     }
 
@@ -554,7 +589,12 @@ final class AudioRuntimeController {
         state.publish(.recovering(reason: reason))
         retryToken = scheduler.schedule(after: delay) { [weak self] in
             guard let self, self.generation == retryGeneration else { return }
-            self.retryToken = nil; guard self.stopForInvalidation() else { return }; self.reconcile()
+            self.retryToken = nil
+            guard self.stopForInvalidation() else { return }
+            if self.effectReadiness.hasSelectedEffect && !self.explicitCaptureTest {
+                self.captureProbeRequested = true
+            }
+            self.reconcile()
         }
     }
 
