@@ -24,6 +24,14 @@ Airwave is designed for stereo headphones. The spatial effect may not sound as i
 
 Airwave follows your normal macOS output selection and volume. You do not need to manage a second audio route while using the app.
 
+## OpenAI Build Week
+
+Airwave was meaningfully extended during the Build Week window with Codex. Codex was used to decompose the Core Audio lifecycle into explicit contracts, implement and refactor the SwiftUI and Core Audio surfaces, generate focused XCTest coverage, and iterate on release-safety validation.
+
+The Build Week work focused on replacing legacy route mutation with a private process-tap pipeline, recovering safely from permission and output changes, adding per-device HRIR/EQ profiles, rebuilding onboarding around truthful capture states, and protecting the real-time path with allocation-free processing and regression tests. The author made the final product, engineering, and design decisions and reviewed the resulting changes.
+
+See [the submission draft](docs/openai-build-week-submission.md) for the demo outline, testing instructions, and the Codex session reference to provide in Devpost.
+
 ## Requirements
 
 - macOS 15 Sequoia or later
