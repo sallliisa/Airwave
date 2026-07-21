@@ -181,3 +181,7 @@ Airwave is licensed under the [GNU General Public License v3](LICENSE).
 For bugs and feature requests, [open an issue on GitHub](https://github.com/sallliisa/Airwave/issues).
 
 If Airwave is useful to you, you can support its development with a [voluntary donation on Ko-fi](https://ko-fi.com/Q5Q51RNAGT).
+
+<div>
+  <a href="https://ko-fi.com/Q5Q51RNAGT"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Support Airwave on Ko-fi" /></a>
+</div>
