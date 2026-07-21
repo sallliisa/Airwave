@@ -128,6 +128,44 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertNil(SystemAppleEventSenderResolver().bundleIdentifier(for: applicationEvent(id: kAEOpenApplication)))
     }
 
+    func testUnpreparedTerminationIsCancelled() {
+        let application = ApplicationLifecycleApplicationFake()
+        let coordinator = ApplicationLifecycleCoordinator(application: application, observeWindows: false)
+
+        XCTAssertEqual(coordinator.terminationReply(), .terminateCancel)
+        XCTAssertEqual(application.terminateCallCount, 0)
+    }
+
+    func testUpdateRelaunchTerminationIsAllowedWithoutRequestingTermination() {
+        let application = ApplicationLifecycleApplicationFake()
+        let coordinator = ApplicationLifecycleCoordinator(application: application, observeWindows: false)
+
+        coordinator.beginUpdateRelaunchTermination()
+
+        XCTAssertEqual(coordinator.terminationReply(), .terminateNow)
+        XCTAssertEqual(application.terminateCallCount, 0)
+    }
+
+    func testUpdateRelaunchTerminationAuthorizationIsOneShot() {
+        let application = ApplicationLifecycleApplicationFake()
+        let coordinator = ApplicationLifecycleCoordinator(application: application, observeWindows: false)
+
+        coordinator.beginUpdateRelaunchTermination()
+
+        XCTAssertEqual(coordinator.terminationReply(), .terminateNow)
+        XCTAssertEqual(coordinator.terminationReply(), .terminateCancel)
+    }
+
+    func testExplicitQuitStillTerminatesOnceAndAllowsFollowingReply() {
+        let application = ApplicationLifecycleApplicationFake()
+        let coordinator = ApplicationLifecycleCoordinator(application: application, observeWindows: false)
+
+        coordinator.requestExplicitQuit()
+
+        XCTAssertEqual(application.terminateCallCount, 1)
+        XCTAssertEqual(coordinator.terminationReply(), .terminateNow)
+    }
+
     func testLoginWindowEventsNeverPresentAndUserReopenPresentsOnce() {
         for event in [
             applicationEvent(id: kAEOpenApplication),
@@ -842,6 +880,21 @@ private final class AppleEventRouterFake: ApplicationAppleEventRouting {
     }
 
     func remove(eventClass: AEEventClass, eventID: AEEventID) {}
+}
+
+@MainActor
+private final class ApplicationLifecycleApplicationFake: ApplicationLifecycleApplication {
+    let windows: [NSWindow] = []
+    private(set) var terminateCallCount = 0
+
+    @discardableResult
+    func setActivationPolicy(_ activationPolicy: NSApplication.ActivationPolicy) -> Bool {
+        true
+    }
+
+    func terminate(_ sender: Any?) {
+        terminateCallCount += 1
+    }
 }
 
 @MainActor

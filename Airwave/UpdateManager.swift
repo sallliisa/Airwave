@@ -109,6 +109,10 @@ extension UpdateManager: SPUUpdaterDelegate {
         []
     }
 
+    func updaterWillRelaunchApplication(_ updater: SPUUpdater) {
+        ApplicationLifecycleCoordinator.shared.beginUpdateRelaunchTermination()
+    }
+
     func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
         model.found(version: item.displayVersionString)
     }
