@@ -26,6 +26,7 @@
 		A01300000000000000000001 /* DeviceProfileManagementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A01300000000000000000002 /* DeviceProfileManagementTests.swift */; };
 		A01400000000000000000001 /* OutputDeviceDiscoveryCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A01400000000000000000002 /* OutputDeviceDiscoveryCoordinatorTests.swift */; };
 		A01700000000000000000001 /* PresetLibraryCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A01700000000000000000002 /* PresetLibraryCoordinatorTests.swift */; };
+		A01800000000000000000001 /* AirwaveLayoutTokensTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A01800000000000000000002 /* AirwaveLayoutTokensTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -59,6 +60,7 @@
 		A01300000000000000000002 /* DeviceProfileManagementTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceProfileManagementTests.swift; sourceTree = "<group>"; };
 		A01400000000000000000002 /* OutputDeviceDiscoveryCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OutputDeviceDiscoveryCoordinatorTests.swift; sourceTree = "<group>"; };
 		A01700000000000000000002 /* PresetLibraryCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresetLibraryCoordinatorTests.swift; sourceTree = "<group>"; };
+		A01800000000000000000002 /* AirwaveLayoutTokensTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirwaveLayoutTokensTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -141,6 +143,7 @@
 				A01300000000000000000002 /* DeviceProfileManagementTests.swift */,
 				A01400000000000000000002 /* OutputDeviceDiscoveryCoordinatorTests.swift */,
 				A01700000000000000000002 /* PresetLibraryCoordinatorTests.swift */,
+				A01800000000000000000002 /* AirwaveLayoutTokensTests.swift */,
 			);
 			path = AirwaveTests;
 			sourceTree = "<group>";
@@ -279,6 +282,7 @@
 				A01300000000000000000001 /* DeviceProfileManagementTests.swift in Sources */,
 				A01400000000000000000001 /* OutputDeviceDiscoveryCoordinatorTests.swift in Sources */,
 				A01700000000000000000001 /* PresetLibraryCoordinatorTests.swift in Sources */,
+				A01800000000000000000001 /* AirwaveLayoutTokensTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
