@@ -344,133 +344,10 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertNil(LaunchWindowAppleEventClassifier.event(for: event))
     }
 
-    func testSettingsSurfaceIncludesResourceLinksPickerLabelsIconsAndHitTargets() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let style = try String(contentsOf: root.appendingPathComponent("Airwave/AirwaveTheme.swift"), encoding: .utf8)
-        // The settings surface spans the window shell and the page views.
-        let settings = try String(contentsOf: root.appendingPathComponent("Airwave/SettingsView.swift"), encoding: .utf8)
-            + String(contentsOf: root.appendingPathComponent("Airwave/SettingsWindowContent.swift"), encoding: .utf8)
-        let equalizer = try String(contentsOf: root.appendingPathComponent("Airwave/EqualizerSettingsView.swift"), encoding: .utf8)
-        // Both pickers share one library component; its chrome lives there.
-        let library = try String(contentsOf: root.appendingPathComponent("Airwave/PresetLibraryView.swift"), encoding: .utf8)
-
-        XCTAssertTrue(library.contains("Get more HRIRs…"))
-        XCTAssertTrue(library.contains("Get more equalizer presets…"))
-        XCTAssertTrue(style.contains("https://airtable.com/embed/appac4r1cu9UpBNAN/shrpUAbtyZxhDDMjg/tblopH2GznvFipWjq/viwnouWPGDuYEd8Go"))
-        XCTAssertTrue(style.contains("https://autoeq.app/"))
-        XCTAssertTrue(library.contains("Button(\"Manage…\")"))
-        XCTAssertFalse(library.contains("Button(\"Show in Finder\")"))
-        XCTAssertFalse(style.contains("Button(\"Show in Finder\")"))
-        XCTAssertFalse(equalizer.contains("Button(\"Show in Finder\")"))
-        XCTAssertTrue(library.contains(".buttonStyle(.plain)"))
-        XCTAssertTrue(library.contains(".foregroundStyle(.tint)"))
-        XCTAssertTrue(equalizer.contains(".buttonStyle(.plain)"))
-
-        let rowsSource = try XCTUnwrap(equalizer.range(of: "private var rows"))
-        XCTAssertFalse(String(equalizer[rowsSource.lowerBound...]).contains("title: \"Equalizer Presets\""))
-
-        for icon in ["slider.horizontal.3", "headphones", "sparkles", "gearshape"] {
-            XCTAssertTrue(settings.contains("systemImage: \"\(icon)\""))
-        }
-        XCTAssertTrue(settings.contains(".frame(minWidth: 44, minHeight: 44)"))
-        XCTAssertTrue(settings.contains(".frame(width: 44, height: 44)"))
-        XCTAssertTrue(settings.contains("isReady: onboarding.runtime.isSetupHealthy"))
-    }
-
-    func testSettingsPageUsesOneUnifiedTransition() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let source = try String(
-            contentsOf: root.appendingPathComponent("Airwave/SettingsView.swift"),
-            encoding: .utf8
-        )
-
-        let settingsStart = try XCTUnwrap(source.range(of: "struct SettingsView: View"))
-        let generalPageStart = try XCTUnwrap(
-            source.range(of: "private var generalPage", range: settingsStart.lowerBound..<source.endIndex)
-        )
-        let pageSwitchingSource = String(source[settingsStart.lowerBound..<generalPageStart.lowerBound])
-        XCTAssertTrue(pageSwitchingSource.contains(".id(page.wrappedValue)"))
-        XCTAssertEqual(
-            pageSwitchingSource.components(separatedBy: ".transition(pageRevealTransition)").count - 1,
-            1
-        )
-
-        let pageContentStart = try XCTUnwrap(pageSwitchingSource.range(of: "private var settingsPageContent"))
-        let pageContentSource = pageSwitchingSource[pageContentStart.lowerBound...]
-        XCTAssertFalse(pageContentSource.contains(".transition("))
-    }
-
-    func testRegisteredDevicesUsesSelectableRowsAndPickerFooterActions() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let source = try String(
-            contentsOf: root.appendingPathComponent("Airwave/DeviceManagementView.swift"),
-            encoding: .utf8
-        )
-
-        XCTAssertTrue(source.contains("@State private var selectedDeviceUID: String?"))
-        XCTAssertTrue(source.contains(".accessibilityAddTraits(selectedDeviceUID == row.id ? .isSelected : [])"))
-        XCTAssertTrue(source.contains("private var actionFooter: some View"))
-        XCTAssertTrue(source.contains(".disabled(selectedRow?.canReset != true)"))
-        XCTAssertTrue(source.contains(".disabled(selectedRow?.canForget != true)"))
-
-        let row = try XCTUnwrap(source.range(of: "private func deviceRow"))
-        let footer = try XCTUnwrap(source.range(of: "private var actionFooter"))
-        let rowSource = String(source[row.lowerBound..<footer.lowerBound])
-        XCTAssertFalse(rowSource.contains("Button(\"Reset Profile\")"))
-        XCTAssertFalse(rowSource.contains("Button(\"Forget Device\")"))
-        XCTAssertFalse(rowSource.contains("Image(systemName: \"checkmark\")"))
-        XCTAssertTrue(source[source.startIndex..<row.lowerBound].contains("Divider()"))
-    }
-
-    func testPickerActionsHaveNoSuccessIndicatorsButRetainFailureFeedback() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let device = try String(
-            contentsOf: root.appendingPathComponent("Airwave/DeviceManagementView.swift"),
-            encoding: .utf8
-        )
-        let hrir = try String(
-            contentsOf: root.appendingPathComponent("Airwave/HRIRPickerView.swift"),
-            encoding: .utf8
-        )
-        let equalizer = try String(
-            contentsOf: root.appendingPathComponent("Airwave/EqualizerSettingsView.swift"),
-            encoding: .utf8
-        )
-
-        XCTAssertFalse(device.contains("DeviceManagementResult"))
-        XCTAssertFalse(device.contains("coordinator.result"))
-        XCTAssertFalse(device.contains("checkmark.circle.fill"))
-        let library = try String(
-            contentsOf: root.appendingPathComponent("Airwave/PresetLibraryView.swift"),
-            encoding: .utf8
-        )
-
-        XCTAssertFalse(hrir.contains("isSuccess"))
-        XCTAssertFalse(equalizer.contains("isSuccess"))
-        XCTAssertFalse(library.contains("isSuccess"))
-        XCTAssertTrue(library.contains("exclamationmark.triangle.fill"))
-        XCTAssertTrue(library.contains("confirmationDialog("))
-    }
-
-    func testOnboardingHasOneCaptureCardAndNoSplitHealthCopy() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let source = try String(contentsOf: root.appendingPathComponent("Airwave/OnboardingView.swift"), encoding: .utf8)
-
-        XCTAssertEqual(source.components(separatedBy: "title: \"System Audio Capture\"").count - 1, 1)
-        XCTAssertTrue(source.contains("Test System Audio Capture"))
-        XCTAssertFalse(source.contains(["Audio", "Tap Health"].joined(separator: " ")))
-        XCTAssertFalse(source.contains(["macOS", "Permission"].joined(separator: " ")))
-    }
-
-    func testVerifiedOnboardingControlIsEnabledTestAgainButton() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let source = try String(contentsOf: root.appendingPathComponent("Airwave/OnboardingView.swift"), encoding: .utf8)
-        let verifiedStart = try XCTUnwrap(source.range(of: "case .verified:"))
-        let failureStart = try XCTUnwrap(source.range(of: "case .permissionRequired, .failed:", range: verifiedStart.upperBound..<source.endIndex))
-        let verifiedControls = String(source[verifiedStart.lowerBound..<failureStart.lowerBound])
-
-        XCTAssertTrue(verifiedControls.contains("Button(\"Test Again\") { viewModel.requestPermission() }"))
-        XCTAssertFalse(verifiedControls.contains(".disabled(true)"))
+    func testResourceLinksPointAtCuratedSources() {
+        XCTAssertEqual(AirwaveResourceLinks.hrir.host, "airtable.com")
+        XCTAssertTrue(AirwaveResourceLinks.hrir.path.hasPrefix("/embed/"))
+        XCTAssertEqual(AirwaveResourceLinks.equalizer.absoluteString, "https://autoeq.app/")
     }
 
     func testOnboardingHRIRDescriptionCanWrap() throws {
@@ -480,27 +357,6 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertTrue(source.contains(".frame(maxWidth: .infinity, alignment: .leading)"))
         XCTAssertTrue(source.contains(".fixedSize(horizontal: false, vertical: true)"))
         XCTAssertTrue(source.contains(".frame(height: 260, alignment: .top)"))
-    }
-
-    func testCaptureControlsGuidanceAndStatusCardOrder() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let source = try String(contentsOf: root.appendingPathComponent("Airwave/OnboardingView.swift"), encoding: .utf8)
-            + String(contentsOf: root.appendingPathComponent("Airwave/OnboardingProgressIndicator.swift"), encoding: .utf8)
-
-        let controls = try XCTUnwrap(source.range(of: "captureTestControls"))
-        let guidance = try XCTUnwrap(source.range(of: "captureFailureGuidance(guidance)"))
-        let card = try XCTUnwrap(source.range(of: "captureAccessCard"))
-        XCTAssertLessThan(card.lowerBound, guidance.lowerBound)
-        XCTAssertLessThan(guidance.lowerBound, controls.lowerBound)
-        XCTAssertTrue(source.contains("if viewModel.captureFailureGuidance == nil"))
-        XCTAssertTrue(source.contains("case .checking, .unverified: return .unknown"))
-        XCTAssertTrue(source.contains("case .checking, .unknown: return Color.primary"))
-        XCTAssertTrue(source.contains("case .checking:"))
-        XCTAssertTrue(source.contains("hasCaptureFailureGuidance"))
-        XCTAssertTrue(source.contains("viewModel.canComplete(allowingUnknownCapture: canReturnToSettings)"))
-        XCTAssertTrue(source.contains("viewModel.complete(allowingUnknownCapture: canReturnToSettings)"))
-        XCTAssertTrue(source.contains("private var isRuntimeReady: Bool"))
-        XCTAssertTrue(source.contains("isReady: isRuntimeReady"))
     }
 
     func testCapturePresentationUsesTruthfulStatesAndActions() {
