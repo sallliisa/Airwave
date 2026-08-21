@@ -350,6 +350,10 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertEqual(AirwaveResourceLinks.equalizer.absoluteString, "https://autoeq.app/")
     }
 
+    // MARK: Deliberate layout-regression pins
+    // These assert source structure because the guarded bugs were visual
+    // regressions (truncated text) with no behavioral seam to test.
+    // Update them together with intentional layout changes only.
     func testOnboardingHRIRDescriptionCanWrap() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let source = try String(contentsOf: root.appendingPathComponent("Airwave/OnboardingView.swift"), encoding: .utf8)
