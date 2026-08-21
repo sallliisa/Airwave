@@ -166,3 +166,11 @@ final class ApplicationLifecycleCoordinator: NSObject {
         }
     }
 }
+
+@MainActor
+protocol ApplicationActivationPolicyApplying: AnyObject {
+    @discardableResult
+    func setActivationPolicy(_ activationPolicy: NSApplication.ActivationPolicy) -> Bool
+}
+
+extension NSApplication: ApplicationActivationPolicyApplying {}
