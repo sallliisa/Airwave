@@ -589,6 +589,62 @@ final class AudioRuntimeControllerTests: XCTestCase {
         XCTAssertEqual(h.pipelines.liveCount, 0)
         XCTAssertGreaterThanOrEqual(h.player.stopCount, 1)
     }
+
+    func testFailedStopRetriesSamePipelineWithoutSecondTapOrAggregate() {
+        let platform = CreationCountingPlatformFake()
+        let scheduler = SchedulerFake()
+        let state = AudioRuntimeState()
+        var createdPipelineIDs: [ObjectIdentifier] = []
+        let controller = AudioRuntimeController(
+            state: state,
+            platform: platform,
+            pipelineFactory: {
+                let pipeline = AudioPipeline(platform: platform, processor: SilentProcessor())
+                createdPipelineIDs.append(ObjectIdentifier(pipeline))
+                return pipeline
+            },
+            scheduler: scheduler
+        )
+
+        controller.launch(
+            effectReadiness: AudioRuntimeEffectReadiness(spatialReady: true, equalizerDefinition: nil),
+            captureVerified: true
+        )
+        XCTAssertEqual(platform.tapCreationCount, 1)
+        XCTAssertEqual(platform.aggregateCreationCount, 1)
+        XCTAssertEqual(createdPipelineIDs.count, 1)
+
+        // Plan 021: a forced stopIO failure during a device switch must be
+        // fatal-in-order. The same pipeline object stays owned; no second
+        // tap/aggregate may ever be created while the first chain is live.
+        platform.stopIOFailuresRemaining = 1
+        platform.emit(output(id: 2, name: "USB"))
+
+        XCTAssertEqual(platform.tapCreationCount, 1, "no second tap while the old pipeline holds resources")
+        XCTAssertEqual(platform.aggregateCreationCount, 1, "no second aggregate while the old pipeline holds resources")
+        XCTAssertEqual(createdPipelineIDs.count, 1, "no candidate pipeline may be created after a failed stop")
+        XCTAssertEqual(platform.destroyTapCount, 0, "the tap must stay registered so native audio stays muted")
+        XCTAssertEqual(platform.destroyAggregateCount, 0)
+        XCTAssertEqual(platform.events.filter { $0 == "stopIO" }.count, 1)
+        guard case .recovering = state.status else {
+            return XCTFail("expected the recovery state after a failed stop")
+        }
+
+        // The cleanup retry releases THE SAME pipeline (one ordered destroy
+        // sequence) and only then may a replacement pipeline be created.
+        scheduler.runAll()
+        XCTAssertEqual(platform.destroyTapCount, 1, "the same pipeline is torn down exactly once")
+        XCTAssertEqual(platform.destroyAggregateCount, 1)
+        guard let destroyTapIndex = platform.events.lastIndex(of: "destroyTap"),
+              let secondCreateIndex = platform.events.lastIndex(of: "createTap") else {
+            return XCTFail("expected a destroy followed by exactly one new tap creation")
+        }
+        XCTAssertLessThan(destroyTapIndex, secondCreateIndex, "a new tap may be created only after the old chain is fully released")
+        XCTAssertEqual(platform.tapCreationCount, 2)
+        XCTAssertEqual(platform.aggregateCreationCount, 2)
+        XCTAssertEqual(createdPipelineIDs.count, 2, "exactly one replacement pipeline after the retry")
+        XCTAssertEqual(state.status, .processing)
+    }
 }
 
 @MainActor
@@ -729,4 +785,85 @@ private final class ProfilePreparerFake: OutputEffectProfilePreparing {
 
 private func output(id: UInt64 = 1, name: String = "Built-in", isVirtual: Bool = false) -> OutputDeviceDescriptor {
     OutputDeviceDescriptor(id: .init(id), uid: "output-\(id)", name: name, transport: "built-in", outputChannelCount: 2, nominalSampleRate: 48_000, isVirtual: isVirtual, isAggregate: false)
+}
+
+/// Inert DSP for pipelines driven against the creation-counting platform fake.
+private final class SilentProcessor: StereoAudioProcessing {
+    func process(
+        inputLeft: UnsafePointer<Float>, inputRight: UnsafePointer<Float>?,
+        outputLeft: UnsafeMutablePointer<Float>, outputRight: UnsafeMutablePointer<Float>, frameCount: Int
+    ) {}
+}
+
+/// Platform fake that drives real `AudioPipeline` lifecycles while counting
+/// tap/aggregate creations and destructions — plan 021 Step 4's evidence that
+/// a forced stop-failure never produces a second concurrent pipeline.
+private final class CreationCountingPlatformFake: AudioPlatformClient {
+    private(set) var events: [String] = []
+    private(set) var tapCreationCount = 0
+    private(set) var aggregateCreationCount = 0
+    private(set) var destroyTapCount = 0
+    private(set) var destroyAggregateCount = 0
+    var stopIOFailuresRemaining = 0
+
+    private var outputHandler: DefaultOutputChangeHandler?
+    private var current = output()
+
+    func defaultOutputDevice() throws -> OutputDeviceDescriptor { current }
+    func observeDefaultOutput(_ handler: @escaping DefaultOutputChangeHandler) throws { outputHandler = handler }
+    func stopObservingDefaultOutput() { outputHandler = nil }
+
+    func emit(_ output: OutputDeviceDescriptor?) {
+        if let output { current = output }
+        outputHandler?(output)
+    }
+
+    func resolveOwnProcess() throws -> AudioProcessHandle { .init(value: 1) }
+
+    func createGlobalStereoTap(_ request: GlobalStereoTapRequest) throws -> AudioTapHandle {
+        events.append("createTap")
+        tapCreationCount += 1
+        return AudioTapHandle(value: UInt64(tapCreationCount))
+    }
+
+    func destroyTap(_ tap: AudioTapHandle) throws {
+        events.append("destroyTap")
+        destroyTapCount += 1
+    }
+
+    func createPrivateAggregate(tap: AudioTapHandle, output: OutputDeviceDescriptor) throws -> PrivateAggregateHandle {
+        events.append("createAggregate")
+        aggregateCreationCount += 1
+        return PrivateAggregateHandle(value: UInt64(aggregateCreationCount))
+    }
+
+    func destroyPrivateAggregate(_ aggregate: PrivateAggregateHandle) throws {
+        events.append("destroyAggregate")
+        destroyAggregateCount += 1
+    }
+
+    func streamFormat(for tap: AudioTapHandle) throws -> AudioStreamFormat { .stereo(sampleRate: 48_000) }
+    func streamFormat(for aggregate: PrivateAggregateHandle) throws -> AudioStreamFormat { .stereo(sampleRate: 48_000) }
+
+    func createIO(
+        aggregate: PrivateAggregateHandle,
+        callback: @escaping AudioIOCallback,
+        verificationHandler: @escaping AudioCaptureVerificationHandler
+    ) throws -> AudioIOHandle {
+        events.append("createIO")
+        return AudioIOHandle(value: 1)
+    }
+
+    func startIO(_ io: AudioIOHandle) throws { events.append("startIO") }
+
+    func stopIO(_ io: AudioIOHandle) throws {
+        events.append("stopIO")
+        if stopIOFailuresRemaining > 0 {
+            stopIOFailuresRemaining -= 1
+            throw AudioRuntimeError.cleanupFailed("forced stopIO failure")
+        }
+    }
+
+    func destroyIO(_ io: AudioIOHandle) throws { events.append("destroyIO") }
+    func openAudioCapturePermissionSettings() {}
 }

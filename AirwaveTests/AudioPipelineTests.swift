@@ -306,6 +306,98 @@ final class AudioPipelineTests: XCTestCase {
         XCTAssertTrue(platform.hasNoLiveResources)
     }
 
+    func testPassthroughHoldHaltsIOImmediatelyAndDestroysOnceOrderedAfterWindow() throws {
+        let platform = RecordingAudioPlatformClient()
+        let pipeline = AudioPipeline(platform: platform, processor: PassthroughProcessor())
+        try pipeline.start()
+        AudioPipeline.passthroughHoldInterval = 0.05
+        defer { AudioPipeline.passthroughHoldInterval = 0.5 }
+        var completionError: Error?
+        var completed = false
+
+        XCTAssertNoThrow(try pipeline.stop(holdingPassthroughFade: true) { error in
+            completionError = error
+            completed = true
+        })
+
+        // While the fade is pending: program audio stopped (one stopIO) but
+        // every handle stays registered (native audio stays muted).
+        XCTAssertEqual(platform.events.filter { $0 == "stopIO" }.count, 1)
+        XCTAssertEqual(platform.liveResources, [.tap, .aggregate, .io])
+
+        try waitUntil(completed)
+        XCTAssertNil(completionError)
+        XCTAssertTrue(platform.hasNoLiveResources)
+        // Exactly one ordered destroy sequence, strictly after the window.
+        XCTAssertEqual(Array(platform.events.suffix(3)), ["destroyIO", "destroyAggregate", "destroyTap"])
+        XCTAssertEqual(platform.events.filter { $0 == "destroyIO" }.count, 1)
+        XCTAssertEqual(platform.events.filter { $0 == "destroyAggregate" }.count, 1)
+        XCTAssertEqual(platform.events.filter { $0 == "destroyTap" }.count, 1)
+    }
+
+    func testNoUnmuteWhilePassthroughFadeIsPending() throws {
+        let platform = RecordingAudioPlatformClient()
+        let pipeline = AudioPipeline(platform: platform, processor: PassthroughProcessor())
+        try pipeline.start()
+        AudioPipeline.passthroughHoldInterval = 60
+        defer { AudioPipeline.passthroughHoldInterval = 0.5 }
+
+        XCTAssertNoThrow(try pipeline.stop(holdingPassthroughFade: true, onTeardownComplete: nil))
+
+        // Nothing may be destroyed while the fade window is pending — this is
+        // the property that keeps native audio muted through HRIR→None.
+        XCTAssertEqual(platform.events.last, "stopIO")
+        XCTAssertFalse(platform.events.contains("destroyTap"))
+        XCTAssertFalse(platform.events.contains("destroyAggregate"))
+
+        // A concurrent stop while teardown is pending must be refused instead
+        // of reporting success (which would allow a replacement pipeline).
+        XCTAssertThrowsError(try pipeline.stop())
+        XCTAssertEqual(platform.events.last, "stopIO")
+    }
+
+    func testFailedDeferredTeardownPreservesChainForSameObjectRetry() throws {
+        let platform = RecordingAudioPlatformClient()
+        let pipeline = AudioPipeline(platform: platform, processor: PassthroughProcessor())
+        try pipeline.start()
+        AudioPipeline.passthroughHoldInterval = 0.02
+        defer { AudioPipeline.passthroughHoldInterval = 0.5 }
+        platform.teardownFailuresRemaining["destroyTap"] = 1
+        var completionError: Error?
+        var completed = false
+
+        XCTAssertNoThrow(try pipeline.stop(holdingPassthroughFade: true) { error in
+            completionError = error
+            completed = true
+        })
+        try waitUntil(completed)
+
+        // The failing stage surfaces its error and preserves the surviving
+        // chain on THE SAME object for a later stop() retry.
+        XCTAssertNotNil(completionError)
+        XCTAssertEqual(platform.liveResources, [.tap])
+
+        XCTAssertNoThrow(try pipeline.stop())
+        XCTAssertTrue(platform.hasNoLiveResources)
+        guard let destroyStart = platform.events.firstIndex(of: "destroyIO") else {
+            return XCTFail("expected a deferred destroy sequence")
+        }
+        XCTAssertEqual(
+            Array(platform.events[destroyStart...]),
+            ["destroyIO", "destroyAggregate", "destroyTap", "destroyTap"]
+        )
+    }
+
+    private func waitUntil(timeout: TimeInterval = 5, _ condition: @autoclosure () -> Bool) throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            if Date() > deadline { XCTFail("timed out waiting for deferred teardown") }
+            // Pump the main queue so the deferred-teardown timer can fire;
+            // synchronous XCTests execute on the main thread.
+            RunLoop.main.run(until: Date().addingTimeInterval(0.005))
+        }
+    }
+
     private var contractSourceURL: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
