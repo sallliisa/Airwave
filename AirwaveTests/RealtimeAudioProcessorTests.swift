@@ -389,3 +389,214 @@ final class SpatialRendererCrossfaderTests: XCTestCase {
         }
     }
 }
+
+/// Regression soak for the full-scale-output incident reported on external
+/// headphones: convolution audio died mid-stream and switching HRIR -> None
+/// produced an extremely loud blast. These tests drive the real render chain
+/// (crossfader -> RealtimeAudioProcessor -> StereoConvolutionEngine) the way
+/// Core Audio drives it — arbitrary callback sizes, mono or stereo input,
+/// rapid preset swaps, mid-stream deactivation and reset — and assert every
+/// emitted sample stays finite and within a tight bound. A blast cannot pass.
+final class RenderSafetySoakTests: XCTestCase {
+    private let blockSize = 512
+    private let sampleRate = 48_000.0
+    /// Input sine peaks at 0.5; every state is L1-normalized (gain <= 1) and
+    /// equal-power fades stay under sqrt(2), so 2.0 leaves a wide margin while
+    /// still catching any garbage-scale output.
+    private let outputBound: Float = 2.0
+
+    private func makeRandom(seed: UInt64) -> () -> UInt64 {
+        var state = seed
+        return {
+            state ^= state << 13
+            state ^= state >> 7
+            state ^= state << 17
+            return state
+        }
+    }
+
+    /// Decaying-noise impulse response normalized to unit L1 gain, so the
+    /// convolution can never exceed the input amplitude.
+    private func normalizedIR(tapCount: Int, gain: Float, seed: UInt64) -> [Float] {
+        var random = makeRandom(seed: seed)
+        var taps = (0..<tapCount * blockSize).map { index -> Float in
+            let amplitude = Float(random() % 1000) / 1000 - 0.5
+            return amplitude * pow(0.996, Float(index))
+        }
+        let energy = taps.reduce(0) { $0 + abs($1) }
+        taps = taps.map { $0 / energy * gain }
+        return taps
+    }
+
+    private func makeState(tapCount: Int, gain: Float, seed: UInt64) -> HRIRManager.RendererState {
+        let renderers = (0..<2).map { channel -> VirtualSpeakerRenderer in
+            let engine = StereoConvolutionEngine(
+                leftEarHRIR: normalizedIR(tapCount: tapCount, gain: gain, seed: seed + UInt64(channel)),
+                rightEarHRIR: normalizedIR(tapCount: tapCount, gain: gain, seed: seed + UInt64(channel) + 100),
+                blockSize: blockSize
+            )!
+            return VirtualSpeakerRenderer(speaker: channel == 0 ? .FL : .FR, convolver: engine)
+        }
+        return HRIRManager.RendererState(renderers: renderers, blockSize: blockSize)
+    }
+
+    /// Drives the crossfader with randomized callback sizes and mono/stereo
+    /// input, asserting finite bounded output after every callback.
+    private final class SoakDriver {
+        let crossfader: SpatialRendererCrossfader
+        private(set) var peak: Float = 0
+        private(set) var frames = 0
+        private var frame = 0
+
+        init(_ crossfader: SpatialRendererCrossfader) {
+            self.crossfader = crossfader
+        }
+
+        /// Returns the emitted segment so callers can assert passthrough tails.
+        func run(size: Int, mono: Bool, file: StaticString = #filePath, line: UInt = #line) -> ([Float], [Float]) {
+            var chunk = [Float](repeating: 0, count: size)
+            for index in 0..<size {
+                chunk[index] = 0.5 * Float(sin(2 * Double.pi * 480 * Double(frame + index) / 48_000))
+            }
+            frame += size
+            frames += size
+            var left = [Float](repeating: .nan, count: size)
+            var right = [Float](repeating: .nan, count: size)
+            chunk.withUnsafeBufferPointer { inputPtr in
+                left.withUnsafeMutableBufferPointer { leftPtr in
+                    right.withUnsafeMutableBufferPointer { rightPtr in
+                        crossfader.process(
+                            inputLeft: inputPtr.baseAddress!,
+                            inputRight: mono ? nil : inputPtr.baseAddress!,
+                            leftOutput: leftPtr.baseAddress!,
+                            rightOutput: rightPtr.baseAddress!,
+                            frameCount: size
+                        )
+                    }
+                }
+            }
+            for channel in [left, right] {
+                for sample in channel {
+                    XCTAssertTrue(sample.isFinite, "non-finite output at frame \(frames)", file: file, line: line)
+                    XCTAssertLessThanOrEqual(abs(sample), 2.0, "output exceeded blast bound at frame \(frames)", file: file, line: line)
+                    peak = max(peak, abs(sample))
+                }
+            }
+            return (left, right)
+        }
+    }
+
+    private func makeSoakCrossfader() -> SpatialRendererCrossfader {
+        SpatialRendererCrossfader(primeLength: blockSize, maxFramesPerCallback: 4_096)
+    }
+
+    func testSteadyStateRandomizedCallbacksStayFiniteAndBounded() {
+        let crossfader = makeSoakCrossfader()
+        let driver = SoakDriver(crossfader)
+        var random = makeRandom(seed: 0xA11CE)
+        crossfader.observe(makeState(tapCount: 7, gain: 1, seed: 42))
+
+        for callback in 0..<600 {
+            let size = 1 + Int(random() % 4_096)
+            _ = driver.run(size: size, mono: callback % 3 == 0)
+            if callback % 50 == 49 {
+                crossfader.drainRetiredStates()
+            }
+        }
+
+        XCTAssertGreaterThan(driver.frames, 1_000_000)
+        XCTAssertLessThanOrEqual(driver.peak, 0.75)
+    }
+
+    func testSwitchStormIncludingRemovalToPassthroughStaysFiniteAndBounded() {
+        let crossfader = makeSoakCrossfader()
+        let driver = SoakDriver(crossfader)
+        var random = makeRandom(seed: 0xBEEF)
+        let stateA = makeState(tapCount: 7, gain: 1, seed: 42)
+        let stateB = makeState(tapCount: 1, gain: 0.8, seed: 7)
+        let stateC = makeState(tapCount: 3, gain: 0.9, seed: 99)
+
+        // Mirrors the reported incident: HRIR playing, then rapid switches,
+        // then HRIR -> None on the live pipeline.
+        crossfader.observe(stateA)
+        for _ in 0..<20 { _ = driver.run(size: 1 + Int(random() % 4_096), mono: false) }
+
+        crossfader.observe(stateB)
+        for _ in 0..<3 { _ = driver.run(size: 1 + Int(random() % 4_096), mono: true) }
+        crossfader.observe(stateC)
+        for _ in 0..<2 { _ = driver.run(size: 1 + Int(random() % 4_096), mono: false) }
+
+        // Deactivate while a fade is still in flight (None during priming/fade).
+        crossfader.observe(nil)
+        for _ in 0..<3 { _ = driver.run(size: 1 + Int(random() % 4_096), mono: false) }
+        crossfader.requestReset()
+        _ = driver.run(size: 1 + Int(random() % 4_096), mono: false)
+
+        // Back to convolution, then out again — the exact HRIR -> None action.
+        crossfader.observe(stateB)
+        for _ in 0..<10 { _ = driver.run(size: 1 + Int(random() % 4_096), mono: false) }
+        crossfader.observe(nil)
+        crossfader.drainRetiredStates()
+
+        var tail: [Float] = []
+        var chunkIndex = 0
+        while crossfader.isRenderingSpatialAudio, chunkIndex < 64 {
+            let (left, _) = driver.run(size: 1 + Int(random() % 4_096), mono: false)
+            tail.append(contentsOf: left)
+            chunkIndex += 1
+        }
+        XCTAssertFalse(crossfader.isRenderingSpatialAudio, "removal fade never completed")
+        XCTAssertLessThanOrEqual(driver.peak, 0.75)
+    }
+
+    func testAdapterResetStormStaysFiniteAndBounded() {
+        let renderers = (0..<2).map { channel -> VirtualSpeakerRenderer in
+            let engine = StereoConvolutionEngine(
+                leftEarHRIR: normalizedIR(tapCount: 5, gain: 1, seed: 3 + UInt64(channel)),
+                rightEarHRIR: normalizedIR(tapCount: 5, gain: 1, seed: 13 + UInt64(channel)),
+                blockSize: blockSize
+            )!
+            return VirtualSpeakerRenderer(speaker: channel == 0 ? .FL : .FR, convolver: engine)
+        }
+        let processor = RealtimeAudioProcessor(renderers: renderers, blockSize: blockSize, maxFramesPerCallback: 4_096)
+        var random = makeRandom(seed: 0xC0FFEE)
+        var frame = 0
+        var peak: Float = 0
+
+        for block in 0..<400 {
+            let size = 1 + Int(random() % 4_096)
+            var chunk = [Float](repeating: 0, count: size)
+            for index in 0..<size {
+                chunk[index] = 0.5 * Float(sin(2 * Double.pi * 300 * Double(frame + index) / 48_000))
+            }
+            frame += size
+            var left = [Float](repeating: .nan, count: size)
+            var right = [Float](repeating: .nan, count: size)
+            chunk.withUnsafeBufferPointer { inputPtr in
+                left.withUnsafeMutableBufferPointer { leftPtr in
+                    right.withUnsafeMutableBufferPointer { rightPtr in
+                        processor.process(
+                            inputLeft: inputPtr.baseAddress!,
+                            inputRight: block % 5 == 0 ? nil : inputPtr.baseAddress!,
+                            leftOutput: leftPtr.baseAddress!,
+                            rightOutput: rightPtr.baseAddress!,
+                            frameCount: size
+                        )
+                    }
+                }
+            }
+            for channel in [left, right] {
+                for sample in channel {
+                    XCTAssertTrue(sample.isFinite, "non-finite output in block \(block)")
+                    XCTAssertLessThanOrEqual(abs(sample), 2.0, "output exceeded blast bound in block \(block)")
+                    peak = max(peak, abs(sample))
+                }
+            }
+            if block % 37 == 36 {
+                processor.reset()
+            }
+        }
+
+        XCTAssertLessThanOrEqual(peak, 0.75)
+    }
+}

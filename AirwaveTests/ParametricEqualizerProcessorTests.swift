@@ -2,6 +2,133 @@ import Foundation
 import XCTest
 @testable import Airwave
 
+/// Regression soak for the full-scale-output incident reported on external
+/// headphones: convolution audio died mid-stream and HRIR -> None produced an
+/// extremely loud blast. The equalizer runs in the same render callback, so
+/// these tests soak the vectorized biquad path with every bundled preset at
+/// both common device sample rates under randomized callback sizes and
+/// repeated publish/crossfade churn. A marginally unstable Float biquad grows
+/// exponentially over time — these tests exist to catch exactly that.
+final class EqualizerSafetySoakTests: XCTestCase {
+    private let sampleRates: [Double] = [44_100, 48_000]
+    /// Input sine peaks at 0.5; preamp is bounded by the bundled presets'
+    /// -5 dB floor plus filter gain headroom. Anything near or above full
+    /// scale indicates runaway filter state.
+    private let outputBound: Float = 2.0
+
+    private func bundledDefinitions() throws -> [(name: String, definition: EqualizerDefinition)] {
+        // Bundled presets ship in the repo's assets/eq directory (copied into
+        // the app bundle); resolve them relative to this source file so the
+        // test does not depend on host-app bundle layout.
+        let assetsDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()      // AirwaveTests
+            .deletingLastPathComponent()      // repo root
+            .appendingPathComponent("assets/eq", isDirectory: true)
+        let fixtureDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures")
+        var urls = (try? FileManager.default.contentsOfDirectory(
+            at: assetsDirectory,
+            includingPropertiesForKeys: nil
+        ))?.filter { $0.pathExtension == "txt" } ?? []
+        urls += ((try? FileManager.default.contentsOfDirectory(
+            at: fixtureDirectory,
+            includingPropertiesForKeys: nil
+        ))?.filter { $0.pathExtension == "txt" } ?? [])
+        return try urls.map { url in
+            let data = try Data(contentsOf: url)
+            return (
+                url.deletingPathExtension().lastPathComponent,
+                try EqualizerAPOParser.parse(data: data, filename: url.lastPathComponent)
+            )
+        }
+    }
+
+    private func makeRandom(seed: UInt64) -> () -> UInt64 {
+        var state = seed | 1
+        return {
+            state ^= state << 13
+            state ^= state >> 7
+            state ^= state << 17
+            return state
+        }
+    }
+
+    @discardableResult
+    private func runSoak(
+        processor: ParametricEqualizerProcessor,
+        seconds: Double,
+        random: @escaping () -> UInt64,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> Float {
+        let sampleRate = processor.sampleRate
+        let totalFrames = Int(sampleRate * seconds)
+        var emitted = 0
+        var frame = 0
+        var peak: Float = 0
+
+        while emitted < totalFrames {
+            let size = 1 + Int(random() % 4_095)
+            var chunk = [Float](repeating: 0, count: size)
+            for index in 0..<size {
+                chunk[index] = 0.5 * Float(sin(2 * Double.pi * 997 * Double(frame + index) / sampleRate))
+            }
+            frame += size
+            var left = [Float](repeating: .nan, count: size)
+            var right = [Float](repeating: .nan, count: size)
+            chunk.withUnsafeBufferPointer { inputPtr in
+                left.withUnsafeMutableBufferPointer { leftPtr in
+                    right.withUnsafeMutableBufferPointer { rightPtr in
+                        processor.process(
+                            inputLeft: inputPtr.baseAddress!,
+                            inputRight: (random() % 3) == 0 ? nil : inputPtr.baseAddress!,
+                            leftOutput: leftPtr.baseAddress!,
+                            rightOutput: rightPtr.baseAddress!,
+                            frameCount: size
+                        )
+                    }
+                }
+            }
+            for channel in [left, right] {
+                for sample in channel {
+                    XCTAssertTrue(sample.isFinite, "non-finite EQ output at frame \(emitted)", file: file, line: line)
+                    XCTAssertLessThanOrEqual(abs(sample), outputBound, "EQ output exceeded blast bound at frame \(emitted)", file: file, line: line)
+                    peak = max(peak, abs(sample))
+                }
+            }
+            emitted += size
+        }
+        return peak
+    }
+
+    func testEveryBundledPresetStaysFiniteAndBoundedAtBothSampleRates() throws {
+        let definitions = try bundledDefinitions()
+        XCTAssertGreaterThanOrEqual(definitions.count, 5)
+        for sampleRate in [44_100.0, 48_000.0] {
+            for (index, entry) in definitions.enumerated() {
+                let processor = try ParametricEqualizerProcessor(sampleRate: sampleRate)
+                try processor.setTarget(definition: entry.definition)
+                let peak = runSoak(processor: processor, seconds: 8, random: makeRandom(seed: UInt64(index * 7919 + 13)))
+                XCTAssertLessThanOrEqual(peak, 1.25, "\(entry.name) @ \(Int(sampleRate)) Hz peaked at \(peak)")
+            }
+        }
+    }
+
+    func testRapidPresetAndNoneCyclingStaysFiniteAndBounded() throws {
+        let definitions = try bundledDefinitions()
+        for sampleRate in [44_100.0, 48_000.0] {
+            let processor = try ParametricEqualizerProcessor(sampleRate: sampleRate)
+            for (index, entry) in definitions.enumerated() {
+                try processor.setTarget(definition: entry.definition)
+                runSoak(processor: processor, seconds: 0.5, random: makeRandom(seed: UInt64(index * 104_729 + 3)))
+                try processor.setTarget(definition: nil)
+                runSoak(processor: processor, seconds: 0.5, random: makeRandom(seed: UInt64(index * 15_485_917 + 5)))
+            }
+        }
+    }
+}
+
 final class ParametricEqualizerProcessorTests: XCTestCase {
     func testGoldenCoefficientsMatchEqualizerAPOQEquationsAtSupportedSampleRates() throws {
         let cases: [(EqualizerFilterType, Double, Double, Double, Double, [Double])] = [
