@@ -201,6 +201,11 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
         }
     }
 
+    /// Tears the chain down in strict IO → aggregate → tap order. Each stage is
+    /// idempotent-tolerant (the platform treats already-destroyed objects as
+    /// success) and throws only for genuinely unrecoverable statuses; a failed
+    /// stage preserves the rest of the chain so a later `stop()` can safely
+    /// retry THE SAME pipeline object.
     func stop() throws {
         if let io {
             if ioStarted {

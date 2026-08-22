@@ -252,6 +252,25 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
     private var availableOutputHandler: AvailableOutputChangeHandler?
     private var availableOutputListenerInstalled = false
 
+    /// Pipeline ownership is exclusive: one client instance serves exactly one
+    /// pipeline lifecycle, and its create/destroy calls are strictly ordered.
+    /// A second creation while a prior handle is still registered therefore
+    /// means a leaked concurrent pipeline — the P0 dead-air signature.
+    private func assertExclusiveResourceCreation(resource: String) {
+        let hasLiveHandle = !tapUIDs.isEmpty || !aggregateIDs.isEmpty
+        guard hasLiveHandle else { return }
+        Logger.log(
+            "[CoreAudio] Exclusive-ownership violation: \(resource) created while prior tap/aggregate handles are still registered (taps: \(tapUIDs.keys.sorted()), aggregates: \(aggregateIDs.sorted()))."
+        )
+        #if DEBUG
+        assertionFailure("Airwave created a second \(resource) while a previous tap/aggregate was still registered — leaked concurrent pipeline.")
+        #else
+        AirwaveLog.audioRuntime.fault(
+            "Exclusive pipeline ownership violated: \(resource, privacy: .public) created while prior tap/aggregate handles are still registered."
+        )
+        #endif
+    }
+
     func defaultOutputDevice() throws -> OutputDeviceDescriptor {
         let deviceID: AudioObjectID = try getSystemObjectValue(selector: kAudioHardwarePropertyDefaultOutputDevice)
         guard deviceID != kAudioObjectUnknown else { throw AudioRuntimeError.noOutputDevice }
@@ -405,6 +424,7 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
               request.streamIndex >= 0 else {
             throw AudioRuntimeError.tapCreationFailed("Invalid global stereo tap request")
         }
+        assertExclusiveResourceCreation(resource: "process tap")
         let description = CATapDescription(
             excludingProcesses: request.excludedProcesses.map { AudioObjectID($0.value) },
             deviceUID: request.outputDeviceUID,
@@ -446,6 +466,7 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
         guard let tapUID = tapUIDs[tapID] else {
             throw AudioRuntimeError.aggregateCreationFailed("Unknown process tap")
         }
+        assertExclusiveResourceCreation(resource: "private aggregate")
         let aggregateUID = "com.southneuhof.Airwave.private.\(instanceUUID.uuidString)"
         let description: [String: Any] = [
             kAudioAggregateDeviceUIDKey: aggregateUID,

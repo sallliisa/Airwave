@@ -410,7 +410,11 @@ final class AudioRuntimeController {
         } else { preparation = nil }
 
         let currentGeneration = generation
-        try? pipeline?.stop()
+        // Pipeline ownership is exclusive: a previous pipeline that still holds
+        // tap/aggregate/IO resources must never be overwritten by a candidate.
+        // A failed stop is fatal-in-order — keep the reference and let the
+        // cleanup retry release it before anything else starts.
+        guard stopLivePipeline() else { return }
         let candidate = pipelineFactory()
         let candidateIdentity = ObjectIdentifier(candidate)
         pipeline = candidate
@@ -449,8 +453,19 @@ final class AudioRuntimeController {
                 scheduleStabilityReset(for: currentGeneration)
             }
         } catch {
-            pipeline = nil
-            try? candidate.stop()
+            // The failed candidate still owns whatever it acquired; keep the
+            // reference so cleanup retries target it and nothing replaces it
+            // while its resources are live.
+            pipeline = candidate
+            do { try candidate.stop(); pipeline = nil }
+            catch {
+                state.publish(
+                    .recovering(reason: "Releasing audio resources…"),
+                    output: output,
+                    captureAccess: captureAccess
+                )
+                scheduleCleanupRetry(error)
+            }
             handleFailure(
                 error,
                 output: output,
@@ -507,7 +522,12 @@ final class AudioRuntimeController {
             stimulusToken?.cancel(); stimulusToken = nil
             verificationTimeoutToken?.cancel(); verificationTimeoutToken = nil
             stimulusPlayer.stop()
-            guard (try? pipeline?.stop()) != nil else { handleFailure(AudioRuntimeError.cleanupFailed("Stop verification pipeline"), output: output); return }
+            // Fatal-in-order: if the probe pipeline cannot be released, no new
+            // pipeline may be built while its tap/aggregate/IO still exist.
+            guard stopLivePipeline() else {
+                handleFailure(AudioRuntimeError.cleanupFailed("Stop verification pipeline"), output: output)
+                return
+            }
             pipeline = nil
             clearCaptureAndPipelineIssuesAfterSuccess()
             state.setCaptureAccess(.verified)
@@ -598,6 +618,27 @@ final class AudioRuntimeController {
             return true
         }
         catch { scheduleCleanupRetry(error); return false }
+    }
+
+    /// Stops the live pipeline without dropping it on failure. Pipeline
+    /// ownership is exclusive: while any tap/aggregate/IO resources remain
+    /// alive, no candidate pipeline may be created, so a failed stop is fatal
+    /// in order and recovery goes through `scheduleCleanupRetry`, which keeps
+    /// retrying this same object.
+    @discardableResult
+    private func stopLivePipeline() -> Bool {
+        guard let pipeline else { return true }
+        do {
+            try pipeline.stop()
+            self.pipeline = nil
+            state.setHealthIssue(nil, for: .recovery)
+            Logger.log("[AudioRuntime] Released live pipeline \(ObjectIdentifier(pipeline))")
+            return true
+        }
+        catch {
+            scheduleCleanupRetry(error)
+            return false
+        }
     }
 
     private func scheduleRetry(reason: String, output: OutputDeviceDescriptor?) {
