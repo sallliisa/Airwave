@@ -9,6 +9,10 @@ nonisolated enum AirwaveLog {
 
     /// Pipeline lifecycle: tap/aggregate/IO creation, destruction, retries.
     static let audioRuntime = os.Logger(subsystem: subsystem, category: "audioRuntime")
+    /// Runtime lifecycle events mandated by plan 021 Step 3: pipeline
+    /// start/stop stage outcomes with handle IDs, tap/aggregate
+    /// creation+destruction, retry scheduling, spatial-live accept/refuse.
+    static let audio = os.Logger(subsystem: subsystem, category: "audio")
     /// Output-device observation and route changes.
     static let deviceRoute = os.Logger(subsystem: subsystem, category: "deviceRoute")
     /// Capture verification (probe) outcomes.

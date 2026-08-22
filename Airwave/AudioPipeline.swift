@@ -162,7 +162,8 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
         verificationHandler: @escaping AudioCaptureVerificationHandler
     ) throws {
         guard tap == nil, aggregate == nil, io == nil else { return }
-
+        let pipelineID = ObjectIdentifier(self)
+        AirwaveLog.audio.info("Pipeline start: stage=defaultOutput (\(String(describing: pipelineID))).")
         do {
             guard output.outputChannelCount == 2, !output.isVirtual, !output.isAggregate else {
                 throw AudioRuntimeError.unsupportedOutput(output.name)
@@ -182,6 +183,7 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
             )
             let createdTap = try platform.createGlobalStereoTap(request)
             tap = createdTap
+            AirwaveLog.audio.info("Pipeline start: created tap \(createdTap.value) (\(String(describing: pipelineID))).")
 
             let tapFormat = try platform.streamFormat(for: createdTap)
             let expectedFormat = AudioStreamFormat.stereo(sampleRate: output.nominalSampleRate)
@@ -191,6 +193,7 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
 
             let createdAggregate = try platform.createPrivateAggregate(tap: createdTap, output: output)
             aggregate = createdAggregate
+            AirwaveLog.audio.info("Pipeline start: created aggregate \(createdAggregate.value) (\(String(describing: pipelineID))).")
 
             let aggregateFormat = try platform.streamFormat(for: createdAggregate)
             guard aggregateFormat.isStereoFloat32Compatible(with: expectedFormat) else {
@@ -216,9 +219,12 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
                 verificationHandler: verificationHandler
             )
             io = createdIO
+            AirwaveLog.audio.info("Pipeline start: created IO \(createdIO.value) (\(String(describing: pipelineID))).")
             try platform.startIO(createdIO)
             ioStarted = true
+            AirwaveLog.audio.info("Pipeline start complete (pipeline \(String(describing: pipelineID)), IO \(createdIO.value), aggregate \(createdAggregate.value), tap \(createdTap.value)).")
         } catch {
+            AirwaveLog.audio.error("Pipeline start failed: \(String(describing: error), privacy: .public) (\(String(describing: pipelineID))); unwinding.")
             try? stop()
             throw error
         }
@@ -236,22 +242,27 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
             // created while these resources are still registered.
             throw AudioRuntimeError.cleanupFailed("Pipeline teardown already scheduled")
         }
+        let pipelineID = ObjectIdentifier(self)
         if let io {
             if ioStarted {
                 // Never destroy a running I/O object or its dependencies. A failed stop
                 // preserves the complete chain so a later stop() can retry safely.
                 try platform.stopIO(io)
                 ioStarted = false
+                AirwaveLog.audio.info("Pipeline stop: stopped IO \(io.value) (\(String(describing: pipelineID))).")
             }
             try platform.destroyIO(io)
+            AirwaveLog.audio.info("Pipeline stop: destroyed IO \(io.value) (\(String(describing: pipelineID))).")
             self.io = nil
         }
         if let aggregate {
             try platform.destroyPrivateAggregate(aggregate)
+            AirwaveLog.audio.info("Pipeline stop: destroyed aggregate \(aggregate.value) (\(String(describing: pipelineID))).")
             self.aggregate = nil
         }
         if let tap {
             try platform.destroyTap(tap)
+            AirwaveLog.audio.info("Pipeline stop: destroyed tap \(tap.value) (\(String(describing: pipelineID))).")
             self.tap = nil
         }
     }
@@ -397,6 +408,9 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
                 return
             }
             onTeardownComplete?(nil)
+            AirwaveLog.audio.info(
+                "Pipeline stop: deferred teardown complete (pipeline \(String(describing: ObjectIdentifier(self.pipeline)))."
+            )
         }
     }
 }

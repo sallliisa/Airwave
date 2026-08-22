@@ -200,7 +200,11 @@ final class AudioRuntimeController {
             spatialReady: isReady,
             equalizerDefinition: effectReadiness.equalizerDefinition
         )
+        let isPipelineLive = canUpdateSpatialLive
         guard canUpdateSpatialLive, readiness.hasSelectedEffect else {
+            AirwaveLog.audio.info(
+                "updateSpatialLive refused (isReady \(isReady, privacy: .public), pipelineLive \(isPipelineLive, privacy: .public), effectRemains \(readiness.hasSelectedEffect, privacy: .public))."
+            )
             // HRIR→None with no equalizer remaining: adopt the emptied
             // readiness, publish the empty-renderer state (the renderer
             // crossfades to passthrough — already implemented) and keep the
@@ -218,6 +222,9 @@ final class AudioRuntimeController {
         effectReadiness = readiness
         state.setHealthIssue(nil, for: .spatial)
         state.setHealthIssue(nil, for: .pipeline)
+        AirwaveLog.audio.info(
+            "updateSpatialLive accepted (isReady \(isReady, privacy: .public))."
+        )
         state.publish(
             .processing,
             output: state.currentOutput,
@@ -729,6 +736,9 @@ final class AudioRuntimeController {
         let reason = "Releasing audio resources. Retrying in \(Int(delay))s."
         state.setHealthIssue(.resourceRecovery(reason: reason), for: .recovery)
         state.publish(.recovering(reason: reason))
+        AirwaveLog.audio.info(
+            "Cleanup retry scheduled in \(delay)s (generation \(retryGeneration)): \(reason, privacy: .public)"
+        )
         retryToken = scheduler.schedule(after: delay) { [weak self] in
             guard let self, self.generation == retryGeneration else { return }
             self.retryToken = nil
@@ -736,6 +746,9 @@ final class AudioRuntimeController {
             if self.effectReadiness.hasSelectedEffect && !self.explicitCaptureTest {
                 self.captureProbeRequested = true
             }
+            AirwaveLog.audio.info(
+                "Cleanup retry fired (generation \(retryGeneration)); reconciling."
+            )
             self.reconcile()
         }
     }
