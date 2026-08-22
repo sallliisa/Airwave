@@ -574,17 +574,6 @@ final class AudioRuntimeControllerTests: XCTestCase {
         XCTAssertEqual(h.state.status, .inactive)
     }
 
-    func testLiveSpatialUpdateIsRefusedWhileAConflictingAppRuns() {
-        let h = Harness(effect: true)
-        h.pipelines.automaticEvent = nil
-        h.controller.launch(presetReady: true, captureVerified: true)
-        h.controller.tapConflictsChanged(.init(appNames: ["FineTune"]))
-
-        XCTAssertFalse(h.controller.canUpdateSpatialLive)
-        XCTAssertFalse(h.controller.updateSpatialLive(isReady: true))
-        XCTAssertEqual(h.pipelines.liveCount, 0)
-    }
-
     func testOutputChangeSleepAndTerminationReleaseResources() {
         let h = Harness(effect: true)
         h.controller.launch(presetReady: true)

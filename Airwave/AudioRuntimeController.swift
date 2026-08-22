@@ -176,7 +176,7 @@ final class AudioRuntimeController {
     var canUpdateSpatialLive: Bool {
         launched && !sleeping && !terminated
             && pipeline != nil && captureVerified
-            && state.status.isProcessing && tapConflict.isEmpty
+            && state.status.isProcessing
     }
 
     /// Applies a spatial readiness change without stopping the tap. The renderer
