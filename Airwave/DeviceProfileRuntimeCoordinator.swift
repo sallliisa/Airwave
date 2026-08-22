@@ -155,21 +155,40 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
     /// between renderer states. Restarts only when no live pipeline can take it.
     private func spatialProfileChanged(includesEqualizer: Bool) {
         let definition = equalizer.preset(id: profiles.currentProfile?.equalizerPresetID)?.definition
+        // HRIR→None (plan 021 Step 2): publish the empty-renderer state first so
+        // the renderer crossfades to passthrough, then let the controller hold
+        // the tap past the fade before teardown. Checked BEFORE liveness so the
+        // wedged-pipeline variant of the incident takes this path too.
+        guard let hrirID = profiles.currentProfile?.hrirPresetID,
+              let preset = hrir.presets.first(where: { $0.id == hrirID }) else {
+            generation += 1
+            hrir.deactivatePreset()
+            guard definition == nil else {
+                // An equalizer remains: existing behavior — keep the pipeline
+                // alive, push the EQ live, and fade the renderer out.
+                guard controller.canUpdateSpatialLive, preparedOutput != nil,
+                      !controller.isDeferredTeardownPendingForTesting else {
+                    controller.reprepareCurrentOutput()
+                    return
+                }
+                if includesEqualizer { controller.updateCurrentEqualizer(definition) }
+                _ = controller.updateSpatialLive(isReady: false)
+                return
+            }
+            // Nothing left to run: publish passthrough (the renderer fades)
+            // and let the controller defer the tap teardown past the fade, so
+            // destroying the tap cannot unmute native audio into program audio.
+            _ = controller.updateSpatialLive(isReady: false)
+            return
+        }
         guard controller.canUpdateSpatialLive, let output = preparedOutput else {
             controller.reprepareCurrentOutput()
             return
         }
-        guard let hrirID = profiles.currentProfile?.hrirPresetID,
-              let preset = hrir.presets.first(where: { $0.id == hrirID }) else {
-            guard definition != nil else {
-                // Nothing left to run; the pipeline must stop so the tap unmutes.
-                controller.reprepareCurrentOutput()
-                return
-            }
-            generation += 1
-            hrir.deactivatePreset()
-            if includesEqualizer { controller.updateCurrentEqualizer(definition) }
-            controller.updateSpatialLive(isReady: false)
+        // A preset was re-selected while a previous None-switch teardown is
+        // still inside its hold window: never live-update into a dying chain.
+        if controller.isDeferredTeardownPendingForTesting {
+            controller.reprepareCurrentOutput()
             return
         }
 

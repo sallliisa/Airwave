@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import os
 
 nonisolated struct AudioRuntimeEffectReadiness: Equatable, Sendable {
     let spatialReady: Bool
@@ -179,6 +180,17 @@ final class AudioRuntimeController {
             && state.status.isProcessing
     }
 
+    /// True while a passthrough-hold teardown is scheduled but has not yet
+    /// destroyed the tap/aggregate/IO. During this window no new pipeline may
+    /// start, and a preset re-selected mid-window is routed down the full
+    /// restart path instead of a live update into an already-dying chain.
+    private var isDeferredTeardownPending: Bool {
+        pipeline?.isDeferredTeardownPending ?? false
+    }
+
+    /// Testable/internal view of a pending passthrough-hold teardown.
+    var isDeferredTeardownPendingForTesting: Bool { isDeferredTeardownPending }
+
     /// Applies a spatial readiness change without stopping the tap. The renderer
     /// state was already published to the render thread, which crossfades to it.
     /// Falls back to the full restart path when the pipeline is not live.
@@ -189,7 +201,18 @@ final class AudioRuntimeController {
             equalizerDefinition: effectReadiness.equalizerDefinition
         )
         guard canUpdateSpatialLive, readiness.hasSelectedEffect else {
-            updateReadiness(readiness, invalidation: .spatial)
+            // HRIR→None with no equalizer remaining: adopt the emptied
+            // readiness, publish the empty-renderer state (the renderer
+            // crossfades to passthrough — already implemented) and keep the
+            // tap running past the fade via the hold window, so destroying
+            // the tap can never unmute native audio into program audio.
+            guard readiness != effectReadiness else { return false }
+            effectReadiness = readiness
+            let stopped = stopForInvalidation(allowingPassthroughHold: true)
+            if stopped {
+                captureProbeRequested = false
+                state.publish(.inactive, output: state.currentOutput)
+            }
             return false
         }
         effectReadiness = readiness
@@ -599,7 +622,20 @@ final class AudioRuntimeController {
         return false
     }
 
-    private func stopForInvalidation() -> Bool {
+    /// True when the pending readiness leaves no effect running at all
+    /// (spatial cleared and no equalizer remains) — the plan-021 trigger for
+    /// deferring tap teardown past the passthrough fade.
+    private var noEffectRemainsAfterUpdate: Bool {
+        !effectReadiness.spatialReady && effectReadiness.equalizerDefinition == nil
+    }
+
+    /// Stops the live pipeline for an invalidation. With `allowingPassthroughHold`
+    /// set and no effect remaining, the final teardown is deferred by a short
+    /// hold window (see `AudioPipeline.stop(holdingPassthroughFade:onTeardownComplete:)`)
+    /// so destroying the tap can never unmute native audio into program audio.
+    /// Until the deferred destruction completes, the pipeline object stays
+    /// owned and no replacement may be created.
+    private func stopForInvalidation(allowingPassthroughHold: Bool = false) -> Bool {
         generation += 1
         verificationTimeoutToken?.cancel(); verificationTimeoutToken = nil
         stimulusToken?.cancel(); stimulusToken = nil
@@ -612,12 +648,44 @@ final class AudioRuntimeController {
         stabilityToken?.cancel(); stabilityToken = nil
         guard let pipeline else { return true }
         do {
+            if allowingPassthroughHold, noEffectRemainsAfterUpdate {
+                try pipeline.stop(holdingPassthroughFade: true) { [weak self] error in
+                    guard let self else { return }
+                    MainActor.assumeIsolated {
+                        self.finishDeferredTeardown(of: pipeline, error: error)
+                    }
+                }
+                Logger.log("[AudioRuntime] Passthrough-hold teardown armed for \(ObjectIdentifier(pipeline))")
+                AirwaveLog.audioRuntime.info(
+                    "Passthrough-hold teardown armed for pipeline \(String(describing: ObjectIdentifier(pipeline)))."
+                )
+                return true
+            }
             try pipeline.stop()
             self.pipeline = nil
             state.setHealthIssue(nil, for: .recovery)
             return true
         }
         catch { scheduleCleanupRetry(error); return false }
+    }
+
+    /// Completes a passthrough-hold teardown: releases the reference on
+    /// success, or schedules a cleanup retry against THE SAME pipeline object
+    /// on failure. Exclusive ownership is preserved throughout — no candidate
+    /// pipeline is created while any handle of this object is still registered.
+    private func finishDeferredTeardown(of finished: AudioPipelineControlling, error: Error?) {
+        if let current = pipeline, ObjectIdentifier(current) != ObjectIdentifier(finished) {
+            // A different object owns the slot now; nothing to finalize.
+            return
+        }
+        guard error == nil else {
+            scheduleCleanupRetry(error!)
+            return
+        }
+        pipeline = nil
+        state.setHealthIssue(nil, for: .recovery)
+        Logger.log("[AudioRuntime] Deferred teardown released pipeline \(ObjectIdentifier(finished))")
+        AirwaveLog.audioRuntime.info("Deferred passthrough teardown completed.")
     }
 
     /// Stops the live pipeline without dropping it on failure. Pipeline

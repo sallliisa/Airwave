@@ -2,6 +2,7 @@ import AppKit
 import AudioToolbox
 import CoreAudio
 import Foundation
+import os
 
 nonisolated enum CoreAudioStatus {
     static func check(_ status: OSStatus, operation: String) throws {
