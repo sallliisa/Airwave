@@ -270,11 +270,15 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
 
     /// Pipeline ownership is exclusive: one client instance serves exactly one
     /// pipeline lifecycle, and its create/destroy calls are strictly ordered.
-    /// A second creation while a prior handle is still registered therefore
-    /// means a leaked concurrent pipeline — the P0 dead-air signature.
-    private func assertExclusiveResourceCreation(resource: String) {
-        let hasLiveHandle = !tapUIDs.isEmpty || !aggregateIDs.isEmpty
-        guard hasLiveHandle else { return }
+    /// A second creation while a PRIOR FOREIGN handle is still registered
+    /// therefore means a leaked concurrent pipeline — the P0 dead-air
+    /// signature. A pipeline's own tap registered moments earlier is part of
+    /// the same lifecycle, not a leak.
+    private func assertExclusiveResourceCreation(
+        resource: String,
+        conflictsWithLiveHandle: Bool
+    ) {
+        guard conflictsWithLiveHandle else { return }
         Logger.log(
             "[CoreAudio] Exclusive-ownership violation: \(resource) created while prior tap/aggregate handles are still registered (taps: \(tapUIDs.keys.sorted()), aggregates: \(aggregateIDs.sorted()))."
         )
@@ -440,7 +444,10 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
               request.streamIndex >= 0 else {
             throw AudioRuntimeError.tapCreationFailed("Invalid global tap request")
         }
-        assertExclusiveResourceCreation(resource: "process tap")
+        assertExclusiveResourceCreation(
+            resource: "process tap",
+            conflictsWithLiveHandle: !tapUIDs.isEmpty || !aggregateIDs.isEmpty
+        )
         let description = CATapDescription(
             excludingProcesses: request.excludedProcesses.map { AudioObjectID($0.value) },
             deviceUID: request.outputDeviceUID,
@@ -484,7 +491,10 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
         }
         // Our own tap is guaranteed registered above; a second tap or any
         // aggregate signals a leaked concurrent pipeline.
-        assertExclusiveResourceCreation(resource: "private aggregate")
+        assertExclusiveResourceCreation(
+            resource: "private aggregate",
+            conflictsWithLiveHandle: !aggregateIDs.isEmpty || tapUIDs.count > 1
+        )
         let aggregateUID = "com.southneuhof.Airwave.private.\(instanceUUID.uuidString)"
         let description: [String: Any] = [
             kAudioAggregateDeviceUIDKey: aggregateUID,
