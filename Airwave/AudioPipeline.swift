@@ -3,8 +3,8 @@ import os
 
 nonisolated protocol StereoAudioProcessing: AnyObject {
     func process(
-        inputLeft: UnsafePointer<Float>,
-        inputRight: UnsafePointer<Float>?,
+        inputChannels: UnsafePointer<UnsafePointer<Float>?>,
+        inputChannelCount: Int,
         outputLeft: UnsafeMutablePointer<Float>,
         outputRight: UnsafeMutablePointer<Float>,
         frameCount: Int
@@ -13,15 +13,15 @@ nonisolated protocol StereoAudioProcessing: AnyObject {
 
 extension HRIRManager: StereoAudioProcessing {
     nonisolated func process(
-        inputLeft: UnsafePointer<Float>,
-        inputRight: UnsafePointer<Float>?,
+        inputChannels: UnsafePointer<UnsafePointer<Float>?>,
+        inputChannelCount: Int,
         outputLeft: UnsafeMutablePointer<Float>,
         outputRight: UnsafeMutablePointer<Float>,
         frameCount: Int
     ) {
         processAudio(
-            inputLeft: inputLeft,
-            inputRight: inputRight,
+            inputChannels: inputChannels,
+            inputChannelCount: inputChannelCount,
             leftOutput: outputLeft,
             rightOutput: outputRight,
             frameCount: frameCount
@@ -95,24 +95,6 @@ extension AudioPipelineControlling {
     }
 }
 
-extension RealtimeAudioProcessor: StereoAudioProcessing {
-    func process(
-        inputLeft: UnsafePointer<Float>,
-        inputRight: UnsafePointer<Float>?,
-        outputLeft: UnsafeMutablePointer<Float>,
-        outputRight: UnsafeMutablePointer<Float>,
-        frameCount: Int
-    ) {
-        process(
-            inputLeft: inputLeft,
-            inputRight: inputRight,
-            leftOutput: outputLeft,
-            rightOutput: outputRight,
-            frameCount: frameCount
-        )
-    }
-}
-
 /// Owns one strict tap -> private aggregate -> I/O lifecycle.
 nonisolated final class AudioPipeline: AudioPipelineControlling {
     private let platform: AudioPlatformClient
@@ -165,7 +147,7 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
         let pipelineID = ObjectIdentifier(self)
         AirwaveLog.audio.info("Pipeline start: stage=defaultOutput (\(String(describing: pipelineID))).")
         do {
-            guard output.outputChannelCount == 2, !output.isVirtual, !output.isAggregate else {
+            guard (2...16).contains(output.outputChannelCount), !output.isVirtual, !output.isAggregate else {
                 throw AudioRuntimeError.unsupportedOutput(output.name)
             }
 
@@ -186,9 +168,9 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
             AirwaveLog.audio.info("Pipeline start: created tap \(createdTap.value) (\(String(describing: pipelineID))).")
 
             let tapFormat = try platform.streamFormat(for: createdTap)
-            let expectedFormat = AudioStreamFormat.stereo(sampleRate: output.nominalSampleRate)
-            guard tapFormat.isStereoFloat32Compatible(with: expectedFormat) else {
-                throw AudioRuntimeError.formatMismatch(expected: expectedFormat, actual: tapFormat)
+            let expectedCapture = AudioStreamFormat.capturing(channels: output.outputChannelCount, sampleRate: output.nominalSampleRate)
+            guard tapFormat.isFloat32CaptureCompatible(with: expectedCapture) else {
+                throw AudioRuntimeError.formatMismatch(expected: expectedCapture, actual: tapFormat)
             }
 
             let createdAggregate = try platform.createPrivateAggregate(tap: createdTap, output: output)
@@ -196,18 +178,18 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
             AirwaveLog.audio.info("Pipeline start: created aggregate \(createdAggregate.value) (\(String(describing: pipelineID))).")
 
             let aggregateFormat = try platform.streamFormat(for: createdAggregate)
-            guard aggregateFormat.isStereoFloat32Compatible(with: expectedFormat) else {
+            guard aggregateFormat.isFloat32CaptureCompatible(with: expectedCapture) else {
                 throw AudioRuntimeError.formatMismatch(expected: tapFormat, actual: aggregateFormat)
             }
 
             let createdIO = try platform.createIO(
                 aggregate: createdAggregate,
-                callback: { [processor] inLeft, inRight, outLeft, outRight, frames in
+                callback: { [processor] inputChannels, inputChannelCount, outLeft, outRight, frames in
                     switch purpose {
                     case .processing:
                         processor.process(
-                            inputLeft: inLeft,
-                            inputRight: inRight,
+                            inputChannels: inputChannels,
+                            inputChannelCount: inputChannelCount,
                             outputLeft: outLeft,
                             outputRight: outRight,
                             frameCount: frames

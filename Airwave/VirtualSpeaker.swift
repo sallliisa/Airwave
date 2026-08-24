@@ -61,31 +61,31 @@ struct InputLayout {
     let name: String
     
     /// Standard stereo layout
-    static let stereo = InputLayout(
+    nonisolated static let stereo = InputLayout(
         channels: [.FL, .FR],
         name: "Stereo"
     )
     
     /// Standard 5.1 surround layout
-    static let surround51 = InputLayout(
+    nonisolated static let surround51 = InputLayout(
         channels: [.FL, .FR, .FC, .LFE, .BL, .BR],
         name: "5.1 Surround"
     )
     
     /// Standard 7.1 surround layout
-    static let surround71 = InputLayout(
+    nonisolated static let surround71 = InputLayout(
         channels: [.FL, .FR, .FC, .LFE, .BL, .BR, .SL, .SR],
         name: "7.1 Surround"
     )
     
     /// 7.1.4 Atmos layout
-    static let atmos714 = InputLayout(
+    nonisolated static let atmos714 = InputLayout(
         channels: [.FL, .FR, .FC, .LFE, .BL, .BR, .SL, .SR, .TFL, .TFR, .TBL, .TBR],
         name: "7.1.4 Atmos"
     )
     
     /// Detect layout from channel count
-    static func detect(channelCount: Int) -> InputLayout {
+    nonisolated static func detect(channelCount: Int) -> InputLayout {
         switch channelCount {
         case 2: return .stereo
         case 6: return .surround51

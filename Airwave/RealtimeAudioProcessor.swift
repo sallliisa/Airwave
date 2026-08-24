@@ -8,13 +8,23 @@
 import Accelerate
 
 /// Fixed-storage frame adapter for the audio render thread.
+///
+/// Capture width (inputChannelCount) follows the tapped device stream. Paired
+/// renderers convolve their channels; unpaired channels fold into the stereo
+/// mix through equal-power downmix gains. Output stays stereo.
 nonisolated final class RealtimeAudioProcessor {
     let blockSize: Int
     let maxFramesPerCallback: Int
+    let inputChannelCount: Int
 
     private let renderers: [VirtualSpeakerRenderer]
-    private let pendingLeft: UnsafeMutablePointer<Float>
-    private let pendingRight: UnsafeMutablePointer<Float>
+    /// Speaker identity of every captured channel, used to fold down channels
+    /// without a paired convolution renderer.
+    private let fallbackSpeakers: [VirtualSpeaker]
+    private let pendingInputs: [UnsafeMutablePointer<Float>]
+    /// Mono capture (width 1) duplicates its single feed so a front pair of
+    /// renderers both consume it (CATap mono contract).
+    private let feedCount: Int
     private let blockLeft: UnsafeMutablePointer<Float>
     private let blockRight: UnsafeMutablePointer<Float>
     private let leftTempBuffers: [UnsafeMutablePointer<Float>]
@@ -29,19 +39,29 @@ nonisolated final class RealtimeAudioProcessor {
 
     init(
         renderers: [VirtualSpeakerRenderer],
+        inputChannelCount: Int,
+        fallbackSpeakers: [VirtualSpeaker],
         blockSize: Int = 512,
         maxFramesPerCallback: Int = 4096
     ) {
         precondition(blockSize > 0)
         precondition(maxFramesPerCallback > 0)
+        precondition((1...16).contains(inputChannelCount))
+        let feedCount = inputChannelCount == 1 ? min(max(renderers.count, 1), 2) : inputChannelCount
+        precondition(renderers.count <= feedCount)
+        precondition(fallbackSpeakers.count == inputChannelCount)
 
         self.renderers = renderers
+        self.inputChannelCount = inputChannelCount
+        self.feedCount = feedCount
+        self.fallbackSpeakers = fallbackSpeakers
         self.blockSize = blockSize
         self.maxFramesPerCallback = maxFramesPerCallback
         self.fifoCapacity = maxFramesPerCallback + blockSize
 
-        pendingLeft = UnsafeMutablePointer<Float>.allocate(capacity: blockSize)
-        pendingRight = UnsafeMutablePointer<Float>.allocate(capacity: blockSize)
+        pendingInputs = (0..<max(feedCount, inputChannelCount)).map { _ in
+            UnsafeMutablePointer<Float>.allocate(capacity: blockSize)
+        }
         blockLeft = UnsafeMutablePointer<Float>.allocate(capacity: blockSize)
         blockRight = UnsafeMutablePointer<Float>.allocate(capacity: blockSize)
         fifoLeft = UnsafeMutablePointer<Float>.allocate(capacity: fifoCapacity)
@@ -62,8 +82,7 @@ nonisolated final class RealtimeAudioProcessor {
     }
 
     deinit {
-        pendingLeft.deallocate()
-        pendingRight.deallocate()
+        for pointer in pendingInputs { pointer.deallocate() }
         blockLeft.deallocate()
         blockRight.deallocate()
         fifoLeft.deallocate()
@@ -74,40 +93,39 @@ nonisolated final class RealtimeAudioProcessor {
 
     /// Process any positive callback size up to maxFramesPerCallback.
     /// Underflow is deliberate: newly buffered samples produce silence until a full DSP block exists.
+    /// A nil channel pointer contributes silence rather than aliasing another channel.
+    /// `inputOffset` is the frame position within every source channel buffer,
+    /// so callers can hand segment views without copying.
     func process(
-        inputLeft: UnsafePointer<Float>,
-        inputRight: UnsafePointer<Float>?,
+        inputChannels: UnsafePointer<UnsafePointer<Float>?>,
+        inputChannelCount: Int,
+        inputOffset: Int,
         leftOutput: UnsafeMutablePointer<Float>,
         rightOutput: UnsafeMutablePointer<Float>,
         frameCount: Int
     ) {
         guard frameCount > 0 else { return }
         precondition(frameCount <= maxFramesPerCallback)
+        precondition(inputChannelCount == self.inputChannelCount)
 
-        var inputOffset = 0
-        while inputOffset < frameCount {
-            let copyCount = min(blockSize - pendingCount, frameCount - inputOffset)
-            memcpy(
-                pendingLeft.advanced(by: pendingCount),
-                inputLeft.advanced(by: inputOffset),
-                copyCount * MemoryLayout<Float>.size
-            )
-            if let inputRight {
-                memcpy(
-                    pendingRight.advanced(by: pendingCount),
-                    inputRight.advanced(by: inputOffset),
-                    copyCount * MemoryLayout<Float>.size
-                )
-            } else {
-                memcpy(
-                    pendingRight.advanced(by: pendingCount),
-                    inputLeft.advanced(by: inputOffset),
-                    copyCount * MemoryLayout<Float>.size
-                )
+        var segmentOffset = 0
+        while segmentOffset < frameCount {
+            let copyCount = min(blockSize - pendingCount, frameCount - segmentOffset)
+            for channel in 0..<self.inputChannelCount {
+                let destination = pendingInputs[channel].advanced(by: pendingCount)
+                if let source = inputChannels[channel] {
+                    memcpy(
+                        destination,
+                        source.advanced(by: inputOffset + segmentOffset),
+                        copyCount * MemoryLayout<Float>.size
+                    )
+                } else {
+                    memset(destination, 0, copyCount * MemoryLayout<Float>.size)
+                }
             }
 
             pendingCount += copyCount
-            inputOffset += copyCount
+            segmentOffset += copyCount
 
             if pendingCount == blockSize {
                 processPendingBlock()
@@ -126,8 +144,9 @@ nonisolated final class RealtimeAudioProcessor {
     }
 
     private func resetStorage() {
-        memset(pendingLeft, 0, blockSize * MemoryLayout<Float>.size)
-        memset(pendingRight, 0, blockSize * MemoryLayout<Float>.size)
+        for pointer in pendingInputs {
+            memset(pointer, 0, blockSize * MemoryLayout<Float>.size)
+        }
         memset(blockLeft, 0, blockSize * MemoryLayout<Float>.size)
         memset(blockRight, 0, blockSize * MemoryLayout<Float>.size)
         memset(fifoLeft, 0, fifoCapacity * MemoryLayout<Float>.size)
@@ -141,9 +160,14 @@ nonisolated final class RealtimeAudioProcessor {
         memset(blockLeft, 0, blockSize * MemoryLayout<Float>.size)
         memset(blockRight, 0, blockSize * MemoryLayout<Float>.size)
 
-        let rendererCount = min(renderers.count, 2)
-        for rendererIndex in 0..<rendererCount {
-            let input = rendererIndex == 0 ? pendingLeft : pendingRight
+        // Mono: replicate the captured feed before pairing so renderer 1 sees
+        // it as the right-ear input. Width >= 2 never enters this branch.
+        if feedCount > inputChannelCount {
+            memcpy(pendingInputs[1], pendingInputs[0], blockSize * MemoryLayout<Float>.size)
+        }
+
+        for rendererIndex in 0..<renderers.count {
+            let input = pendingInputs[rendererIndex]
             let renderer = renderers[rendererIndex]
             renderer.convolver.process(
                 input: input,
@@ -165,6 +189,15 @@ nonisolated final class RealtimeAudioProcessor {
             )
         }
 
+        // Channels without a paired renderer fold straight into the stereo mix.
+        // Mono duplication derives every renderer feed from channel 0, so no
+        // captured channel is unpaired there.
+        if feedCount == inputChannelCount {
+            for channel in renderers.count..<inputChannelCount {
+                foldDown(channel: channel)
+            }
+        }
+
         // At most two segments: up to the end of the ring, then the wrap.
         let writeIndex = (fifoReadIndex + fifoCount) % fifoCapacity
         let firstCount = min(blockSize, fifoCapacity - writeIndex)
@@ -176,6 +209,19 @@ nonisolated final class RealtimeAudioProcessor {
             memcpy(fifoRight, blockRight.advanced(by: firstCount), remainder * MemoryLayout<Float>.size)
         }
         fifoCount += blockSize
+    }
+
+    private func foldDown(channel: Int) {
+        let gains = StereoDownmixGains.gains(for: fallbackSpeakers[channel])
+        var leftGain = gains.left
+        var rightGain = gains.right
+        let input = pendingInputs[channel]
+        if leftGain != 0 {
+            vDSP_vsma(input, 1, &leftGain, blockLeft, 1, blockLeft, 1, vDSP_Length(blockSize))
+        }
+        if rightGain != 0 {
+            vDSP_vsma(input, 1, &rightGain, blockRight, 1, blockRight, 1, vDSP_Length(blockSize))
+        }
     }
 
     private func drain(

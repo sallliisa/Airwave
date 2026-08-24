@@ -60,19 +60,30 @@ nonisolated enum AudioCaptureVerificationPolicy {
 nonisolated struct CoreAudioIOVerificationState: Equatable, Sendable {
     private(set) var signalReported = false
     private(set) var renderFailureReported = false
-    private var captureSignalPolicy = CaptureSignalPolicy()
+    private var channelPolicies: [CaptureSignalPolicy]
+
+    init(inputChannelCount: Int) {
+        signalReported = false
+        renderFailureReported = false
+        channelPolicies = Array(repeating: CaptureSignalPolicy(), count: max(inputChannelCount, 1))
+    }
 
     mutating func observeSignal(
-        inputLeft: UnsafePointer<Float>,
-        inputRight: UnsafePointer<Float>?,
+        inputChannels: UnsafePointer<UnsafePointer<Float>?>,
+        inputChannelCount: Int,
         frameCount: Int
     ) -> AudioCaptureVerificationEvent? {
-        guard !signalReported,
-              captureSignalPolicy.observe(
-                  inputLeft: inputLeft,
-                  inputRight: inputRight,
-                  frameCount: frameCount
-              ) else { return nil }
+        guard !signalReported else { return nil }
+        var detected = false
+        for index in 0..<min(inputChannelCount, channelPolicies.count) {
+            if let channel = inputChannels[index] {
+                let _ = channelPolicies[index].observe(channel: channel, frameCount: frameCount)
+                if channelPolicies[index].hasDetectedSignal {
+                    detected = true
+                }
+            }
+        }
+        guard detected else { return nil }
         signalReported = true
         return .signalDetected
     }
@@ -124,13 +135,6 @@ nonisolated struct StereoCallbackPreparation {
 nonisolated enum StereoCallbackBridge {
     static let maximumFrames = 4_096
 
-    static func validate(_ format: AudioStreamFormat) -> Bool {
-        format.channelCount == 2
-            && format.sampleType == .float32
-            && format.sampleRate > 0
-            && !format.isInterleaved
-    }
-
     static func zero(
         left: UnsafeMutablePointer<Float>,
         right: UnsafeMutablePointer<Float>,
@@ -149,17 +153,19 @@ nonisolated enum StereoCallbackBridge {
             return StereoCallbackPreparation(output: nil, status: kAudio_ParamError)
         }
         let output = UnsafeMutableAudioBufferListPointer(ioData)
-        let buffersToSilence = min(output.count, 2)
-        if buffersToSilence > 0 {
-            for index in 0..<buffersToSilence {
-                guard let data = output[index].mData?.assumingMemoryBound(to: Float.self) else { continue }
-                let available = min(
-                    Int(output[index].mDataByteSize) / MemoryLayout<Float>.size,
-                    maximumFrames
-                )
-                if available > 0 {
-                    memset(data, 0, available * MemoryLayout<Float>.size)
-                }
+        // Pre-silence EVERY buffer the device hands us: with a multichannel
+        // aggregate, stale memory beyond channels 1-2 would play on surround
+        // outputs. The DSP writes only the stereo pair. Silencing stays inside
+        // the requested window — the HAL consumes exactly requestedFrames.
+        for index in 0..<output.count {
+            guard let data = output[index].mData?.assumingMemoryBound(to: Float.self) else { continue }
+            let available = min(
+                Int(output[index].mDataByteSize) / MemoryLayout<Float>.size,
+                Int(requestedFrames),
+                maximumFrames
+            )
+            if available > 0 {
+                memset(data, 0, available * MemoryLayout<Float>.size)
             }
         }
         guard output.count == 2,
@@ -203,42 +209,51 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
         let unit: AudioUnit
         let callback: AudioIOCallback
         let verificationHandler: AudioCaptureVerificationHandler
-        let inputLeft: UnsafeMutablePointer<Float>
-        let inputRight: UnsafeMutablePointer<Float>
+        let inputChannelCount: Int
+        let inputStorage: [UnsafeMutablePointer<Float>]
+        // Preallocated once; refreshed in place on every render callback.
+        let inputPointers: UnsafeMutablePointer<UnsafePointer<Float>?>
         let inputListStorage: UnsafeMutableRawPointer
-        var verificationState = CoreAudioIOVerificationState()
+        var verificationState: CoreAudioIOVerificationState
 
         init(
             unit: AudioUnit,
             callback: @escaping AudioIOCallback,
-            verificationHandler: @escaping AudioCaptureVerificationHandler
+            verificationHandler: @escaping AudioCaptureVerificationHandler,
+            inputChannelCount: Int
         ) {
+            precondition((1...16).contains(inputChannelCount))
             self.unit = unit
             self.callback = callback
             self.verificationHandler = verificationHandler
-            inputLeft = .allocate(capacity: StereoCallbackBridge.maximumFrames)
-            inputRight = .allocate(capacity: StereoCallbackBridge.maximumFrames)
-            let byteCount = MemoryLayout<AudioBufferList>.size + MemoryLayout<AudioBuffer>.size
+            self.inputChannelCount = inputChannelCount
+            inputPointers = .allocate(capacity: inputChannelCount)
+            var storage: [UnsafeMutablePointer<Float>] = []
+            storage.reserveCapacity(inputChannelCount)
+            for _ in 0..<inputChannelCount {
+                storage.append(.allocate(capacity: StereoCallbackBridge.maximumFrames))
+            }
+            inputStorage = storage
+            let byteCount = MemoryLayout<AudioBufferList>.size
+                + MemoryLayout<AudioBuffer>.size * (inputChannelCount - 1)
             inputListStorage = .allocate(byteCount: byteCount, alignment: MemoryLayout<AudioBufferList>.alignment)
             inputListStorage.initializeMemory(as: UInt8.self, repeating: 0, count: byteCount)
+            verificationState = CoreAudioIOVerificationState(inputChannelCount: inputChannelCount)
             let inputList = inputListStorage.assumingMemoryBound(to: AudioBufferList.self)
-            inputList.pointee.mNumberBuffers = 2
+            inputList.pointee.mNumberBuffers = UInt32(inputChannelCount)
             let buffers = UnsafeMutableAudioBufferListPointer(inputList)
-            buffers[0] = AudioBuffer(
-                mNumberChannels: 1,
-                mDataByteSize: UInt32(StereoCallbackBridge.maximumFrames * MemoryLayout<Float>.size),
-                mData: inputLeft
-            )
-            buffers[1] = AudioBuffer(
-                mNumberChannels: 1,
-                mDataByteSize: UInt32(StereoCallbackBridge.maximumFrames * MemoryLayout<Float>.size),
-                mData: inputRight
-            )
+            for index in 0..<inputChannelCount {
+                buffers[index] = AudioBuffer(
+                    mNumberChannels: 1,
+                    mDataByteSize: UInt32(StereoCallbackBridge.maximumFrames * MemoryLayout<Float>.size),
+                    mData: inputStorage[index]
+                )
+            }
         }
 
         deinit {
-            inputLeft.deallocate()
-            inputRight.deallocate()
+            for pointer in inputStorage { pointer.deallocate() }
+            inputPointers.deallocate()
             inputListStorage.deallocate()
         }
     }
@@ -419,11 +434,11 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
 
     func createGlobalStereoTap(_ request: GlobalStereoTapRequest) throws -> AudioTapHandle {
         guard request.isGlobal,
-              request.channelCount == 2,
+              (2...16).contains(request.channelCount),
               request.isPrivate,
               !request.outputDeviceUID.isEmpty,
               request.streamIndex >= 0 else {
-            throw AudioRuntimeError.tapCreationFailed("Invalid global stereo tap request")
+            throw AudioRuntimeError.tapCreationFailed("Invalid global tap request")
         }
         assertExclusiveResourceCreation(resource: "process tap")
         let description = CATapDescription(
@@ -460,13 +475,15 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
     }
 
     func createPrivateAggregate(tap: AudioTapHandle, output: OutputDeviceDescriptor) throws -> PrivateAggregateHandle {
-        guard output.outputChannelCount == 2, !output.isVirtual, !output.isAggregate else {
+        guard (2...16).contains(output.outputChannelCount), !output.isVirtual, !output.isAggregate else {
             throw AudioRuntimeError.unsupportedOutput(output.name)
         }
         let tapID = AudioObjectID(tap.value)
         guard let tapUID = tapUIDs[tapID] else {
             throw AudioRuntimeError.aggregateCreationFailed("Unknown process tap")
         }
+        // Our own tap is guaranteed registered above; a second tap or any
+        // aggregate signals a leaked concurrent pipeline.
         assertExclusiveResourceCreation(resource: "private aggregate")
         let aggregateUID = "com.southneuhof.Airwave.private.\(instanceUUID.uuidString)"
         let description: [String: Any] = [
@@ -552,13 +569,27 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
             try setUnit(unit, property: kAudioOutputUnitProperty_CurrentDevice, scope: kAudioUnitScope_Global, element: 0, value: &currentDevice)
 
             let rate: Float64 = try getObjectValue(aggregateID, selector: kAudioDevicePropertyNominalSampleRate)
+            let aggregateFormat = try streamFormat(for: aggregate)
+            // Capture width follows the tapped device; the binaural output
+            // bus stays stereo. AUHAL maps the wide input side; the render
+            // callback writes only the first two output channels.
+            let captureWidth = min(max(aggregateFormat.channelCount, 1), 16)
+            var inputFormat = canonicalWideFormat(sampleRate: rate, channelCount: captureWidth)
+            try setUnit(unit, property: kAudioUnitProperty_StreamFormat, scope: kAudioUnitScope_Output, element: 1, value: &inputFormat)
             var format = canonicalStereoFormat(sampleRate: rate)
-            try setUnit(unit, property: kAudioUnitProperty_StreamFormat, scope: kAudioUnitScope_Output, element: 1, value: &format)
             try setUnit(unit, property: kAudioUnitProperty_StreamFormat, scope: kAudioUnitScope_Input, element: 0, value: &format)
+            AirwaveLog.audio.info(
+                "IO formats: wide input bus (\(captureWidth) ch) / stereo output bus @ \(rate) Hz"
+            )
             var maximumFrames = UInt32(StereoCallbackBridge.maximumFrames)
             try setUnit(unit, property: kAudioUnitProperty_MaximumFramesPerSlice, scope: kAudioUnitScope_Global, element: 0, value: &maximumFrames)
 
-            let context = IOContext(unit: unit, callback: callback, verificationHandler: verificationHandler)
+            let context = IOContext(
+                unit: unit,
+                callback: callback,
+                verificationHandler: verificationHandler,
+                inputChannelCount: captureWidth
+            )
             var render = AURenderCallbackStruct(
                 inputProc: coreAudioRenderCallback,
                 inputProcRefCon: Unmanaged.passUnretained(context).toOpaque()
@@ -654,6 +685,7 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
             uid: uid,
             name: name,
             transport: fourCC(transport),
+            channelLabels: outputChannelLabels(deviceID),
             outputChannelCount: channels,
             nominalSampleRate: sampleRate,
             isVirtual: isVirtual,
@@ -712,6 +744,33 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
         return list.reduce(0) { $0 + Int($1.mNumberChannels) }
     }
 
+    /// Best-effort read of the device's output channel labels. Nil means the
+    /// property was unreadable or malformed; callers fall back to count-based
+    /// layout detection.
+    private func outputChannelLabels(_ objectID: AudioObjectID) -> [UInt32]? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyPreferredChannelLayout,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(objectID, &address, 0, nil, &size) == noErr else { return nil }
+        let minimumSize = MemoryLayout<AudioChannelLayout>.size - MemoryLayout<AudioChannelDescription>.size
+        guard Int(size) >= minimumSize else { return nil }
+        let storage = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioChannelLayout>.alignment)
+        defer { storage.deallocate() }
+        guard AudioObjectGetPropertyData(objectID, &address, 0, nil, &size, storage) == noErr else { return nil }
+
+        // Variable-length trailing array: the descriptions begin where the
+        // fixed-size header ends (both types share the same 4-byte alignment).
+        let headerBytes = minimumSize
+        let descriptions = storage.advanced(by: headerBytes).assumingMemoryBound(to: AudioChannelDescription.self)
+        let count = Int(storage.assumingMemoryBound(to: AudioChannelLayout.self).pointee.mNumberChannelDescriptions)
+        let capacity = (Int(size) - headerBytes) / MemoryLayout<AudioChannelDescription>.stride
+        guard count > 0, count <= capacity else { return nil }
+        return (0..<count).map { descriptions[$0].mChannelLabel }
+    }
+
     private func streamFormat(_ asbd: AudioStreamBasicDescription) -> AudioStreamFormat {
         let isFloat32 = asbd.mFormatID == kAudioFormatLinearPCM
             && asbd.mBitsPerChannel == 32
@@ -736,6 +795,15 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
             mBitsPerChannel: 32,
             mReserved: 0
         )
+    }
+
+    /// Same canonical float32 non-interleaved shape, at capture width.
+    private func canonicalWideFormat(sampleRate: Double, channelCount: Int) -> AudioStreamBasicDescription {
+        var format = canonicalStereoFormat(sampleRate: sampleRate)
+        format.mChannelsPerFrame = UInt32(channelCount)
+        format.mBytesPerFrame = UInt32(4 * channelCount)
+        format.mBytesPerPacket = format.mBytesPerFrame
+        return format
     }
 
     private func setUnit<T>(
@@ -789,16 +857,21 @@ nonisolated private func coreAudioRenderCallback(
         }
         return status
     }
+    // Refresh the preallocated pointer array in place; no per-callback
+    // allocation on this realtime path.
+    for index in 0..<context.inputChannelCount {
+        context.inputPointers[index] = UnsafePointer<Float>(context.inputStorage[index])
+    }
     if let event = context.verificationState.observeSignal(
-        inputLeft: UnsafePointer<Float>(context.inputLeft),
-        inputRight: UnsafePointer<Float>(context.inputRight),
+        inputChannels: UnsafePointer(context.inputPointers),
+        inputChannelCount: context.inputChannelCount,
         frameCount: output.frameCount
     ) {
         context.verificationHandler(event)
     }
     context.callback(
-        UnsafePointer<Float>(context.inputLeft),
-        UnsafePointer<Float>(context.inputRight),
+        UnsafePointer(context.inputPointers),
+        context.inputChannelCount,
         output.left,
         output.right,
         output.frameCount

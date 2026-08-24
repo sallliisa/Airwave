@@ -110,7 +110,10 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
         hrir.activatePreset(
             preset,
             targetSampleRate: output.nominalSampleRate,
-            inputLayout: .stereo
+            inputLayout: InputLayoutResolver.layout(
+                channelLabels: output.channelLabels,
+                channelCount: output.outputChannelCount
+            )
         ) { [weak self] result in
             guard let self, requestedGeneration == self.generation else { return }
             switch result {
@@ -197,7 +200,10 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
         hrir.activatePreset(
             preset,
             targetSampleRate: output.nominalSampleRate,
-            inputLayout: .stereo
+            inputLayout: InputLayoutResolver.layout(
+                channelLabels: output.channelLabels,
+                channelCount: output.outputChannelCount
+            )
         ) { [weak self] result in
             guard let self, requestedGeneration == self.generation else { return }
             switch result {

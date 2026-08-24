@@ -14,6 +14,9 @@ nonisolated struct OutputDeviceDescriptor: Equatable, Sendable {
     let uid: String
     let name: String
     let transport: String
+    /// Raw `kAudioChannelLabel` values from the device's output channel layout.
+    /// Nil when unreadable; absence triggers count-based layout detection.
+    let channelLabels: [UInt32]?
     let outputChannelCount: Int
     let nominalSampleRate: Double
     let isVirtual: Bool
@@ -22,7 +25,7 @@ nonisolated struct OutputDeviceDescriptor: Equatable, Sendable {
     /// The single support policy shared by persistence and the audio runtime.
     var isSupportedProfileOutput: Bool {
         !uid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !isVirtual && !isAggregate && outputChannelCount == 2
+            && !isVirtual && !isAggregate && (2...16).contains(outputChannelCount)
     }
 
     var unsupportedProfileReason: String? {
@@ -32,8 +35,8 @@ nonisolated struct OutputDeviceDescriptor: Equatable, Sendable {
         if isVirtual || isAggregate {
             return "Unsupported virtual or aggregate output. Change output in macOS Settings."
         }
-        if outputChannelCount != 2 {
-            return "Airwave requires a stereo output. Change output in macOS Settings."
+        if !(2...16).contains(outputChannelCount) {
+            return "Airwave supports 2 to 16 output channels on physical devices."
         }
         return nil
     }
@@ -54,12 +57,19 @@ nonisolated struct AudioStreamFormat: Equatable, Sendable {
         Self(sampleRate: sampleRate, channelCount: 2, sampleType: .float32, isInterleaved: false)
     }
 
+    /// Expected capture format for a device stream of the given width.
+    static func capturing(channels: Int, sampleRate: Double) -> Self {
+        Self(sampleRate: sampleRate, channelCount: channels, sampleType: .float32, isInterleaved: false)
+    }
+
     /// AUHAL converts interleaved tap/aggregate streams into the canonical
     /// non-interleaved callback format configured by CoreAudioPlatformClient.
-    func isStereoFloat32Compatible(with expected: Self) -> Bool {
-        channelCount == 2
+    /// Width follows the tapped device stream; the binaural output stays stereo.
+    func isFloat32CaptureCompatible(with expected: Self) -> Bool {
+        (1...16).contains(channelCount)
+            && (1...16).contains(expected.channelCount)
+            && channelCount == expected.channelCount
             && sampleType == .float32
-            && expected.channelCount == 2
             && expected.sampleType == .float32
             && AudioSampleRateCompatibility.matches(sampleRate, with: expected.sampleRate)
     }
@@ -104,6 +114,9 @@ nonisolated struct GlobalStereoTapRequest: Equatable, Sendable {
     let isPrivate: Bool
     let muteBehavior: AudioTapMuteBehavior
 
+    /// Historical name: the tap is still global and private, but its width
+    /// now follows the tapped output device's channel count (2...16) instead
+    /// of being hardcoded stereo.
     init(
         excludedProcesses: [AudioProcessHandle],
         output: OutputDeviceDescriptor,
@@ -113,7 +126,7 @@ nonisolated struct GlobalStereoTapRequest: Equatable, Sendable {
         self.outputDeviceUID = output.uid
         self.streamIndex = 0
         self.isGlobal = true
-        self.channelCount = 2
+        self.channelCount = output.outputChannelCount
         self.isPrivate = true
         self.muteBehavior = muteBehavior
     }
@@ -143,8 +156,8 @@ nonisolated enum AudioRuntimeError: Error, Equatable {
 typealias DefaultOutputChangeHandler = (OutputDeviceDescriptor?) -> Void
 typealias AvailableOutputChangeHandler = ([OutputDeviceDescriptor]) -> Void
 typealias AudioIOCallback = (
-    _ inputLeft: UnsafePointer<Float>,
-    _ inputRight: UnsafePointer<Float>?,
+    _ inputChannels: UnsafePointer<UnsafePointer<Float>?>,
+    _ inputChannelCount: Int,
     _ outputLeft: UnsafeMutablePointer<Float>,
     _ outputRight: UnsafeMutablePointer<Float>,
     _ frameCount: Int
@@ -156,25 +169,32 @@ nonisolated struct CaptureSignalPolicy: Equatable, Sendable {
 
     private var sustainedFrames = 0
 
+    /// Observe one channel. Returns whether this call completed a detection;
+    /// the latch itself lives in the caller (see
+    /// `CoreAudioIOVerificationState`).
     mutating func observe(
-        inputLeft: UnsafePointer<Float>,
-        inputRight: UnsafePointer<Float>?,
+        channel: UnsafePointer<Float>,
         frameCount: Int
     ) -> Bool {
-        guard frameCount > 0 else { return false }
+        guard frameCount > 0 else { return hasDetectedSignal }
         for index in 0..<frameCount {
-            let left = inputLeft[index]
-            let right = inputRight?[index] ?? left
-            let active = left.isFinite && right.isFinite
-                && (abs(left) >= Self.sampleThreshold || abs(right) >= Self.sampleThreshold)
+            let sample = channel[index]
+            let active = sample.isFinite && abs(sample) >= Self.sampleThreshold
             if active {
                 sustainedFrames += 1
-                if sustainedFrames >= Self.minimumSustainedFrames { return true }
+                if sustainedFrames >= Self.minimumSustainedFrames {
+                    return true
+                }
             } else {
                 sustainedFrames = 0
             }
         }
         return false
+    }
+
+    /// True once any observation has completed the sustained-frame threshold.
+    var hasDetectedSignal: Bool {
+        sustainedFrames >= Self.minimumSustainedFrames
     }
 }
 

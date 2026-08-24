@@ -1,3 +1,4 @@
+import Accelerate
 import Foundation
 import os
 
@@ -44,11 +45,26 @@ nonisolated enum EqualizerAudioEffectError: Error, Equatable, LocalizedError, Se
     }
 }
 
-nonisolated protocol AudioSpatialEffect: StereoAudioProcessing {
+nonisolated protocol AudioSpatialEffect: AnyObject {
+    func process(
+        inputChannels: UnsafePointer<UnsafePointer<Float>?>,
+        inputChannelCount: Int,
+        outputLeft: UnsafeMutablePointer<Float>,
+        outputRight: UnsafeMutablePointer<Float>,
+        frameCount: Int
+    )
     var isReady: Bool { get }
 }
 
-nonisolated protocol AudioEqualizerEffect: StereoAudioProcessing {
+nonisolated protocol AudioEqualizerEffect: AnyObject {
+    /// Operates on the stereo binaural signal downstream of the spatial stage.
+    func process(
+        inputLeft: UnsafePointer<Float>,
+        inputRight: UnsafePointer<Float>?,
+        outputLeft: UnsafeMutablePointer<Float>,
+        outputRight: UnsafeMutablePointer<Float>,
+        frameCount: Int
+    )
     func prepare(definition: EqualizerDefinition?, sampleRate: Double) throws
     func setTarget(definition: EqualizerDefinition?) throws
 }
@@ -70,6 +86,9 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
     private let spatialLeftScratch: UnsafeMutablePointer<Float>
     private let spatialRightScratch: UnsafeMutablePointer<Float>
     private let maxFramesPerCallback: Int
+    /// Resolved per-output speaker identity of every captured channel; used to
+    /// fold down before the first prepare resolves a device layout.
+    private var inputSpeakers: [VirtualSpeaker] = [.FL, .FR]
     private let equalizerActiveLock = OSAllocatedUnfairLock<Bool>(initialState: false)
     private var audioThreadEqualizerActive = false
 
@@ -95,6 +114,10 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
         for output: OutputDeviceDescriptor,
         equalizerDefinition: EqualizerDefinition?
     ) -> AudioEffectPreparationResult {
+        inputSpeakers = InputLayoutResolver.layout(
+            channelLabels: output.channelLabels,
+            channelCount: output.outputChannelCount
+        ).channels
         var runnableEffects = Set<AudioEffectKind>()
         if spatial.isReady {
             runnableEffects.insert(.spatial)
@@ -177,8 +200,8 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
 
     // BEGIN REALTIME CALLBACK
     func process(
-        inputLeft: UnsafePointer<Float>,
-        inputRight: UnsafePointer<Float>?,
+        inputChannels: UnsafePointer<UnsafePointer<Float>?>,
+        inputChannelCount: Int,
         outputLeft: UnsafeMutablePointer<Float>,
         outputRight: UnsafeMutablePointer<Float>,
         frameCount: Int
@@ -195,8 +218,8 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
         if spatialReady {
             if equalizerActive {
                 spatial.process(
-                    inputLeft: inputLeft,
-                    inputRight: inputRight,
+                    inputChannels: inputChannels,
+                    inputChannelCount: inputChannelCount,
                     outputLeft: spatialLeftScratch,
                     outputRight: spatialRightScratch,
                     frameCount: frameCount
@@ -210,8 +233,8 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
                 )
             } else {
                 spatial.process(
-                    inputLeft: inputLeft,
-                    inputRight: inputRight,
+                    inputChannels: inputChannels,
+                    inputChannelCount: inputChannelCount,
                     outputLeft: outputLeft,
                     outputRight: outputRight,
                     frameCount: frameCount
@@ -220,13 +243,26 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
             return
         }
 
+        // Spatial inactive: fold every captured channel into the stereo pair.
+        // Plain stereo devices keep the historical byte-exact passthrough.
+        if !(inputChannelCount == 2 && inputSpeakers.count == 2) {
+            foldDownToStereo(
+                inputChannels: inputChannels,
+                inputChannelCount: inputChannelCount,
+                outputLeft: outputLeft,
+                outputRight: outputRight,
+                frameCount: frameCount
+            )
+        } else {
+            copyStereoPassthrough(
+                inputChannels: inputChannels,
+                frameCount: frameCount,
+                outputLeft: outputLeft,
+                outputRight: outputRight
+            )
+        }
+
         if equalizerActive {
-            memcpy(outputLeft, inputLeft, frameCount * MemoryLayout<Float>.size)
-            if let inputRight {
-                memcpy(outputRight, inputRight, frameCount * MemoryLayout<Float>.size)
-            } else {
-                memcpy(outputRight, inputLeft, frameCount * MemoryLayout<Float>.size)
-            }
             equalizer.process(
                 inputLeft: outputLeft,
                 inputRight: outputRight,
@@ -234,17 +270,55 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
                 outputRight: outputRight,
                 frameCount: frameCount
             )
-            return
-        }
-
-        memcpy(outputLeft, inputLeft, frameCount * MemoryLayout<Float>.size)
-        if let inputRight {
-            memcpy(outputRight, inputRight, frameCount * MemoryLayout<Float>.size)
-        } else {
-            memcpy(outputRight, inputLeft, frameCount * MemoryLayout<Float>.size)
         }
     }
     // END REALTIME CALLBACK
+
+    @inline(__always)
+    private func foldDownToStereo(
+        inputChannels: UnsafePointer<UnsafePointer<Float>?>,
+        inputChannelCount: Int,
+        outputLeft: UnsafeMutablePointer<Float>,
+        outputRight: UnsafeMutablePointer<Float>,
+        frameCount: Int
+    ) {
+        memset(outputLeft, 0, frameCount * MemoryLayout<Float>.size)
+        memset(outputRight, 0, frameCount * MemoryLayout<Float>.size)
+        for channel in 0..<min(inputChannelCount, inputSpeakers.count) {
+            guard let source = inputChannels[channel] else { continue }
+            let gains = StereoDownmixGains.gains(for: inputSpeakers[channel])
+            var leftGain = gains.left
+            var rightGain = gains.right
+            if leftGain != 0 {
+                vDSP_vsma(source, 1, &leftGain, outputLeft, 1, outputLeft, 1, vDSP_Length(frameCount))
+            }
+            if rightGain != 0 {
+                vDSP_vsma(source, 1, &rightGain, outputRight, 1, outputRight, 1, vDSP_Length(frameCount))
+            }
+        }
+    }
+
+    @inline(__always)
+    private func copyStereoPassthrough(
+        inputChannels: UnsafePointer<UnsafePointer<Float>?>,
+        frameCount: Int,
+        outputLeft: UnsafeMutablePointer<Float>,
+        outputRight: UnsafeMutablePointer<Float>
+    ) {
+        if let left = inputChannels[0] {
+            memcpy(outputLeft, left, frameCount * MemoryLayout<Float>.size)
+        } else {
+            memset(outputLeft, 0, frameCount * MemoryLayout<Float>.size)
+        }
+        if let right = inputChannels[1] {
+            memcpy(outputRight, right, frameCount * MemoryLayout<Float>.size)
+        } else if let left = inputChannels[0] {
+            // Mono capture duplicates into both ears (CATap mono contract).
+            memcpy(outputRight, left, frameCount * MemoryLayout<Float>.size)
+        } else {
+            memset(outputRight, 0, frameCount * MemoryLayout<Float>.size)
+        }
+    }
 }
 
 extension HRIRManager: AudioSpatialEffect {

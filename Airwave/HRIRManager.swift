@@ -263,8 +263,8 @@ nonisolated final class SpatialRendererCrossfader {
     }
 
     func process(
-        inputLeft: UnsafePointer<Float>,
-        inputRight: UnsafePointer<Float>?,
+        inputChannels: UnsafePointer<UnsafePointer<Float>?>,
+        inputChannelCount: Int,
         leftOutput: UnsafeMutablePointer<Float>,
         rightOutput: UnsafeMutablePointer<Float>,
         frameCount: Int
@@ -279,8 +279,9 @@ nonisolated final class SpatialRendererCrossfader {
             guard isFading else {
                 render(
                     activeState,
-                    inputLeft: inputLeft.advanced(by: offset),
-                    inputRight: inputRight?.advanced(by: offset),
+                    inputChannels: inputChannels,
+                    inputChannelCount: inputChannelCount,
+                    inputOffset: offset,
                     leftOutput: leftOutput.advanced(by: offset),
                     rightOutput: rightOutput.advanced(by: offset),
                     frameCount: frameCount - offset
@@ -290,14 +291,13 @@ nonisolated final class SpatialRendererCrossfader {
 
             let boundary = fadeFrame < primeFrames ? primeFrames : primeFrames + fadeLength
             let segment = min(boundary - fadeFrame, frameCount - offset)
-            let segmentInputLeft = inputLeft.advanced(by: offset)
-            let segmentInputRight = inputRight?.advanced(by: offset)
 
             if fadeFrame < primeFrames {
                 render(
                     fadeFrom,
-                    inputLeft: segmentInputLeft,
-                    inputRight: segmentInputRight,
+                    inputChannels: inputChannels,
+                    inputChannelCount: inputChannelCount,
+                    inputOffset: offset,
                     leftOutput: leftOutput.advanced(by: offset),
                     rightOutput: rightOutput.advanced(by: offset),
                     frameCount: segment
@@ -305,8 +305,9 @@ nonisolated final class SpatialRendererCrossfader {
                 // Warm the incoming adapter; its output is still silence-padded.
                 render(
                     fadeTo,
-                    inputLeft: segmentInputLeft,
-                    inputRight: segmentInputRight,
+                    inputChannels: inputChannels,
+                    inputChannelCount: inputChannelCount,
+                    inputOffset: offset,
                     leftOutput: toLeftScratch,
                     rightOutput: toRightScratch,
                     frameCount: segment
@@ -314,16 +315,18 @@ nonisolated final class SpatialRendererCrossfader {
             } else {
                 render(
                     fadeFrom,
-                    inputLeft: segmentInputLeft,
-                    inputRight: segmentInputRight,
+                    inputChannels: inputChannels,
+                    inputChannelCount: inputChannelCount,
+                    inputOffset: offset,
                     leftOutput: fromLeftScratch,
                     rightOutput: fromRightScratch,
                     frameCount: segment
                 )
                 render(
                     fadeTo,
-                    inputLeft: segmentInputLeft,
-                    inputRight: segmentInputRight,
+                    inputChannels: inputChannels,
+                    inputChannelCount: inputChannelCount,
+                    inputOffset: offset,
                     leftOutput: toLeftScratch,
                     rightOutput: toRightScratch,
                     frameCount: segment
@@ -347,20 +350,34 @@ nonisolated final class SpatialRendererCrossfader {
     @inline(__always)
     private func render(
         _ state: RendererState?,
-        inputLeft: UnsafePointer<Float>,
-        inputRight: UnsafePointer<Float>?,
+        inputChannels: UnsafePointer<UnsafePointer<Float>?>,
+        inputChannelCount: Int,
+        inputOffset: Int,
         leftOutput: UnsafeMutablePointer<Float>,
         rightOutput: UnsafeMutablePointer<Float>,
         frameCount: Int
     ) {
         guard let state, !state.renderers.isEmpty else {
-            memcpy(leftOutput, inputLeft, frameCount * MemoryLayout<Float>.size)
-            memcpy(rightOutput, inputRight ?? inputLeft, frameCount * MemoryLayout<Float>.size)
+            // Renderer-less passthrough: front pair straight out. Channels
+            // beyond stereo are intentionally dropped here; the effect graph
+            // owns wide fold-down when spatial is fully inactive.
+            if let left = inputChannels[0] {
+                memcpy(leftOutput, left.advanced(by: inputOffset), frameCount * MemoryLayout<Float>.size)
+            } else {
+                memset(leftOutput, 0, frameCount * MemoryLayout<Float>.size)
+            }
+            let rightSource = inputChannelCount > 1 ? inputChannels[1] : inputChannels[0]
+            if let right = rightSource {
+                memcpy(rightOutput, right.advanced(by: inputOffset), frameCount * MemoryLayout<Float>.size)
+            } else {
+                memset(rightOutput, 0, frameCount * MemoryLayout<Float>.size)
+            }
             return
         }
         state.processor.process(
-            inputLeft: inputLeft,
-            inputRight: inputRight,
+            inputChannels: inputChannels,
+            inputChannelCount: inputChannelCount,
+            inputOffset: inputOffset,
             leftOutput: leftOutput,
             rightOutput: rightOutput,
             frameCount: frameCount
@@ -470,10 +487,15 @@ class HRIRManager: ObservableObject {
     nonisolated class RendererState {
         let renderers: [VirtualSpeakerRenderer]
         let processor: RealtimeAudioProcessor
-        
-        init(renderers: [VirtualSpeakerRenderer], blockSize: Int) {
+
+        init(renderers: [VirtualSpeakerRenderer], inputChannelCount: Int, fallbackSpeakers: [VirtualSpeaker], blockSize: Int) {
             self.renderers = renderers
-            self.processor = RealtimeAudioProcessor(renderers: renderers, blockSize: blockSize)
+            self.processor = RealtimeAudioProcessor(
+                renderers: renderers,
+                inputChannelCount: inputChannelCount,
+                fallbackSpeakers: fallbackSpeakers,
+                blockSize: blockSize
+            )
         }
     }
     
@@ -851,7 +873,12 @@ class HRIRManager: ObservableObject {
     ) {
         guard generation == activationGeneration else { return }
         crossfader.drainRetiredStates()
-        rendererState = RendererState(renderers: renderers, blockSize: Self.processingBlockSize)
+        rendererState = RendererState(
+            renderers: renderers,
+            inputChannelCount: inputLayout.channels.count,
+            fallbackSpeakers: inputLayout.channels,
+            blockSize: Self.processingBlockSize
+        )
         currentActivationKey = key
         inFlightActivationKey = nil
         activationTask = nil
@@ -894,8 +921,8 @@ class HRIRManager: ObservableObject {
     }
 
     nonisolated func processAudio(
-        inputLeft: UnsafePointer<Float>,
-        inputRight: UnsafePointer<Float>?,
+        inputChannels: UnsafePointer<UnsafePointer<Float>?>,
+        inputChannelCount: Int,
         leftOutput: UnsafeMutablePointer<Float>,
         rightOutput: UnsafeMutablePointer<Float>,
         frameCount: Int
@@ -907,8 +934,8 @@ class HRIRManager: ObservableObject {
         }
 
         crossfader.process(
-            inputLeft: inputLeft,
-            inputRight: inputRight,
+            inputChannels: inputChannels,
+            inputChannelCount: inputChannelCount,
             leftOutput: leftOutput,
             rightOutput: rightOutput,
             frameCount: frameCount
