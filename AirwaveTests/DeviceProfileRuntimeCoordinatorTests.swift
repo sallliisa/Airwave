@@ -22,7 +22,8 @@ final class DeviceProfileRuntimeCoordinatorTests: XCTestCase {
         )
         let output = OutputDeviceDescriptor(
             id: .init(7), uid: "headphones", name: "Headphones", transport: "USB",
-            outputChannelCount: 2, nominalSampleRate: 48_000, isVirtual: false, isAggregate: false
+            channelLabels: nil, outputChannelCount: 2, nominalSampleRate: 48_000,
+            isVirtual: false, isAggregate: false
         )
         var result: AudioRuntimeEffectReadiness?
 
@@ -101,7 +102,8 @@ private final class SpatialContext {
     let coordinator: DeviceProfileRuntimeCoordinator
     static let output = OutputDeviceDescriptor(
         id: .init(7), uid: "headphones", name: "Headphones", transport: "USB",
-        outputChannelCount: 2, nominalSampleRate: 48_000, isVirtual: false, isAggregate: false
+        channelLabels: nil, outputChannelCount: 2, nominalSampleRate: 48_000,
+        isVirtual: false, isAggregate: false
     )
 
     init() async throws {

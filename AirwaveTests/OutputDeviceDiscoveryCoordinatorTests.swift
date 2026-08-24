@@ -152,6 +152,7 @@ private func discoveryDevice(
 ) -> OutputDeviceDescriptor {
     OutputDeviceDescriptor(
         id: .init(id), uid: uid, name: name, transport: transport,
+        channelLabels: nil,
         outputChannelCount: channels, nominalSampleRate: 48_000,
         isVirtual: virtual, isAggregate: aggregate
     )

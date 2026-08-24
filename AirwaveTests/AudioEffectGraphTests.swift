@@ -51,6 +51,58 @@ final class AudioEffectGraphTests: XCTestCase {
         XCTAssertEqual(equalizer.processCount, 1)
     }
 
+    func testWideDeviceFoldsDownThroughGainTableWhenSpatialInactive() throws {
+        let graph = AudioEffectGraph(
+            spatial: SpatialEffectSpy(isReady: false),
+            equalizer: EqualizerEffectSpy(),
+            maxFramesPerCallback: 8
+        )
+        // 5.1 device: FL, FR, FC, LFE, BL, BR.
+        let output = OutputDeviceDescriptor(
+            id: .init(3), uid: "avr", name: "AVR", transport: "HDMI",
+            channelLabels: nil, outputChannelCount: 6, nominalSampleRate: 48_000,
+            isVirtual: false, isAggregate: false
+        )
+        _ = graph.prepare(for: output, equalizerDefinition: nil)
+
+        // Channels carry 1.0; expected fold-down per the gain table:
+        // left = 0.707 (FL) + 0.707 (FC) + 0.5 (BL), right = FR/FC/BR likewise.
+        let result = process(graph, channels: [Float](repeating: 1, count: 6))
+        XCTAssertEqual(result.left.first!, 0.707 + 0.707 + 0.5, accuracy: 1e-4)
+        XCTAssertEqual(result.right.first!, 0.707 + 0.707 + 0.5, accuracy: 1e-4)
+    }
+
+    func testPlainStereoPassthroughStaysByteExactMemcpy() throws {
+        let spatial = SpatialEffectSpy(isReady: false)
+        let graph = AudioEffectGraph(spatial: spatial, equalizer: EqualizerEffectSpy(), maxFramesPerCallback: 8)
+        _ = graph.prepare(for: deviceOutput(sampleRate: 48_000), equalizerDefinition: nil)
+
+        let leftInput = [Float(1).nextDown, 0.5]
+        let rightInput = [Float(2).nextUp, -0.25]
+        let result = process(graph, left: leftInput, right: rightInput)
+
+        XCTAssertEqual(result.left, leftInput)
+        XCTAssertEqual(result.right, rightInput)
+    }
+
+    func testEqualizerRunsAfterWideFoldDown() throws {
+        let graph = AudioEffectGraph(
+            spatial: SpatialEffectSpy(isReady: false),
+            equalizer: EqualizerEffectSpy(multiplier: 2),
+            maxFramesPerCallback: 8
+        )
+        let output = OutputDeviceDescriptor(
+            id: .init(4), uid: "avr", name: "AVR", transport: "HDMI",
+            channelLabels: nil, outputChannelCount: 6, nominalSampleRate: 48_000,
+            isVirtual: false, isAggregate: false
+        )
+        _ = graph.prepare(for: output, equalizerDefinition: EqualizerDefinition(preampDB: 3))
+
+        let result = process(graph, channels: [Float](repeating: 1, count: 6))
+        XCTAssertEqual(result.left.first!, (0.707 + 0.707 + 0.5) * 2, accuracy: 1e-4)
+        XCTAssertEqual(result.right.first!, (0.707 + 0.707 + 0.5) * 2, accuracy: 1e-4)
+    }
+
     func testBothEffectsRunInSpatialThenEqualizerOrder() throws {
         let spatial = SpatialEffectSpy(isReady: true, offset: 10)
         let equalizer = EqualizerEffectSpy(multiplier: 2)
@@ -206,16 +258,37 @@ final class AudioEffectGraphTests: XCTestCase {
         return (outputLeft, outputRight)
     }
 
-    private func processConstant(
+    private func process(
         _ graph: AudioEffectGraph,
-        frameCount: Int,
-        value: Float = 1
+        channels: [Float],
+        frameCount: Int? = nil
     ) -> (left: [Float], right: [Float]) {
-        process(
-            graph,
-            left: [Float](repeating: value, count: frameCount),
-            right: [Float](repeating: value, count: frameCount)
-        )
+        let frames = frameCount ?? 1
+        var outputLeft = [Float](repeating: .nan, count: frames)
+        var outputRight = [Float](repeating: .nan, count: frames)
+        var storage = channels
+        if storage.count < 2 { storage.append(contentsOf: repeatElement(0, count: 2 - storage.count)) }
+        let channelCount = storage.count
+        storage.withUnsafeMutableBufferPointer { storageBuffer in
+            let base = UnsafePointer(storageBuffer.baseAddress!)
+            let pointers: [UnsafePointer<Float>?] = (0..<channelCount).map {
+                base.advanced(by: $0 * frames)
+            }
+            pointers.withUnsafeBufferPointer { channelPointers in
+                outputLeft.withUnsafeMutableBufferPointer { leftOutput in
+                    outputRight.withUnsafeMutableBufferPointer { rightOutput in
+                        graph.process(
+                            inputChannels: channelPointers.baseAddress!,
+                            inputChannelCount: channelCount,
+                            outputLeft: leftOutput.baseAddress!,
+                            outputRight: rightOutput.baseAddress!,
+                            frameCount: frames
+                        )
+                    }
+                }
+            }
+        }
+        return (outputLeft, outputRight)
     }
 
     private func render(
@@ -227,15 +300,30 @@ final class AudioEffectGraphTests: XCTestCase {
     ) {
         outputLeft.withUnsafeMutableBufferPointer { leftOutput in
             outputRight.withUnsafeMutableBufferPointer { rightOutput in
-                graph.process(
-                    inputLeft: leftPointer.baseAddress!,
-                    inputRight: rightPointer?.baseAddress,
-                    outputLeft: leftOutput.baseAddress!,
-                    outputRight: rightOutput.baseAddress!,
-                    frameCount: leftPointer.count
-                )
+                let channels: [UnsafePointer<Float>?] = [leftPointer.baseAddress!, rightPointer?.baseAddress]
+                channels.withUnsafeBufferPointer { channelPointers in
+                    graph.process(
+                        inputChannels: channelPointers.baseAddress!,
+                        inputChannelCount: 2,
+                        outputLeft: leftOutput.baseAddress!,
+                        outputRight: rightOutput.baseAddress!,
+                        frameCount: leftPointer.count
+                    )
+                }
             }
         }
+    }
+
+    private func processConstant(
+        _ graph: AudioEffectGraph,
+        frameCount: Int,
+        value: Float = 1
+    ) -> (left: [Float], right: [Float]) {
+        process(
+            graph,
+            left: [Float](repeating: value, count: frameCount),
+            right: [Float](repeating: value, count: frameCount)
+        )
     }
 }
 
@@ -250,13 +338,15 @@ private final class SpatialEffectSpy: AudioSpatialEffect {
     }
 
     func process(
-        inputLeft: UnsafePointer<Float>, inputRight: UnsafePointer<Float>?,
+        inputChannels: UnsafePointer<UnsafePointer<Float>?>, inputChannelCount: Int,
         outputLeft: UnsafeMutablePointer<Float>, outputRight: UnsafeMutablePointer<Float>, frameCount: Int
     ) {
         processCount += 1
         for index in 0..<frameCount {
-            outputLeft[index] = inputLeft[index] + offset
-            outputRight[index] = (inputRight?[index] ?? inputLeft[index]) + offset
+            let left = inputChannels[0]
+            let right = inputChannelCount > 1 ? inputChannels[1] : inputChannels[0]
+            outputLeft[index] = (left?[index] ?? 0) + offset
+            outputRight[index] = (right?[index] ?? 0) + offset
         }
     }
 }
@@ -296,7 +386,8 @@ private final class EqualizerEffectSpy: AudioEqualizerEffect {
 private func deviceOutput(sampleRate: Double) -> OutputDeviceDescriptor {
     OutputDeviceDescriptor(
         id: .init(1), uid: "test-output", name: "Test Output", transport: "test",
-        outputChannelCount: 2, nominalSampleRate: sampleRate, isVirtual: false, isAggregate: false
+        channelLabels: nil, outputChannelCount: 2, nominalSampleRate: sampleRate,
+        isVirtual: false, isAggregate: false
     )
 }
 

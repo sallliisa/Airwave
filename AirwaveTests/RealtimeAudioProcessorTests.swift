@@ -19,6 +19,8 @@ final class RealtimeAudioProcessorTests: XCTestCase {
         }
         return RealtimeAudioProcessor(
             renderers: renderers,
+            inputChannelCount: 2,
+            fallbackSpeakers: [.FL, .FR],
             blockSize: blockSize,
             maxFramesPerCallback: maxFrames
         )
@@ -39,13 +41,17 @@ final class RealtimeAudioProcessorTests: XCTestCase {
             right.withUnsafeBufferPointer { rightPtr in
                 outputLeft.withUnsafeMutableBufferPointer { leftOutPtr in
                     outputRight.withUnsafeMutableBufferPointer { rightOutPtr in
-                        processor.process(
-                            inputLeft: leftPtr.baseAddress!,
-                            inputRight: rightPtr.baseAddress!,
-                            leftOutput: leftOutPtr.baseAddress!,
-                            rightOutput: rightOutPtr.baseAddress!,
-                            frameCount: size
-                        )
+                        let channels: [UnsafePointer<Float>?] = [leftPtr.baseAddress!, rightPtr.baseAddress!]
+                        channels.withUnsafeBufferPointer { channelPointers in
+                            processor.process(
+                                inputChannels: channelPointers.baseAddress!,
+                                inputChannelCount: 2,
+                                inputOffset: 0,
+                                leftOutput: leftOutPtr.baseAddress!,
+                                rightOutput: rightOutPtr.baseAddress!,
+                                frameCount: size
+                            )
+                        }
                     }
                 }
             }
@@ -85,7 +91,9 @@ final class RealtimeAudioProcessorTests: XCTestCase {
     }
 
     func testUnderflowSilenceAndMonoDuplication() {
-        let processor = makeProcessor(rendererCount: 1)
+        // Two paired renderers so both captured channels are consumed; the
+        // identical feeds must then emerge identically on both ears.
+        let processor = makeProcessor(rendererCount: 2)
         let (underflowLeft, underflowRight) = process(processor, size: 3, leftValue: 0.5, rightValue: 0.5)
         XCTAssertEqual(underflowLeft, [0, 0, 0])
         XCTAssertEqual(underflowRight, underflowLeft)
@@ -95,23 +103,49 @@ final class RealtimeAudioProcessorTests: XCTestCase {
 
     func testFifoWrapsWithoutLosingOrDuplicatingSamples() {
         // 4096-frame callbacks wrap the 4608-frame ring on every other call.
-        let processor = makeProcessor(rendererCount: 1)
+        // Two paired renderers keep both captured channels consumed, so neither
+        // ear picks up an unpaired-channel downmix term. The ramp drives
+        // channel 0 only: with two gain-1 renderers a shared-ramp stimulus
+        // would legitimately sum to twice the input and defeat the pass-through
+        // assertion below.
+        let engines = (0..<2).map { _ -> StereoConvolutionEngine in
+            try! XCTUnwrap(StereoConvolutionEngine(
+                leftEarHRIR: [1],
+                rightEarHRIR: [1],
+                blockSize: blockSize
+            ))
+        }
+        let renderers = [
+            VirtualSpeakerRenderer(speaker: .FL, convolver: engines[0]),
+            VirtualSpeakerRenderer(speaker: .FR, convolver: engines[1])
+        ]
+        let processor = RealtimeAudioProcessor(
+            renderers: renderers,
+            inputChannelCount: 2,
+            fallbackSpeakers: [.FL, .FR],
+            blockSize: blockSize,
+            maxFramesPerCallback: maxFrames
+        )
         let size = 4096
         var frame: Float = 0
         for _ in 0..<6 {
             let input = (0..<size).map { _ -> Float in frame += 1; return frame / 100_000 }
+            let silence = [Float](repeating: 0, count: size)
             var left = [Float](repeating: .nan, count: size)
             var right = [Float](repeating: .nan, count: size)
             input.withUnsafeBufferPointer { inputPtr in
-                left.withUnsafeMutableBufferPointer { leftPtr in
-                    right.withUnsafeMutableBufferPointer { rightPtr in
-                        processor.process(
-                            inputLeft: inputPtr.baseAddress!,
-                            inputRight: inputPtr.baseAddress!,
-                            leftOutput: leftPtr.baseAddress!,
-                            rightOutput: rightPtr.baseAddress!,
-                            frameCount: size
-                        )
+                silence.withUnsafeBufferPointer { silencePtr in
+                    left.withUnsafeMutableBufferPointer { leftPtr in
+                        right.withUnsafeMutableBufferPointer { rightPtr in
+                            processor.process(
+                                inputChannels: [UnsafePointer<Float>?(inputPtr.baseAddress!), silencePtr.baseAddress!],
+                                inputChannelCount: 2,
+                                inputOffset: 0,
+                                leftOutput: leftPtr.baseAddress!,
+                                rightOutput: rightPtr.baseAddress!,
+                                frameCount: size
+                            )
+                        }
                     }
                 }
             }
@@ -158,18 +192,263 @@ final class RealtimeAudioProcessorTests: XCTestCase {
             outputStorage.deallocate()
         }
 
-        processor.process(
-            inputLeft: UnsafePointer(inputStorage.advanced(by: 1)),
-            inputRight: nil,
-            leftOutput: outputStorage.advanced(by: 1),
-            rightOutput: outputStorage.advanced(by: 1),
-            frameCount: size
-        )
+        let inputChannel = UnsafePointer(inputStorage.advanced(by: 1))
+        let channels: [UnsafePointer<Float>?] = [inputChannel, nil]
+        channels.withUnsafeBufferPointer { channelPointers in
+            processor.process(
+                inputChannels: channelPointers.baseAddress!,
+                inputChannelCount: 2,
+                inputOffset: 0,
+                leftOutput: outputStorage.advanced(by: 1),
+                rightOutput: outputStorage.advanced(by: 1),
+                frameCount: size
+            )
+        }
 
         XCTAssertEqual(inputStorage[0], 0)
         XCTAssertEqual(inputStorage[size + 1], 0)
         XCTAssertEqual(outputStorage[0], canary)
         XCTAssertEqual(outputStorage[size + 1], canary)
+    }
+
+    func testEightIndependentFeedsEachReachTheirPairedRenderer() {
+        let renderers = (0..<8).map { index -> VirtualSpeakerRenderer in
+            let convolver = try! XCTUnwrap(StereoConvolutionEngine(
+                leftEarHRIR: [Float(index + 1)],
+                rightEarHRIR: [Float(index + 1)],
+                blockSize: blockSize
+            ))
+            return VirtualSpeakerRenderer(speaker: index == 0 ? .FL : .FR, convolver: convolver)
+        }
+        let processor = RealtimeAudioProcessor(
+            renderers: renderers,
+            inputChannelCount: 8,
+            fallbackSpeakers: [.FL, .FR, .FC, .LFE, .BL, .BR, .SL, .SR],
+            blockSize: blockSize,
+            maxFramesPerCallback: maxFrames
+        )
+
+        func drainedMix(zeroedChannel: Int?) -> (left: [Float], right: [Float]) {
+            var outputLeft = [Float](repeating: .nan, count: blockSize)
+            var outputRight = [Float](repeating: .nan, count: blockSize)
+            var storage: [Float] = []
+            storage.reserveCapacity(8 * blockSize)
+            for index in 0..<8 {
+                storage.append(contentsOf: repeatElement(Float(index + 1), count: blockSize))
+            }
+            storage.withUnsafeMutableBufferPointer { storageBuffer in
+                let base = UnsafePointer(storageBuffer.baseAddress!)
+                let pointers: [UnsafePointer<Float>?] = (0..<8).map { index in
+                    index == zeroedChannel ? nil : base.advanced(by: index * blockSize)
+                }
+                pointers.withUnsafeBufferPointer { channelPointers in
+                    outputLeft.withUnsafeMutableBufferPointer { leftOutPtr in
+                        outputRight.withUnsafeMutableBufferPointer { rightOutPtr in
+                            processor.process(
+                                inputChannels: channelPointers.baseAddress!,
+                                inputChannelCount: 8,
+                                inputOffset: 0,
+                                leftOutput: leftOutPtr.baseAddress!,
+                                rightOutput: rightOutPtr.baseAddress!,
+                                frameCount: blockSize
+                            )
+                            processor.process(
+                                inputChannels: channelPointers.baseAddress!,
+                                inputChannelCount: 8,
+                                inputOffset: 0,
+                                leftOutput: leftOutPtr.baseAddress!,
+                                rightOutput: rightOutPtr.baseAddress!,
+                                frameCount: blockSize
+                            )
+                        }
+                    }
+                }
+            }
+            return (outputLeft, outputRight)
+        }
+
+        // Single-tap engines with gain (index + 1): the drained block equals
+        // sum((i+1)^2) when every feed participates...
+        let full = drainedMix(zeroedChannel: nil)
+        let fullSum: Float = (1...8).reduce(0) { $0 + Float($1 * $1) }
+        XCTAssertEqual(full.left.first!, fullSum, accuracy: 1e-3)
+
+        // ...and drops by exactly (k+1)^2 when channel k goes silent, proving
+        // each feed reaches its own renderer and nothing else.
+        for zeroed in [0, 3, 7] {
+            let partial = drainedMix(zeroedChannel: zeroed)
+            let expected = fullSum - Float((zeroed + 1) * (zeroed + 1))
+            XCTAssertEqual(partial.left.first!, expected, accuracy: 1e-3, "zeroed \(zeroed)")
+            XCTAssertEqual(partial.right.first!, expected, accuracy: 1e-3, "zeroed \(zeroed)")
+        }
+    }
+
+    func testUnpairedChannelsFoldThroughDownmixGainsWithoutConvolution() {
+        // Two silent paired renderers; channels 2-7 have no renderer and must
+        // enter the mix only through StereoDownmixGains.
+        let renderers = (0..<2).map { _ -> VirtualSpeakerRenderer in
+            let convolver = try! XCTUnwrap(StereoConvolutionEngine(
+                leftEarHRIR: [0],
+                rightEarHRIR: [0],
+                blockSize: blockSize
+            ))
+            return VirtualSpeakerRenderer(speaker: .FL, convolver: convolver)
+        }
+        func drainedMix(loudChannels: Set<Int>) -> (left: Float, right: Float) {
+            let processor = RealtimeAudioProcessor(
+                renderers: renderers,
+                inputChannelCount: 8,
+                fallbackSpeakers: [.FL, .FR, .FC, .LFE, .BL, .BR, .SL, .SR],
+                blockSize: blockSize,
+                maxFramesPerCallback: maxFrames
+            )
+            var storage = [Float](repeating: 0, count: 8 * blockSize)
+            for index in loudChannels {
+                for frame in (index * blockSize)..<((index + 1) * blockSize) {
+                    storage[frame] = 1
+                }
+            }
+            var outputLeft = [Float](repeating: .nan, count: blockSize)
+            var outputRight = [Float](repeating: .nan, count: blockSize)
+            storage.withUnsafeMutableBufferPointer { storageBuffer in
+                let base = UnsafePointer(storageBuffer.baseAddress!)
+                let pointers: [UnsafePointer<Float>?] = (0..<8).map { index in
+                    base.advanced(by: index * blockSize)
+                }
+                pointers.withUnsafeBufferPointer { channelPointers in
+                    outputLeft.withUnsafeMutableBufferPointer { leftOutPtr in
+                        outputRight.withUnsafeMutableBufferPointer { rightOutPtr in
+                            processor.process(
+                                inputChannels: channelPointers.baseAddress!,
+                                inputChannelCount: 8,
+                                inputOffset: 0,
+                                leftOutput: leftOutPtr.baseAddress!,
+                                rightOutput: rightOutPtr.baseAddress!,
+                                frameCount: blockSize
+                            )
+                            processor.process(
+                                inputChannels: channelPointers.baseAddress!,
+                                inputChannelCount: 8,
+                                inputOffset: 0,
+                                leftOutput: leftOutPtr.baseAddress!,
+                                rightOutput: rightOutPtr.baseAddress!,
+                                frameCount: blockSize
+                            )
+                        }
+                    }
+                }
+            }
+            return (outputLeft.first!, outputRight.first!)
+        }
+
+        // Surround fold-down: FC 0.707 both ears, BL/SL 0.5 left, BR/SR 0.5 right.
+        let surround = drainedMix(loudChannels: [2, 4, 5, 6, 7])
+        XCTAssertEqual(surround.left, 0.707 + 0.5 + 0.5, accuracy: 1e-4)
+        XCTAssertEqual(surround.right, 0.707 + 0.5 + 0.5, accuracy: 1e-4)
+
+        // LFE alone is omitted from the fold-down entirely.
+        let lfeOnly = drainedMix(loudChannels: [3])
+        XCTAssertEqual(lfeOnly.left, 0, accuracy: 1e-6)
+        XCTAssertEqual(lfeOnly.right, 0, accuracy: 1e-6)
+    }
+
+    func testMonoCaptureDuplicatesIntoBothRendererFeeds() {
+        // FL passes the left ear only; FR passes the right ear only. A mono
+        // feed must reach both, which only duplication can achieve.
+        let leftOnly = try! XCTUnwrap(StereoConvolutionEngine(
+            leftEarHRIR: [1], rightEarHRIR: [0], blockSize: blockSize
+        ))
+        let rightOnly = try! XCTUnwrap(StereoConvolutionEngine(
+            leftEarHRIR: [0], rightEarHRIR: [1], blockSize: blockSize
+        ))
+        let processor = RealtimeAudioProcessor(
+            renderers: [
+                VirtualSpeakerRenderer(speaker: .FL, convolver: leftOnly),
+                VirtualSpeakerRenderer(speaker: .FR, convolver: rightOnly)
+            ],
+            inputChannelCount: 1,
+            fallbackSpeakers: [.FC],
+            blockSize: blockSize,
+            maxFramesPerCallback: maxFrames
+        )
+        let feed = [Float](repeating: 1, count: blockSize)
+        var outputLeft = [Float](repeating: .nan, count: blockSize)
+        var outputRight = [Float](repeating: .nan, count: blockSize)
+        feed.withUnsafeBufferPointer { feedPointer in
+            let pointers: [UnsafePointer<Float>?] = [feedPointer.baseAddress!]
+            pointers.withUnsafeBufferPointer { channelPointers in
+                outputLeft.withUnsafeMutableBufferPointer { leftOutPtr in
+                    outputRight.withUnsafeMutableBufferPointer { rightOutPtr in
+                        processor.process(
+                            inputChannels: channelPointers.baseAddress!,
+                            inputChannelCount: 1,
+                            inputOffset: 0,
+                            leftOutput: leftOutPtr.baseAddress!,
+                            rightOutput: rightOutPtr.baseAddress!,
+                            frameCount: blockSize
+                        )
+                        processor.process(
+                            inputChannels: channelPointers.baseAddress!,
+                            inputChannelCount: 1,
+                            inputOffset: 0,
+                            leftOutput: leftOutPtr.baseAddress!,
+                            rightOutput: rightOutPtr.baseAddress!,
+                            frameCount: blockSize
+                        )
+                    }
+                }
+            }
+        }
+        XCTAssertEqual(outputLeft.first!, 1, accuracy: 1e-6)
+        XCTAssertEqual(outputRight.first!, 1, accuracy: 1e-6)
+    }
+
+    func testFifoWrapPreservesOrderAcrossEightFeeds() {
+        let renderers = (0..<8).map { _ -> VirtualSpeakerRenderer in
+            let convolver = try! XCTUnwrap(StereoConvolutionEngine(
+                leftEarHRIR: [0.125],
+                rightEarHRIR: [0.125],
+                blockSize: blockSize
+            ))
+            return VirtualSpeakerRenderer(speaker: .FL, convolver: convolver)
+        }
+        let processor = RealtimeAudioProcessor(
+            renderers: renderers,
+            inputChannelCount: 8,
+            fallbackSpeakers: Array(repeating: .LFE, count: 8),
+            blockSize: blockSize,
+            maxFramesPerCallback: maxFrames
+        )
+        // 4096-frame callbacks wrap the 4608-frame ring on every other call;
+        // eight identical unit-gain renderers reconstruct the shared ramp.
+        let size = 4096
+        var frame: Float = 0
+        for _ in 0..<6 {
+            let input = (0..<size).map { _ -> Float in frame += 1; return frame / 100_000 }
+            var left = [Float](repeating: .nan, count: size)
+            var right = [Float](repeating: .nan, count: size)
+            input.withUnsafeBufferPointer { inputPtr in
+                let pointers: [UnsafePointer<Float>?] = Array(repeating: inputPtr.baseAddress!, count: 8)
+                pointers.withUnsafeBufferPointer { channelPointers in
+                    left.withUnsafeMutableBufferPointer { leftPtr in
+                        right.withUnsafeMutableBufferPointer { rightPtr in
+                            processor.process(
+                                inputChannels: channelPointers.baseAddress!,
+                                inputChannelCount: 8,
+                                inputOffset: 0,
+                                leftOutput: leftPtr.baseAddress!,
+                                rightOutput: rightPtr.baseAddress!,
+                                frameCount: size
+                            )
+                        }
+                    }
+                }
+            }
+            for index in 0..<size {
+                XCTAssertEqual(left[index], input[index], accuracy: 1e-4)
+                XCTAssertEqual(right[index], input[index], accuracy: 1e-4)
+            }
+        }
     }
 
     func testTenSecondsOfStereoInputAcrossPerformanceCallbackSizes() {
@@ -190,13 +469,17 @@ final class RealtimeAudioProcessorTests: XCTestCase {
                     input.withUnsafeBufferPointer { inputPtr in
                         leftOutput.withUnsafeMutableBufferPointer { leftPtr in
                             rightOutput.withUnsafeMutableBufferPointer { rightPtr in
-                                processor.process(
-                                    inputLeft: inputPtr.baseAddress!,
-                                    inputRight: inputPtr.baseAddress!,
-                                    leftOutput: leftPtr.baseAddress!,
-                                    rightOutput: rightPtr.baseAddress!,
-                                    frameCount: size
-                                )
+                                let channels: [UnsafePointer<Float>?] = [inputPtr.baseAddress!, inputPtr.baseAddress!]
+                                channels.withUnsafeBufferPointer { channelPointers in
+                                    processor.process(
+                                        inputChannels: channelPointers.baseAddress!,
+                                        inputChannelCount: 2,
+                                        inputOffset: 0,
+                                        leftOutput: leftPtr.baseAddress!,
+                                        rightOutput: rightPtr.baseAddress!,
+                                        frameCount: size
+                                    )
+                                }
                             }
                         }
                     }
@@ -225,6 +508,8 @@ final class SpatialRendererCrossfaderTests: XCTestCase {
         )!
         return HRIRManager.RendererState(
             renderers: [VirtualSpeakerRenderer(speaker: .FL, convolver: convolver)],
+            inputChannelCount: 2,
+            fallbackSpeakers: [.FL, .FR],
             blockSize: blockSize
         )
     }
@@ -256,13 +541,16 @@ final class SpatialRendererCrossfaderTests: XCTestCase {
                 chunk.withUnsafeBufferPointer { inputPtr in
                     left.withUnsafeMutableBufferPointer { leftPtr in
                         right.withUnsafeMutableBufferPointer { rightPtr in
-                            crossfader.process(
-                                inputLeft: inputPtr.baseAddress!,
-                                inputRight: inputPtr.baseAddress!,
-                                leftOutput: leftPtr.baseAddress!,
-                                rightOutput: rightPtr.baseAddress!,
-                                frameCount: size
-                            )
+                            let channels: [UnsafePointer<Float>?] = [inputPtr.baseAddress!, inputPtr.baseAddress!]
+                            channels.withUnsafeBufferPointer { channelPointers in
+                                crossfader.process(
+                                    inputChannels: channelPointers.baseAddress!,
+                                    inputChannelCount: 2,
+                                    leftOutput: leftPtr.baseAddress!,
+                                    rightOutput: rightPtr.baseAddress!,
+                                    frameCount: size
+                                )
+                            }
                         }
                     }
                 }
@@ -281,6 +569,20 @@ final class SpatialRendererCrossfaderTests: XCTestCase {
         return maximum
     }
 
+    /// Largest per-sample curvature (second difference). A hard level jump of
+    /// size J appears as curvature ≈ J; a sine of amplitude A contributes only
+    /// A·ω² (≈0.007 at these settings), so this detects swaps without firing
+    /// on steep-but-smooth wide-mix streams whose amplitude grew past unity
+    /// (plan 022 adds the unpaired-channel fold-down to the captured mix).
+    private func maximumCurvature(_ samples: [Float]) -> Float {
+        var maximum: Float = 0
+        for index in 2..<samples.count {
+            let curvature = abs(samples[index] - 2 * samples[index - 1] + samples[index - 2])
+            maximum = max(maximum, curvature)
+        }
+        return maximum
+    }
+
     func testSwapProducesNoOutputDiscontinuity() {
         let crossfader = makeCrossfader()
         let driver = Driver(crossfader)
@@ -292,10 +594,10 @@ final class SpatialRendererCrossfaderTests: XCTestCase {
         crossfader.observe(stateB)
         driver.run(callbacks: 8)
 
-        // A hard swap steps by ~0.5 (half the sine amplitude); the sine itself
-        // steps by at most 0.063 per sample at 480 Hz / 48 kHz.
-        XCTAssertLessThan(maximumStepDelta(driver.outputLeft), 0.1)
-        XCTAssertLessThan(maximumStepDelta(driver.outputRight), 0.1)
+        // A hard swap steps by ~0.5 (the gain delta times the sine peak);
+        // smooth rendering of even a 1.707-amplitude mix stays below 0.01.
+        XCTAssertLessThan(maximumCurvature(driver.outputLeft), 0.1)
+        XCTAssertLessThan(maximumCurvature(driver.outputRight), 0.1)
         XCTAssertTrue(driver.outputLeft.allSatisfy { $0.isFinite })
     }
 
@@ -418,7 +720,7 @@ final class RenderSafetySoakTests: XCTestCase {
     /// Decaying-noise impulse response normalized to unit L1 gain, so the
     /// convolution can never exceed the input amplitude.
     private func normalizedIR(tapCount: Int, gain: Float, seed: UInt64) -> [Float] {
-        var random = makeRandom(seed: seed)
+        let random = makeRandom(seed: seed)
         var taps = (0..<tapCount * blockSize).map { index -> Float in
             let amplitude = Float(random() % 1000) / 1000 - 0.5
             return amplitude * pow(0.996, Float(index))
@@ -437,7 +739,12 @@ final class RenderSafetySoakTests: XCTestCase {
             )!
             return VirtualSpeakerRenderer(speaker: channel == 0 ? .FL : .FR, convolver: engine)
         }
-        return HRIRManager.RendererState(renderers: renderers, blockSize: blockSize)
+        return HRIRManager.RendererState(
+            renderers: renderers,
+            inputChannelCount: 2,
+            fallbackSpeakers: [.FL, .FR],
+            blockSize: blockSize
+        )
     }
 
     /// Drives the crossfader with randomized callback sizes and mono/stereo
@@ -465,13 +772,18 @@ final class RenderSafetySoakTests: XCTestCase {
             chunk.withUnsafeBufferPointer { inputPtr in
                 left.withUnsafeMutableBufferPointer { leftPtr in
                     right.withUnsafeMutableBufferPointer { rightPtr in
-                        crossfader.process(
-                            inputLeft: inputPtr.baseAddress!,
-                            inputRight: mono ? nil : inputPtr.baseAddress!,
-                            leftOutput: leftPtr.baseAddress!,
-                            rightOutput: rightPtr.baseAddress!,
-                            frameCount: size
-                        )
+                        let channels: [UnsafePointer<Float>?] = [
+                            inputPtr.baseAddress!, mono ? nil : inputPtr.baseAddress!
+                        ]
+                        channels.withUnsafeBufferPointer { channelPointers in
+                            crossfader.process(
+                                inputChannels: channelPointers.baseAddress!,
+                                inputChannelCount: 2,
+                                leftOutput: leftPtr.baseAddress!,
+                                rightOutput: rightPtr.baseAddress!,
+                                frameCount: size
+                            )
+                        }
                     }
                 }
             }
@@ -493,7 +805,7 @@ final class RenderSafetySoakTests: XCTestCase {
     func testSteadyStateRandomizedCallbacksStayFiniteAndBounded() {
         let crossfader = makeSoakCrossfader()
         let driver = SoakDriver(crossfader)
-        var random = makeRandom(seed: 0xA11CE)
+        let random = makeRandom(seed: 0xA11CE)
         crossfader.observe(makeState(tapCount: 7, gain: 1, seed: 42))
 
         for callback in 0..<600 {
@@ -511,7 +823,7 @@ final class RenderSafetySoakTests: XCTestCase {
     func testSwitchStormIncludingRemovalToPassthroughStaysFiniteAndBounded() {
         let crossfader = makeSoakCrossfader()
         let driver = SoakDriver(crossfader)
-        var random = makeRandom(seed: 0xBEEF)
+        let random = makeRandom(seed: 0xBEEF)
         let stateA = makeState(tapCount: 7, gain: 1, seed: 42)
         let stateB = makeState(tapCount: 1, gain: 0.8, seed: 7)
         let stateC = makeState(tapCount: 3, gain: 0.9, seed: 99)
@@ -558,8 +870,14 @@ final class RenderSafetySoakTests: XCTestCase {
             )!
             return VirtualSpeakerRenderer(speaker: channel == 0 ? .FL : .FR, convolver: engine)
         }
-        let processor = RealtimeAudioProcessor(renderers: renderers, blockSize: blockSize, maxFramesPerCallback: 4_096)
-        var random = makeRandom(seed: 0xC0FFEE)
+        let processor = RealtimeAudioProcessor(
+            renderers: renderers,
+            inputChannelCount: 2,
+            fallbackSpeakers: [.FL, .FR],
+            blockSize: blockSize,
+            maxFramesPerCallback: 4_096
+        )
+        let random = makeRandom(seed: 0xC0FFEE)
         var frame = 0
         var peak: Float = 0
 
@@ -575,13 +893,19 @@ final class RenderSafetySoakTests: XCTestCase {
             chunk.withUnsafeBufferPointer { inputPtr in
                 left.withUnsafeMutableBufferPointer { leftPtr in
                     right.withUnsafeMutableBufferPointer { rightPtr in
-                        processor.process(
-                            inputLeft: inputPtr.baseAddress!,
-                            inputRight: block % 5 == 0 ? nil : inputPtr.baseAddress!,
-                            leftOutput: leftPtr.baseAddress!,
-                            rightOutput: rightPtr.baseAddress!,
-                            frameCount: size
-                        )
+                        let channels: [UnsafePointer<Float>?] = [
+                            inputPtr.baseAddress!, block % 5 == 0 ? nil : inputPtr.baseAddress!
+                        ]
+                        channels.withUnsafeBufferPointer { channelPointers in
+                            processor.process(
+                                inputChannels: channelPointers.baseAddress!,
+                                inputChannelCount: 2,
+                                inputOffset: 0,
+                                leftOutput: leftPtr.baseAddress!,
+                                rightOutput: rightPtr.baseAddress!,
+                                frameCount: size
+                            )
+                        }
                     }
                 }
             }

@@ -79,7 +79,8 @@ final class AudioPipelineTests: XCTestCase {
             inputRight.withUnsafeBufferPointer { inR in
                 left.withUnsafeMutableBufferPointer { outL in
                     right.withUnsafeMutableBufferPointer { outR in
-                        platform.ioCallback?(inL.baseAddress!, inR.baseAddress, outL.baseAddress!, outR.baseAddress!, 4)
+                        var inputs: [UnsafePointer<Float>?] = [inL.baseAddress!, inR.baseAddress]
+                        platform.ioCallback?(&inputs, inputs.count, outL.baseAddress!, outR.baseAddress!, 4)
                     }
                 }
             }
@@ -119,7 +120,8 @@ final class AudioPipelineTests: XCTestCase {
         let platform = RecordingAudioPlatformClient()
         platform.output = OutputDeviceDescriptor(
             id: .init(2), uid: "bluetooth", name: "Bluetooth Output", transport: "bluetooth",
-            outputChannelCount: 2, nominalSampleRate: 44_100, isVirtual: false, isAggregate: false
+            channelLabels: nil, outputChannelCount: 2, nominalSampleRate: 44_100,
+            isVirtual: false, isAggregate: false
         )
         platform.tapStreamFormat = .stereo(sampleRate: 44_100)
         platform.aggregateStreamFormat = .stereo(sampleRate: 44_100)
@@ -136,7 +138,8 @@ final class AudioPipelineTests: XCTestCase {
         let platform = RecordingAudioPlatformClient()
         platform.output = OutputDeviceDescriptor(
             id: .init(2), uid: "bluetooth", name: "Bluetooth Output", transport: "bluetooth",
-            outputChannelCount: 2, nominalSampleRate: 44_100, isVirtual: false, isAggregate: false
+            channelLabels: nil, outputChannelCount: 2, nominalSampleRate: 44_100,
+            isVirtual: false, isAggregate: false
         )
         platform.tapStreamFormat = .stereo(sampleRate: 48_000)
         platform.aggregateStreamFormat = .stereo(sampleRate: 44_100)
@@ -152,7 +155,8 @@ final class AudioPipelineTests: XCTestCase {
             let platform = RecordingAudioPlatformClient()
             platform.output = OutputDeviceDescriptor(
                 id: .init(UInt64(sampleRate)), uid: "output-\(sampleRate)", name: "Output \(sampleRate)", transport: "built-in",
-                outputChannelCount: 2, nominalSampleRate: sampleRate, isVirtual: false, isAggregate: false
+                channelLabels: nil, outputChannelCount: 2, nominalSampleRate: sampleRate,
+                isVirtual: false, isAggregate: false
             )
             platform.tapStreamFormat = .stereo(sampleRate: sampleRate)
             platform.aggregateStreamFormat = .stereo(sampleRate: sampleRate)
@@ -221,11 +225,66 @@ final class AudioPipelineTests: XCTestCase {
         XCTAssertTrue(platform.hasNoLiveResources)
     }
 
+    func testMultichannelDeviceCarriesWidthThroughTapRequestAndLifecycle() throws {
+        let platform = RecordingAudioPlatformClient()
+        platform.output = OutputDeviceDescriptor(
+            id: .init(5), uid: "avr", name: "AVR", transport: "HDMI",
+            channelLabels: nil, outputChannelCount: 8, nominalSampleRate: 48_000,
+            isVirtual: false, isAggregate: false
+        )
+        let wide = AudioStreamFormat.capturing(channels: 8, sampleRate: 48_000)
+        platform.tapStreamFormat = wide
+        platform.aggregateStreamFormat = wide
+        let pipeline = AudioPipeline(platform: platform, processor: PassthroughProcessor())
+
+        XCTAssertNoThrow(try pipeline.start(on: platform.output))
+        XCTAssertEqual(platform.tapRequests[0].channelCount, 8)
+        XCTAssertNoThrow(try pipeline.stop())
+        XCTAssertTrue(platform.hasNoLiveResources)
+    }
+
+    func testVirtualAndAggregateDevicesStayRejectedAtEveryWidth() {
+        for width in [2, 8] {
+            let virtual = RecordingAudioPlatformClient()
+            virtual.output = OutputDeviceDescriptor(
+                id: .init(9), uid: "virtual", name: "Virtual", transport: "virtual",
+                channelLabels: nil, outputChannelCount: width, nominalSampleRate: 48_000,
+                isVirtual: true, isAggregate: false
+            )
+            XCTAssertThrowsError(try AudioPipeline(platform: virtual, processor: PassthroughProcessor()).start(on: virtual.output))
+            XCTAssertFalse(virtual.events.contains("createTap"), "width \(width)")
+
+            let aggregate = RecordingAudioPlatformClient()
+            aggregate.output = OutputDeviceDescriptor(
+                id: .init(10), uid: "aggregate", name: "Aggregate", transport: "aggregate",
+                channelLabels: nil, outputChannelCount: width, nominalSampleRate: 48_000,
+                isVirtual: false, isAggregate: true
+            )
+            XCTAssertThrowsError(try AudioPipeline(platform: aggregate, processor: PassthroughProcessor()).start(on: aggregate.output))
+            XCTAssertFalse(aggregate.events.contains("createTap"), "width \(width)")
+        }
+    }
+
+    func testCaptureWidthOutsideTwoToSixteenIsRejectedBeforeTapCreation() {
+        for width in [1, 17] {
+            let platform = RecordingAudioPlatformClient()
+            platform.output = OutputDeviceDescriptor(
+                id: .init(UInt64(width)), uid: "odd-\(width)", name: "Odd \(width)", transport: "USB",
+                channelLabels: nil, outputChannelCount: width, nominalSampleRate: 48_000,
+                isVirtual: false, isAggregate: false
+            )
+            XCTAssertThrowsError(try AudioPipeline(platform: platform, processor: PassthroughProcessor()).start(on: platform.output))
+            XCTAssertFalse(platform.events.contains("createTap"), "width \(width)")
+            XCTAssertTrue(platform.hasNoLiveResources, "width \(width)")
+        }
+    }
+
     func testUnsupportedOutputNeverCreatesTap() {
         let platform = RecordingAudioPlatformClient()
         platform.output = OutputDeviceDescriptor(
             id: .init(99), uid: "virtual", name: "Virtual", transport: "virtual",
-            outputChannelCount: 2, nominalSampleRate: 48_000, isVirtual: true, isAggregate: false
+            channelLabels: nil, outputChannelCount: 2, nominalSampleRate: 48_000,
+            isVirtual: true, isAggregate: false
         )
         let pipeline = AudioPipeline(platform: platform, processor: PassthroughProcessor())
 
@@ -408,7 +467,7 @@ final class AudioPipelineTests: XCTestCase {
 
 private final class PassthroughProcessor: StereoAudioProcessing {
     func process(
-        inputLeft: UnsafePointer<Float>, inputRight: UnsafePointer<Float>?,
+        inputChannels: UnsafePointer<UnsafePointer<Float>?>, inputChannelCount: Int,
         outputLeft: UnsafeMutablePointer<Float>, outputRight: UnsafeMutablePointer<Float>, frameCount: Int
     ) {}
 }
@@ -416,7 +475,7 @@ private final class PassthroughProcessor: StereoAudioProcessing {
 private final class RecordingProcessor: StereoAudioProcessing {
     var callCount = 0
     func process(
-        inputLeft: UnsafePointer<Float>, inputRight: UnsafePointer<Float>?,
+        inputChannels: UnsafePointer<UnsafePointer<Float>?>, inputChannelCount: Int,
         outputLeft: UnsafeMutablePointer<Float>, outputRight: UnsafeMutablePointer<Float>, frameCount: Int
     ) { callCount += 1 }
 }
@@ -434,7 +493,8 @@ private final class RecordingAudioPlatformClient: AudioPlatformClient {
     let io = AudioIOHandle(value: 40)
     var output = OutputDeviceDescriptor(
         id: .init(1), uid: "builtin", name: "Built-in Output", transport: "built-in",
-        outputChannelCount: 2, nominalSampleRate: 48_000, isVirtual: false, isAggregate: false
+        channelLabels: nil, outputChannelCount: 2, nominalSampleRate: 48_000,
+        isVirtual: false, isAggregate: false
     )
     var failurePoint: FailurePoint?
     var teardownFailuresRemaining: [String: Int] = [:]

@@ -702,7 +702,8 @@ final class ProductSurfaceTests: XCTestCase {
     private func output(channels: Int = 2) -> OutputDeviceDescriptor {
         OutputDeviceDescriptor(
             id: .init(1), uid: "built-in", name: "Built-in Output", transport: "Built-in",
-            outputChannelCount: channels, nominalSampleRate: 48_000, isVirtual: false, isAggregate: false
+            channelLabels: nil, outputChannelCount: channels, nominalSampleRate: 48_000,
+            isVirtual: false, isAggregate: false
         )
     }
 }

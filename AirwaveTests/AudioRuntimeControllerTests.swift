@@ -784,13 +784,13 @@ private final class ProfilePreparerFake: OutputEffectProfilePreparing {
 }
 
 private func output(id: UInt64 = 1, name: String = "Built-in", isVirtual: Bool = false) -> OutputDeviceDescriptor {
-    OutputDeviceDescriptor(id: .init(id), uid: "output-\(id)", name: name, transport: "built-in", outputChannelCount: 2, nominalSampleRate: 48_000, isVirtual: isVirtual, isAggregate: false)
+    OutputDeviceDescriptor(id: .init(id), uid: "output-\(id)", name: name, transport: "built-in", channelLabels: nil, outputChannelCount: 2, nominalSampleRate: 48_000, isVirtual: isVirtual, isAggregate: false)
 }
 
 /// Inert DSP for pipelines driven against the creation-counting platform fake.
 private final class SilentProcessor: StereoAudioProcessing {
     func process(
-        inputLeft: UnsafePointer<Float>, inputRight: UnsafePointer<Float>?,
+        inputChannels: UnsafePointer<UnsafePointer<Float>?>, inputChannelCount: Int,
         outputLeft: UnsafeMutablePointer<Float>, outputRight: UnsafeMutablePointer<Float>, frameCount: Int
     ) {}
 }

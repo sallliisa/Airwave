@@ -340,7 +340,7 @@ private func profileDevice(
 ) -> OutputDeviceDescriptor {
     OutputDeviceDescriptor(
         id: .init(id), uid: uid, name: name, transport: transport,
-        outputChannelCount: channels, nominalSampleRate: 48_000,
+        channelLabels: nil, outputChannelCount: channels, nominalSampleRate: 48_000,
         isVirtual: virtual, isAggregate: aggregate
     )
 }
