@@ -794,6 +794,24 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
     }
 
     private func canonicalStereoFormat(sampleRate: Double) -> AudioStreamBasicDescription {
+        Self.canonicalNonInterleavedFloat32Format(sampleRate: sampleRate, channelCount: 2)
+    }
+
+    /// Same canonical float32 non-interleaved shape, at capture width.
+    /// Non-interleaved buffers each store a single channel, so one frame is
+    /// always 4 bytes per buffer (one Float32 sample) regardless of width;
+    /// only `mChannelsPerFrame` widens.
+    private func canonicalWideFormat(sampleRate: Double, channelCount: Int) -> AudioStreamBasicDescription {
+        Self.canonicalNonInterleavedFloat32Format(sampleRate: sampleRate, channelCount: channelCount)
+    }
+
+    /// Canonical capture-side ASBD: packed Float32, non-interleaved. Every
+    /// AudioBuffer carries exactly one channel, so `mBytesPerFrame` stays
+    /// 4 (one sample per buffer per frame) no matter how wide the stream is.
+    nonisolated static func canonicalNonInterleavedFloat32Format(
+        sampleRate: Double,
+        channelCount: Int
+    ) -> AudioStreamBasicDescription {
         AudioStreamBasicDescription(
             mSampleRate: sampleRate,
             mFormatID: kAudioFormatLinearPCM,
@@ -801,19 +819,10 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
             mBytesPerPacket: 4,
             mFramesPerPacket: 1,
             mBytesPerFrame: 4,
-            mChannelsPerFrame: 2,
+            mChannelsPerFrame: UInt32(channelCount),
             mBitsPerChannel: 32,
             mReserved: 0
         )
-    }
-
-    /// Same canonical float32 non-interleaved shape, at capture width.
-    private func canonicalWideFormat(sampleRate: Double, channelCount: Int) -> AudioStreamBasicDescription {
-        var format = canonicalStereoFormat(sampleRate: sampleRate)
-        format.mChannelsPerFrame = UInt32(channelCount)
-        format.mBytesPerFrame = UInt32(4 * channelCount)
-        format.mBytesPerPacket = format.mBytesPerFrame
-        return format
     }
 
     private func setUnit<T>(

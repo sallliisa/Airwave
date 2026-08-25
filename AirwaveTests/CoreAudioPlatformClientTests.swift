@@ -136,6 +136,32 @@ final class CoreAudioPlatformClientTests: XCTestCase {
         }
     }
 
+    /// Regression: non-interleaved PCM stores one channel per AudioBuffer, so
+    /// a frame is always 4 bytes per buffer regardless of stream width. The
+    /// multichannel overhaul briefly scaled mBytesPerFrame by channel count,
+    /// producing a contradictory ASBD that Core Audio rejected with 'fmt!'
+    /// and left AUHAL's input chain unconnected (-10876).
+    func testCanonicalCaptureFormatKeepsNonInterleavedByteGeometryAtEveryWidth() {
+        for width in [2, 6, 8, 16] {
+            let format = CoreAudioPlatformClient.canonicalNonInterleavedFloat32Format(
+                sampleRate: 48_000,
+                channelCount: width
+            )
+            XCTAssertEqual(format.mFormatID, kAudioFormatLinearPCM, "width \(width)")
+            XCTAssertEqual(
+                format.mFormatFlags,
+                kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked | kAudioFormatFlagIsNonInterleaved,
+                "width \(width)"
+            )
+            XCTAssertEqual(format.mBitsPerChannel, 32, "width \(width)")
+            XCTAssertEqual(format.mChannelsPerFrame, UInt32(width), "width \(width)")
+            XCTAssertEqual(format.mFramesPerPacket, 1, "width \(width)")
+            XCTAssertEqual(format.mBytesPerFrame, 4, "non-interleaved frame stays one sample per buffer (width \(width))")
+            XCTAssertEqual(format.mBytesPerPacket, 4, "width \(width)")
+            XCTAssertEqual(format.mSampleRate, 48_000, "width \(width)")
+        }
+    }
+
     func testTapGuardRejectsWidthOutsideTwoToSixteenBeforeAnyHALWork() {
         let client = CoreAudioPlatformClient()
         var accepted = 0
