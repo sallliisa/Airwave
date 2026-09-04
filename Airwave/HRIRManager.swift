@@ -213,14 +213,6 @@ nonisolated final class SpatialRendererCrossfader {
         toRightScratch.deallocate()
     }
 
-    /// True while spatial output must stay in the callback path, including the
-    /// fade back to passthrough after a preset is removed.
-    var isRenderingSpatialAudio: Bool {
-        isFading || activeState?.renderers.isEmpty == false
-    }
-
-    var hasObservedRenderers: Bool { observedState?.renderers.isEmpty == false }
-
     #if DEBUG
     var retiredStateCountForTesting: Int { retirementLock.withLock { $0.count } }
     var isFadingForTesting: Bool { isFading }
@@ -262,18 +254,20 @@ nonisolated final class SpatialRendererCrossfader {
         }
     }
 
-    func process(
+    func processIfNeeded(
         inputChannels: UnsafePointer<UnsafePointer<Float>?>,
         inputChannelCount: Int,
         leftOutput: UnsafeMutablePointer<Float>,
         rightOutput: UnsafeMutablePointer<Float>,
         frameCount: Int
-    ) {
-        guard frameCount > 0 else { return }
+    ) -> Bool {
         precondition(frameCount <= maxFramesPerCallback)
         applyPendingReset()
         flushPendingRetirement()
+        guard frameCount > 0 else { return false }
+        guard isFading || activeState != nil else { return false }
 
+        var passthroughSpeakers: [VirtualSpeaker]?
         var offset = 0
         while offset < frameCount {
             guard isFading else {
@@ -284,9 +278,10 @@ nonisolated final class SpatialRendererCrossfader {
                     inputOffset: offset,
                     leftOutput: leftOutput.advanced(by: offset),
                     rightOutput: rightOutput.advanced(by: offset),
-                    frameCount: frameCount - offset
+                    frameCount: frameCount - offset,
+                    fallbackSpeakers: passthroughSpeakers
                 )
-                return
+                return true
             }
 
             let boundary = fadeFrame < primeFrames ? primeFrames : primeFrames + fadeLength
@@ -342,8 +337,14 @@ nonisolated final class SpatialRendererCrossfader {
 
             fadeFrame += segment
             offset += segment
-            if fadeFrame == primeFrames + fadeLength { finishFade() }
+            if fadeFrame == primeFrames + fadeLength {
+                if fadeTo == nil {
+                    passthroughSpeakers = fadeFrom?.fallbackSpeakers
+                }
+                finishFade()
+            }
         }
+        return true
     }
     // END REALTIME CALLBACK
 
@@ -355,23 +356,24 @@ nonisolated final class SpatialRendererCrossfader {
         inputOffset: Int,
         leftOutput: UnsafeMutablePointer<Float>,
         rightOutput: UnsafeMutablePointer<Float>,
-        frameCount: Int
+        frameCount: Int,
+        fallbackSpeakers: [VirtualSpeaker]? = nil
     ) {
         guard let state, !state.renderers.isEmpty else {
-            // Renderer-less passthrough: front pair straight out. Channels
-            // beyond stereo are intentionally dropped here; the effect graph
-            // owns wide fold-down when spatial is fully inactive.
-            if let left = inputChannels[0] {
-                memcpy(leftOutput, left.advanced(by: inputOffset), frameCount * MemoryLayout<Float>.size)
-            } else {
-                memset(leftOutput, 0, frameCount * MemoryLayout<Float>.size)
-            }
-            let rightSource = inputChannelCount > 1 ? inputChannels[1] : inputChannels[0]
-            if let right = rightSource {
-                memcpy(rightOutput, right.advanced(by: inputOffset), frameCount * MemoryLayout<Float>.size)
-            } else {
-                memset(rightOutput, 0, frameCount * MemoryLayout<Float>.size)
-            }
+            let speakers = state?.fallbackSpeakers
+                ?? fadeTo?.fallbackSpeakers
+                ?? fadeFrom?.fallbackSpeakers
+                ?? fallbackSpeakers
+            guard let speakers else { return }
+            StereoDownmixGains.downmix(
+                inputChannels: inputChannels,
+                inputChannelCount: inputChannelCount,
+                inputOffset: inputOffset,
+                inputSpeakers: speakers,
+                outputLeft: leftOutput,
+                outputRight: rightOutput,
+                frameCount: frameCount
+            )
             return
         }
         state.processor.process(
@@ -487,9 +489,11 @@ class HRIRManager: ObservableObject {
     nonisolated class RendererState {
         let renderers: [VirtualSpeakerRenderer]
         let processor: RealtimeAudioProcessor
+        let fallbackSpeakers: [VirtualSpeaker]
 
         init(renderers: [VirtualSpeakerRenderer], inputChannelCount: Int, fallbackSpeakers: [VirtualSpeaker], blockSize: Int) {
             self.renderers = renderers
+            self.fallbackSpeakers = fallbackSpeakers
             self.processor = RealtimeAudioProcessor(
                 renderers: renderers,
                 inputChannelCount: inputChannelCount,
@@ -905,19 +909,10 @@ class HRIRManager: ObservableObject {
         completion?(.failure(message))
     }
 
-    private enum StateRead {
-        case available(RendererState?)
-    }
-
-    /// Read-only for the crossfader: the graph also queries this from the main
-    /// thread, so it must never advance render-thread state.
-    nonisolated func hasPublishedRendererForAudioCallback() -> Bool {
-        if crossfader.isRenderingSpatialAudio { return true }
-        if let read = stateLock.withLockIfAvailable({ StateRead.available($0) }),
-           case .available(let publishedState) = read {
-            return publishedState?.renderers.isEmpty == false
-        }
-        return crossfader.hasObservedRenderers
+    /// Control-only read of the published renderer state. Render-thread
+    /// crossfader state is not part of readiness.
+    nonisolated func hasPublishedRendererForControl() -> Bool {
+        stateLock.withLock { $0?.renderers.isEmpty == false }
     }
 
     nonisolated func processAudio(
@@ -926,14 +921,13 @@ class HRIRManager: ObservableObject {
         leftOutput: UnsafeMutablePointer<Float>,
         rightOutput: UnsafeMutablePointer<Float>,
         frameCount: Int
-    ) {
+    ) -> Bool {
         // A writer can never stall the render thread. A failed attempt keeps prior immutable state.
-        if let read = stateLock.withLockIfAvailable({ StateRead.available($0) }),
-           case .available(let publishedState) = read {
+        if let publishedState = stateLock.withLockIfAvailable({ $0 }) {
             crossfader.observe(publishedState)
         }
 
-        crossfader.process(
+        return crossfader.processIfNeeded(
             inputChannels: inputChannels,
             inputChannelCount: inputChannelCount,
             leftOutput: leftOutput,

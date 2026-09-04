@@ -136,6 +136,20 @@ final class CoreAudioPlatformClientTests: XCTestCase {
         }
     }
 
+    func testPhysicalMultiStreamOutputIsUnsupportedByProfilePolicy() {
+        let output = OutputDeviceDescriptor(
+            id: .init(17), uid: "multi-stream", name: "Multi-stream", transport: "USB",
+            channelLabels: nil, outputChannelCount: 8, nominalSampleRate: 48_000,
+            isVirtual: false, isAggregate: false, outputStreamCount: 2
+        )
+
+        XCTAssertFalse(output.isSupportedProfileOutput)
+        XCTAssertEqual(
+            output.unsupportedProfileReason,
+            "Airwave supports physical output devices with one output stream."
+        )
+    }
+
     /// Regression: non-interleaved PCM stores one channel per AudioBuffer, so
     /// a frame is always 4 bytes per buffer regardless of stream width. The
     /// multichannel overhaul briefly scaled mBytesPerFrame by channel count,

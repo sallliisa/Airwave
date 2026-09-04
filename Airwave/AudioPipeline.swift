@@ -11,24 +11,6 @@ nonisolated protocol StereoAudioProcessing: AnyObject {
     )
 }
 
-extension HRIRManager: StereoAudioProcessing {
-    nonisolated func process(
-        inputChannels: UnsafePointer<UnsafePointer<Float>?>,
-        inputChannelCount: Int,
-        outputLeft: UnsafeMutablePointer<Float>,
-        outputRight: UnsafeMutablePointer<Float>,
-        frameCount: Int
-    ) {
-        processAudio(
-            inputChannels: inputChannels,
-            inputChannelCount: inputChannelCount,
-            leftOutput: outputLeft,
-            rightOutput: outputRight,
-            frameCount: frameCount
-        )
-    }
-}
-
 nonisolated protocol AudioPipelineControlling: AnyObject {
     func start(
         on output: OutputDeviceDescriptor,
@@ -147,7 +129,7 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
         let pipelineID = ObjectIdentifier(self)
         AirwaveLog.audio.info("Pipeline start: stage=defaultOutput (\(String(describing: pipelineID))).")
         do {
-            guard (2...16).contains(output.outputChannelCount), !output.isVirtual, !output.isAggregate else {
+            guard output.isSupportedProfileOutput else {
                 throw AudioRuntimeError.unsupportedOutput(output.name)
             }
 
@@ -158,6 +140,8 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
             case .processing:
                 excludedProcesses = [try platform.resolveOwnProcess()]
             }
+            // The support policy requires one output stream, so CATap stream 0
+            // carries the complete supported device output.
             let request = GlobalStereoTapRequest(
                 excludedProcesses: excludedProcesses,
                 output: output,

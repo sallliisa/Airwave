@@ -543,7 +543,7 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
         let sampleRate: Float64 = try getObjectValue(id, selector: kAudioDevicePropertyNominalSampleRate)
         return AudioStreamFormat(
             sampleRate: sampleRate,
-            channelCount: try channelCount(id, scope: kAudioObjectPropertyScopeOutput),
+            channelCount: try streamChannelCounts(id, scope: kAudioObjectPropertyScopeOutput).reduce(0, +),
             sampleType: .float32,
             isInterleaved: false
         )
@@ -687,7 +687,7 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
         let name: String = try getObjectCFString(deviceID, selector: kAudioObjectPropertyName)
         let transport: UInt32 = try getObjectValue(deviceID, selector: kAudioDevicePropertyTransportType)
         let sampleRate: Float64 = try getObjectValue(deviceID, selector: kAudioDevicePropertyNominalSampleRate)
-        let channels = try channelCount(deviceID, scope: kAudioObjectPropertyScopeOutput)
+        let streamChannels = try streamChannelCounts(deviceID, scope: kAudioObjectPropertyScopeOutput)
         let isAggregate = transport == kAudioDeviceTransportTypeAggregate
         let isVirtual = transport == kAudioDeviceTransportTypeVirtual || isAggregate
         return OutputDeviceDescriptor(
@@ -696,10 +696,11 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
             name: name,
             transport: fourCC(transport),
             channelLabels: outputChannelLabels(deviceID),
-            outputChannelCount: channels,
+            outputChannelCount: streamChannels.reduce(0, +),
             nominalSampleRate: sampleRate,
             isVirtual: isVirtual,
-            isAggregate: isAggregate
+            isAggregate: isAggregate,
+            outputStreamCount: streamChannels.count
         )
     }
 
@@ -735,7 +736,7 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
         return value.takeUnretainedValue() as String
     }
 
-    private func channelCount(_ objectID: AudioObjectID, scope: AudioObjectPropertyScope) throws -> Int {
+    private func streamChannelCounts(_ objectID: AudioObjectID, scope: AudioObjectPropertyScope) throws -> [Int] {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyStreamConfiguration,
             mScope: scope,
@@ -751,7 +752,7 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
             throw AudioRuntimeError.deviceLost
         }
         let list = UnsafeMutableAudioBufferListPointer(storage.assumingMemoryBound(to: AudioBufferList.self))
-        return list.reduce(0) { $0 + Int($1.mNumberChannels) }
+        return list.map { Int($0.mNumberChannels) }
     }
 
     /// Best-effort read of the device's output channel labels. Nil means the

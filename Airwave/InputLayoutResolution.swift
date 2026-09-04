@@ -7,6 +7,7 @@
 //  unpaired-channel mixing. No Core Audio import: callers pass raw labels.
 //
 
+import Accelerate
 import Foundation
 
 /// Resolves an `InputLayout` for a captured device stream.
@@ -79,6 +80,67 @@ nonisolated enum StereoDownmixGains {
             (0.0, 0.5)
         case .BC, .custom:
             (0.354, 0.354)
+        }
+    }
+
+    /// Writes one stereo fallback buffer without allocating or resolving a
+    /// layout on the render thread.
+    @inline(__always)
+    static func downmix(
+        inputChannels: UnsafePointer<UnsafePointer<Float>?>,
+        inputChannelCount: Int,
+        inputOffset: Int,
+        inputSpeakers: [VirtualSpeaker],
+        outputLeft: UnsafeMutablePointer<Float>,
+        outputRight: UnsafeMutablePointer<Float>,
+        frameCount: Int
+    ) {
+        guard frameCount > 0 else { return }
+        let byteCount = frameCount * MemoryLayout<Float>.size
+
+        if inputChannelCount == 2 && inputSpeakers.count == 2 {
+            if let left = inputChannels[0] {
+                memcpy(outputLeft, left.advanced(by: inputOffset), byteCount)
+            } else {
+                memset(outputLeft, 0, byteCount)
+            }
+            if let right = inputChannels[1] {
+                memcpy(outputRight, right.advanced(by: inputOffset), byteCount)
+            } else if let left = inputChannels[0] {
+                // Mono capture can expose a missing second pointer.
+                memcpy(outputRight, left.advanced(by: inputOffset), byteCount)
+            } else {
+                memset(outputRight, 0, byteCount)
+            }
+            return
+        }
+
+        if inputChannelCount == 1 {
+            if let source = inputChannels[0] {
+                let source = source.advanced(by: inputOffset)
+                memcpy(outputLeft, source, byteCount)
+                memcpy(outputRight, source, byteCount)
+            } else {
+                memset(outputLeft, 0, byteCount)
+                memset(outputRight, 0, byteCount)
+            }
+            return
+        }
+
+        memset(outputLeft, 0, byteCount)
+        memset(outputRight, 0, byteCount)
+        for channel in 0..<min(inputChannelCount, inputSpeakers.count) {
+            guard let source = inputChannels[channel] else { continue }
+            let gains = gains(for: inputSpeakers[channel])
+            var leftGain = gains.left
+            var rightGain = gains.right
+            let offsetSource = source.advanced(by: inputOffset)
+            if leftGain != 0 {
+                vDSP_vsma(offsetSource, 1, &leftGain, outputLeft, 1, outputLeft, 1, vDSP_Length(frameCount))
+            }
+            if rightGain != 0 {
+                vDSP_vsma(offsetSource, 1, &rightGain, outputRight, 1, outputRight, 1, vDSP_Length(frameCount))
+            }
         }
     }
 }

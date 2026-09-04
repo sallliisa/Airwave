@@ -4,7 +4,7 @@ import XCTest
 final class AudioEffectGraphTests: XCTestCase {
     func testNeitherEffectCopiesStereoAndDuplicatesMono() throws {
         let graph = AudioEffectGraph(
-            spatial: SpatialEffectSpy(isReady: false),
+            spatial: SpatialEffectSpy(isReady: false, processResult: false),
             equalizer: EqualizerEffectSpy(),
             maxFramesPerCallback: 8
         )
@@ -35,8 +35,34 @@ final class AudioEffectGraphTests: XCTestCase {
         XCTAssertEqual(equalizer.processCount, 0)
     }
 
+    func testCallbackUsesSpatialOutputWhenControlReadinessIsFalse() throws {
+        let spatial = SpatialEffectSpy(isReady: false, offset: 10, processResult: true)
+        let graph = AudioEffectGraph(spatial: spatial, equalizer: EqualizerEffectSpy(), maxFramesPerCallback: 8)
+        let preparation = graph.prepare(for: deviceOutput(sampleRate: 48_000), equalizerDefinition: nil)
+
+        XCTAssertTrue(preparation.noEffectCanRun)
+        let result = process(graph, left: [1], right: [2])
+
+        XCTAssertEqual(result.left, [11])
+        XCTAssertEqual(result.right, [12])
+        XCTAssertEqual(spatial.processCount, 1)
+    }
+
+    func testCallbackUsesFallbackWhenControlReadinessIsTrueButSpatialWritesNothing() throws {
+        let spatial = SpatialEffectSpy(isReady: true, processResult: false)
+        let graph = AudioEffectGraph(spatial: spatial, equalizer: EqualizerEffectSpy(), maxFramesPerCallback: 8)
+        let preparation = graph.prepare(for: deviceOutput(sampleRate: 48_000), equalizerDefinition: nil)
+
+        XCTAssertEqual(preparation.runnableEffects, [.spatial])
+        let result = process(graph, left: [1], right: [2])
+
+        XCTAssertEqual(result.left, [1])
+        XCTAssertEqual(result.right, [2])
+        XCTAssertEqual(spatial.processCount, 1)
+    }
+
     func testEqualizerOnlyRunsAfterInputPassthrough() throws {
-        let spatial = SpatialEffectSpy(isReady: false)
+        let spatial = SpatialEffectSpy(isReady: false, processResult: false)
         let equalizer = EqualizerEffectSpy(multiplier: 2)
         let graph = AudioEffectGraph(spatial: spatial, equalizer: equalizer, maxFramesPerCallback: 8)
         let definition = EqualizerDefinition(preampDB: 3)
@@ -53,7 +79,7 @@ final class AudioEffectGraphTests: XCTestCase {
 
     func testWideDeviceFoldsDownThroughGainTableWhenSpatialInactive() throws {
         let graph = AudioEffectGraph(
-            spatial: SpatialEffectSpy(isReady: false),
+            spatial: SpatialEffectSpy(isReady: false, processResult: false),
             equalizer: EqualizerEffectSpy(),
             maxFramesPerCallback: 8
         )
@@ -73,7 +99,7 @@ final class AudioEffectGraphTests: XCTestCase {
     }
 
     func testPlainStereoPassthroughStaysByteExactMemcpy() throws {
-        let spatial = SpatialEffectSpy(isReady: false)
+        let spatial = SpatialEffectSpy(isReady: false, processResult: false)
         let graph = AudioEffectGraph(spatial: spatial, equalizer: EqualizerEffectSpy(), maxFramesPerCallback: 8)
         _ = graph.prepare(for: deviceOutput(sampleRate: 48_000), equalizerDefinition: nil)
 
@@ -87,7 +113,7 @@ final class AudioEffectGraphTests: XCTestCase {
 
     func testEqualizerRunsAfterWideFoldDown() throws {
         let graph = AudioEffectGraph(
-            spatial: SpatialEffectSpy(isReady: false),
+            spatial: SpatialEffectSpy(isReady: false, processResult: false),
             equalizer: EqualizerEffectSpy(multiplier: 2),
             maxFramesPerCallback: 8
         )
@@ -140,7 +166,7 @@ final class AudioEffectGraphTests: XCTestCase {
 
     func testProductionEqualizerPreparationUsesOutputRateAndRejectsNyquist() throws {
         let graph = AudioEffectGraph(
-            spatial: SpatialEffectSpy(isReady: false),
+            spatial: SpatialEffectSpy(isReady: false, processResult: false),
             equalizer: EqualizerRuntimeEffect(),
             maxFramesPerCallback: 8
         )
@@ -164,7 +190,7 @@ final class AudioEffectGraphTests: XCTestCase {
 
     func testProductionEqualizerCanReenableAfterNoneSelection() throws {
         let graph = AudioEffectGraph(
-            spatial: SpatialEffectSpy(isReady: false),
+            spatial: SpatialEffectSpy(isReady: false, processResult: false),
             equalizer: EqualizerRuntimeEffect(),
             maxFramesPerCallback: 4_096
         )
@@ -330,17 +356,19 @@ final class AudioEffectGraphTests: XCTestCase {
 private final class SpatialEffectSpy: AudioSpatialEffect {
     let isReady: Bool
     let offset: Float
+    let processResult: Bool
     private(set) var processCount = 0
 
-    init(isReady: Bool, offset: Float = 0) {
+    init(isReady: Bool, offset: Float = 0, processResult: Bool = true) {
         self.isReady = isReady
         self.offset = offset
+        self.processResult = processResult
     }
 
     func process(
         inputChannels: UnsafePointer<UnsafePointer<Float>?>, inputChannelCount: Int,
         outputLeft: UnsafeMutablePointer<Float>, outputRight: UnsafeMutablePointer<Float>, frameCount: Int
-    ) {
+    ) -> Bool {
         processCount += 1
         for index in 0..<frameCount {
             let left = inputChannels[0]
@@ -348,6 +376,7 @@ private final class SpatialEffectSpy: AudioSpatialEffect {
             outputLeft[index] = (left?[index] ?? 0) + offset
             outputRight[index] = (right?[index] ?? 0) + offset
         }
+        return processResult
     }
 }
 

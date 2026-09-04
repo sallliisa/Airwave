@@ -243,6 +243,22 @@ final class AudioPipelineTests: XCTestCase {
         XCTAssertTrue(platform.hasNoLiveResources)
     }
 
+    func testMultistreamPhysicalDeviceIsRejectedBeforeProcessResolutionOrTapCreation() {
+        let platform = RecordingAudioPlatformClient()
+        platform.output = OutputDeviceDescriptor(
+            id: .init(6), uid: "multi-stream", name: "Multi-stream", transport: "HDMI",
+            channelLabels: nil, outputChannelCount: 8, nominalSampleRate: 48_000,
+            isVirtual: false, isAggregate: false, outputStreamCount: 2
+        )
+        let pipeline = AudioPipeline(platform: platform, processor: PassthroughProcessor())
+
+        XCTAssertThrowsError(try pipeline.start(on: platform.output)) { error in
+            XCTAssertEqual(error as? AudioRuntimeError, .unsupportedOutput("Multi-stream"))
+        }
+        XCTAssertTrue(platform.events.isEmpty)
+        XCTAssertTrue(platform.hasNoLiveResources)
+    }
+
     func testVirtualAndAggregateDevicesStayRejectedAtEveryWidth() {
         for width in [2, 8] {
             let virtual = RecordingAudioPlatformClient()

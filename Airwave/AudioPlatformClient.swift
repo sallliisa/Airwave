@@ -18,14 +18,40 @@ nonisolated struct OutputDeviceDescriptor: Equatable, Sendable {
     /// Nil when unreadable; absence triggers count-based layout detection.
     let channelLabels: [UInt32]?
     let outputChannelCount: Int
+    let outputStreamCount: Int
     let nominalSampleRate: Double
     let isVirtual: Bool
     let isAggregate: Bool
 
+    init(
+        id: ID,
+        uid: String,
+        name: String,
+        transport: String,
+        channelLabels: [UInt32]?,
+        outputChannelCount: Int,
+        nominalSampleRate: Double,
+        isVirtual: Bool,
+        isAggregate: Bool,
+        outputStreamCount: Int = 1
+    ) {
+        self.id = id
+        self.uid = uid
+        self.name = name
+        self.transport = transport
+        self.channelLabels = channelLabels
+        self.outputChannelCount = outputChannelCount
+        self.outputStreamCount = outputStreamCount
+        self.nominalSampleRate = nominalSampleRate
+        self.isVirtual = isVirtual
+        self.isAggregate = isAggregate
+    }
+
     /// The single support policy shared by persistence and the audio runtime.
     var isSupportedProfileOutput: Bool {
         !uid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !isVirtual && !isAggregate && (2...16).contains(outputChannelCount)
+            && !isVirtual && !isAggregate && outputStreamCount == 1
+            && (2...16).contains(outputChannelCount)
     }
 
     var unsupportedProfileReason: String? {
@@ -34,6 +60,9 @@ nonisolated struct OutputDeviceDescriptor: Equatable, Sendable {
         }
         if isVirtual || isAggregate {
             return "Unsupported virtual or aggregate output. Change output in macOS Settings."
+        }
+        if outputStreamCount != 1 {
+            return "Airwave supports physical output devices with one output stream."
         }
         if !(2...16).contains(outputChannelCount) {
             return "Airwave supports 2 to 16 output channels on physical devices."

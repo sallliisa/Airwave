@@ -92,4 +92,102 @@ final class InputLayoutResolutionTests: XCTestCase {
         XCTAssertEqual(StereoDownmixGains.gains(for: .custom("Ch7")).left, 0.354, accuracy: 1e-6)
         XCTAssertEqual(StereoDownmixGains.gains(for: .custom("Ch7")).right, 0.354, accuracy: 1e-6)
     }
+
+    func testStereoDownmixOperationKeepsPlainStereoByteExact() {
+        let left = [Float(1).nextDown, 0.5]
+        let right = [Float(2).nextUp, -0.25]
+        var outputLeft = [Float](repeating: .nan, count: left.count)
+        var outputRight = [Float](repeating: .nan, count: right.count)
+
+        left.withUnsafeBufferPointer { leftPointer in
+            right.withUnsafeBufferPointer { rightPointer in
+                let channels: [UnsafePointer<Float>?] = [leftPointer.baseAddress!, rightPointer.baseAddress!]
+                channels.withUnsafeBufferPointer { channelPointers in
+                    outputLeft.withUnsafeMutableBufferPointer { leftOutput in
+                        outputRight.withUnsafeMutableBufferPointer { rightOutput in
+                            StereoDownmixGains.downmix(
+                                inputChannels: channelPointers.baseAddress!,
+                                inputChannelCount: 2,
+                                inputOffset: 0,
+                                inputSpeakers: [.FL, .FR],
+                                outputLeft: leftOutput.baseAddress!,
+                                outputRight: rightOutput.baseAddress!,
+                                frameCount: left.count
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        XCTAssertEqual(outputLeft, left)
+        XCTAssertEqual(outputRight, right)
+    }
+
+    func testStereoDownmixOperationFoldsFiveOneToBothEars() {
+        let frames = 2
+        var input = [Float](repeating: 1, count: 6 * frames)
+        var outputLeft = [Float](repeating: .nan, count: frames)
+        var outputRight = [Float](repeating: .nan, count: frames)
+        input.withUnsafeMutableBufferPointer { inputBuffer in
+            let base = UnsafePointer(inputBuffer.baseAddress!)
+            let channels: [UnsafePointer<Float>?] = (0..<6).map { base.advanced(by: $0 * frames) }
+            channels.withUnsafeBufferPointer { channelPointers in
+                outputLeft.withUnsafeMutableBufferPointer { leftOutput in
+                    outputRight.withUnsafeMutableBufferPointer { rightOutput in
+                        StereoDownmixGains.downmix(
+                            inputChannels: channelPointers.baseAddress!,
+                            inputChannelCount: 6,
+                            inputOffset: 0,
+                            inputSpeakers: [.FL, .FR, .FC, .LFE, .BL, .BR],
+                            outputLeft: leftOutput.baseAddress!,
+                            outputRight: rightOutput.baseAddress!,
+                            frameCount: frames
+                        )
+                    }
+                }
+            }
+        }
+
+        for (actual, expected) in zip(outputLeft, [Float(1.914), 1.914]) {
+            XCTAssertEqual(actual, expected, accuracy: 1e-4)
+        }
+        for (actual, expected) in zip(outputRight, [Float(1.914), 1.914]) {
+            XCTAssertEqual(actual, expected, accuracy: 1e-4)
+        }
+    }
+
+    func testStereoDownmixOperationTreatsNilChannelsAsSilence() {
+        let left = [Float(1), 2]
+        let right = [Float(3), 4]
+        var outputLeft = [Float](repeating: 9, count: left.count)
+        var outputRight = [Float](repeating: 9, count: right.count)
+        left.withUnsafeBufferPointer { leftPointer in
+            right.withUnsafeBufferPointer { rightPointer in
+                let channels: [UnsafePointer<Float>?] = [leftPointer.baseAddress!, rightPointer.baseAddress!, nil]
+                channels.withUnsafeBufferPointer { channelPointers in
+                    outputLeft.withUnsafeMutableBufferPointer { leftOutput in
+                        outputRight.withUnsafeMutableBufferPointer { rightOutput in
+                            StereoDownmixGains.downmix(
+                                inputChannels: channelPointers.baseAddress!,
+                                inputChannelCount: 3,
+                                inputOffset: 0,
+                                inputSpeakers: [.FL, .FR, .FC],
+                                outputLeft: leftOutput.baseAddress!,
+                                outputRight: rightOutput.baseAddress!,
+                                frameCount: left.count
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        for (actual, expected) in zip(outputLeft, [Float(0.707), 1.414]) {
+            XCTAssertEqual(actual, expected, accuracy: 1e-4)
+        }
+        for (actual, expected) in zip(outputRight, [Float(2.121), 2.828]) {
+            XCTAssertEqual(actual, expected, accuracy: 1e-4)
+        }
+    }
 }

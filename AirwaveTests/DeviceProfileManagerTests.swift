@@ -130,7 +130,8 @@ final class DeviceProfileManagerTests: XCTestCase {
             profileDevice(id: 1, uid: "virtual", name: "Virtual", virtual: true),
             profileDevice(id: 2, uid: "aggregate", name: "Aggregate", aggregate: true),
             profileDevice(id: 3, uid: "mono", name: "Mono", channels: 1),
-            profileDevice(id: 4, uid: "", name: "No UID")
+            profileDevice(id: 4, uid: "", name: "No UID"),
+            profileDevice(id: 5, uid: "multi-stream", name: "Multi-stream", streamCount: 2)
         ])
 
         XCTAssertTrue(manager.targets.isEmpty)
@@ -431,12 +432,13 @@ private func profileDevice(
     transport: String = "built",
     virtual: Bool = false,
     aggregate: Bool = false,
-    channels: Int = 2
+    channels: Int = 2,
+    streamCount: Int = 1
 ) -> OutputDeviceDescriptor {
     OutputDeviceDescriptor(
         id: .init(id), uid: uid, name: name, transport: transport,
         channelLabels: nil, outputChannelCount: channels, nominalSampleRate: 48_000,
-        isVirtual: virtual, isAggregate: aggregate
+        isVirtual: virtual, isAggregate: aggregate, outputStreamCount: streamCount
     )
 }
 

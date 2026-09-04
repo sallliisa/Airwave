@@ -514,6 +514,25 @@ final class SpatialRendererCrossfaderTests: XCTestCase {
         )
     }
 
+    private let wideSpeakers: [VirtualSpeaker] = [.FL, .FR, .FC, .LFE, .BL, .BR]
+
+    private func makeWideState() -> HRIRManager.RendererState {
+        let renderers = wideSpeakers.map { speaker in
+            let convolver = StereoConvolutionEngine(
+                leftEarHRIR: [1],
+                rightEarHRIR: [1],
+                blockSize: blockSize
+            )!
+            return VirtualSpeakerRenderer(speaker: speaker, convolver: convolver)
+        }
+        return HRIRManager.RendererState(
+            renderers: renderers,
+            inputChannelCount: wideSpeakers.count,
+            fallbackSpeakers: wideSpeakers,
+            blockSize: blockSize
+        )
+    }
+
     private func makeCrossfader() -> SpatialRendererCrossfader {
         SpatialRendererCrossfader(primeLength: blockSize, fadeLength: fadeLength, maxFramesPerCallback: 4_096)
     }
@@ -543,18 +562,79 @@ final class SpatialRendererCrossfaderTests: XCTestCase {
                         right.withUnsafeMutableBufferPointer { rightPtr in
                             let channels: [UnsafePointer<Float>?] = [inputPtr.baseAddress!, inputPtr.baseAddress!]
                             channels.withUnsafeBufferPointer { channelPointers in
-                                crossfader.process(
+                                let wrote = crossfader.processIfNeeded(
                                     inputChannels: channelPointers.baseAddress!,
                                     inputChannelCount: 2,
                                     leftOutput: leftPtr.baseAddress!,
                                     rightOutput: rightPtr.baseAddress!,
                                     frameCount: size
                                 )
+                                if !wrote {
+                                    memcpy(leftPtr.baseAddress!, inputPtr.baseAddress!, size * MemoryLayout<Float>.size)
+                                    memcpy(rightPtr.baseAddress!, inputPtr.baseAddress!, size * MemoryLayout<Float>.size)
+                                }
                             }
                         }
                     }
                 }
                 input.append(contentsOf: chunk)
+                outputLeft.append(contentsOf: left)
+                outputRight.append(contentsOf: right)
+            }
+        }
+    }
+
+    /// Drives a wide fallback with non-front content so both crossfade
+    /// directions exercise the shared downmix operation.
+    private final class WideDriver {
+        let crossfader: SpatialRendererCrossfader
+        let signals: [Float] = [0, 0, 1, 0, 2, 3]
+        private(set) var outputLeft: [Float] = []
+        private(set) var outputRight: [Float] = []
+
+        init(_ crossfader: SpatialRendererCrossfader) { self.crossfader = crossfader }
+
+        func run(callbacks: Int, size: Int = 512) {
+            for _ in 0..<callbacks {
+                var input = [Float](repeating: 0, count: signals.count * size)
+                for channel in signals.indices {
+                    input.replaceSubrange(
+                        (channel * size)..<((channel + 1) * size),
+                        with: repeatElement(signals[channel], count: size)
+                    )
+                }
+                var left = [Float](repeating: .nan, count: size)
+                var right = [Float](repeating: .nan, count: size)
+                input.withUnsafeMutableBufferPointer { inputBuffer in
+                    let base = UnsafePointer(inputBuffer.baseAddress!)
+                    let channels: [UnsafePointer<Float>?] = signals.indices.map {
+                        base.advanced(by: $0 * size)
+                    }
+                    channels.withUnsafeBufferPointer { channelPointers in
+                        left.withUnsafeMutableBufferPointer { leftOutput in
+                            right.withUnsafeMutableBufferPointer { rightOutput in
+                                let wrote = crossfader.processIfNeeded(
+                                    inputChannels: channelPointers.baseAddress!,
+                                    inputChannelCount: channels.count,
+                                    leftOutput: leftOutput.baseAddress!,
+                                    rightOutput: rightOutput.baseAddress!,
+                                    frameCount: size
+                                )
+                                if !wrote {
+                                    StereoDownmixGains.downmix(
+                                        inputChannels: channelPointers.baseAddress!,
+                                        inputChannelCount: channels.count,
+                                        inputOffset: 0,
+                                        inputSpeakers: [.FL, .FR, .FC, .LFE, .BL, .BR],
+                                        outputLeft: leftOutput.baseAddress!,
+                                        outputRight: rightOutput.baseAddress!,
+                                        frameCount: size
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
                 outputLeft.append(contentsOf: left)
                 outputRight.append(contentsOf: right)
             }
@@ -659,10 +739,10 @@ final class SpatialRendererCrossfaderTests: XCTestCase {
         driver.run(callbacks: 6)
 
         crossfader.observe(nil)
-        XCTAssertTrue(crossfader.isRenderingSpatialAudio)
+        XCTAssertTrue(crossfader.isFadingForTesting)
         driver.run(callbacks: 4)
 
-        XCTAssertFalse(crossfader.isRenderingSpatialAudio)
+        XCTAssertFalse(crossfader.isFadingForTesting)
         XCTAssertLessThan(maximumStepDelta(driver.outputLeft), 0.1)
         let tail = Array(driver.outputLeft.suffix(512))
         let expected = Array(driver.input.suffix(512))
@@ -689,6 +769,151 @@ final class SpatialRendererCrossfaderTests: XCTestCase {
         for (actual, want) in zip(tail, expected) {
             XCTAssertEqual(actual, want, accuracy: 1e-5)
         }
+    }
+
+    func testWidePassthroughEndpointKeepsCenterAndSurroundDuringBothFades() {
+        let crossfader = makeCrossfader()
+        let driver = WideDriver(crossfader)
+        let state = makeWideState()
+
+        crossfader.observe(state)
+        driver.run(callbacks: 4)
+        let incoming = driver.outputLeft
+        XCTAssertTrue(incoming.allSatisfy { abs($0) > 1e-5 })
+
+        crossfader.observe(nil)
+        let outgoingStart = driver.outputLeft.count
+        driver.run(callbacks: 4)
+        let outgoing = driver.outputLeft[outgoingStart...]
+        XCTAssertTrue(outgoing.allSatisfy { abs($0) > 1e-5 })
+        XCTAssertFalse(crossfader.isFadingForTesting)
+
+        let expectedLeft: Float = 0.707 + 2 * 0.5
+        let expectedRight: Float = 0.707 + 3 * 0.5
+        for sample in driver.outputLeft.suffix(512) {
+            XCTAssertEqual(sample, expectedLeft, accuracy: 1e-4)
+        }
+        for sample in driver.outputRight.suffix(512) {
+            XCTAssertEqual(sample, expectedRight, accuracy: 1e-4)
+        }
+    }
+}
+
+final class SpatialRendererCrossfaderPerformanceTests: XCTestCase {
+    private let blockSize = 512
+    private let channelSpeakers = InputLayout.surround71.channels
+    private let impulseLength = 4_320
+
+    private func makeRandom(seed: UInt64) -> () -> UInt64 {
+        var state = seed
+        return {
+            state ^= state << 13
+            state ^= state >> 7
+            state ^= state << 17
+            return state
+        }
+    }
+
+    private func normalizedIR(seed: UInt64) -> [Float] {
+        let random = makeRandom(seed: seed)
+        var taps = [Float](repeating: 0, count: impulseLength)
+        var norm: Float = 0
+        for index in taps.indices {
+            let sample = Float(random() % 1000) / 1000 - 0.5
+            let tap = sample * pow(0.996, Float(index))
+            taps[index] = tap
+            norm += abs(tap)
+        }
+        for index in taps.indices {
+            taps[index] /= norm
+        }
+        return taps
+    }
+
+    private func makeState(seed: UInt64) -> HRIRManager.RendererState {
+        let renderers = channelSpeakers.enumerated().map { index, speaker in
+            let convolver = try! XCTUnwrap(StereoConvolutionEngine(
+                leftEarHRIR: normalizedIR(seed: seed + UInt64(index)),
+                rightEarHRIR: normalizedIR(seed: seed + UInt64(index) + 100),
+                blockSize: blockSize
+            ))
+            return VirtualSpeakerRenderer(speaker: speaker, convolver: convolver)
+        }
+        return HRIRManager.RendererState(
+            renderers: renderers,
+            inputChannelCount: channelSpeakers.count,
+            fallbackSpeakers: channelSpeakers,
+            blockSize: blockSize
+        )
+    }
+
+    func testEightChannelRepresentativeHRIRSwitchRunsFasterThanRealtime() {
+        let stateA = makeState(seed: 42)
+        let stateB = makeState(seed: 7)
+        let crossfader = SpatialRendererCrossfader(
+            primeLength: blockSize,
+            maxFramesPerCallback: 4_096
+        )
+        let renderedFrames = 192 * blockSize
+        let audioSeconds = Double(renderedFrames) / 48_000
+
+        var input = [Float](repeating: 0.125, count: blockSize)
+        var outputLeft = [Float](repeating: .nan, count: blockSize)
+        var outputRight = [Float](repeating: .nan, count: blockSize)
+        var elapsed: Double = 0
+
+        input.withUnsafeMutableBufferPointer { inputBuffer in
+            let inputBase = UnsafePointer(inputBuffer.baseAddress!)
+            let channelPointers = [UnsafePointer<Float>?](repeating: inputBase, count: channelSpeakers.count)
+            channelPointers.withUnsafeBufferPointer { pointers in
+                outputLeft.withUnsafeMutableBufferPointer { leftBuffer in
+                    outputRight.withUnsafeMutableBufferPointer { rightBuffer in
+                        // Warm state A before timing so setup and initial priming do not
+                        // affect the measured switch workload.
+                        crossfader.observe(stateA)
+                        for _ in 0..<4 {
+                            _ = crossfader.processIfNeeded(
+                                inputChannels: pointers.baseAddress!,
+                                inputChannelCount: channelSpeakers.count,
+                                leftOutput: leftBuffer.baseAddress!,
+                                rightOutput: rightBuffer.baseAddress!,
+                                frameCount: blockSize
+                            )
+                        }
+
+                        let start = DispatchTime.now().uptimeNanoseconds
+                        for callback in 0..<192 {
+                            crossfader.observe(callback.isMultiple(of: 2) ? stateB : stateA)
+                            _ = crossfader.processIfNeeded(
+                                inputChannels: pointers.baseAddress!,
+                                inputChannelCount: channelSpeakers.count,
+                                leftOutput: leftBuffer.baseAddress!,
+                                rightOutput: rightBuffer.baseAddress!,
+                                frameCount: blockSize
+                            )
+                        }
+                        let end = DispatchTime.now().uptimeNanoseconds
+                        elapsed = Double(end - start) / 1_000_000_000
+                    }
+                }
+            }
+        }
+
+        let ratio = elapsed / audioSeconds
+        for sample in outputLeft {
+            XCTAssertTrue(sample.isFinite)
+            XCTAssertLessThanOrEqual(abs(sample), 2.0)
+        }
+        for sample in outputRight {
+            XCTAssertTrue(sample.isFinite)
+            XCTAssertLessThanOrEqual(abs(sample), 2.0)
+        }
+        print("eight-channel HRIR switch elapsed \(elapsed)s for \(audioSeconds)s of audio (ratio \(ratio))")
+        XCTAssertLessThan(
+            elapsed,
+            audioSeconds,
+            "eight-channel HRIR switch elapsed \(elapsed)s for \(audioSeconds)s of audio (ratio \(ratio))"
+        )
     }
 }
 
@@ -776,13 +1001,21 @@ final class RenderSafetySoakTests: XCTestCase {
                             inputPtr.baseAddress!, mono ? nil : inputPtr.baseAddress!
                         ]
                         channels.withUnsafeBufferPointer { channelPointers in
-                            crossfader.process(
+                            let wrote = crossfader.processIfNeeded(
                                 inputChannels: channelPointers.baseAddress!,
                                 inputChannelCount: 2,
                                 leftOutput: leftPtr.baseAddress!,
                                 rightOutput: rightPtr.baseAddress!,
                                 frameCount: size
                             )
+                            if !wrote {
+                                memcpy(leftPtr.baseAddress!, inputPtr.baseAddress!, size * MemoryLayout<Float>.size)
+                                memcpy(
+                                    rightPtr.baseAddress!,
+                                    mono ? inputPtr.baseAddress! : inputPtr.baseAddress!,
+                                    size * MemoryLayout<Float>.size
+                                )
+                            }
                         }
                     }
                 }
@@ -852,12 +1085,12 @@ final class RenderSafetySoakTests: XCTestCase {
 
         var tail: [Float] = []
         var chunkIndex = 0
-        while crossfader.isRenderingSpatialAudio, chunkIndex < 64 {
+        while crossfader.isFadingForTesting, chunkIndex < 64 {
             let (left, _) = driver.run(size: 1 + Int(random() % 4_096), mono: false)
             tail.append(contentsOf: left)
             chunkIndex += 1
         }
-        XCTAssertFalse(crossfader.isRenderingSpatialAudio, "removal fade never completed")
+        XCTAssertFalse(crossfader.isFadingForTesting, "removal fade never completed")
         XCTAssertLessThanOrEqual(driver.peak, 0.75)
     }
 
