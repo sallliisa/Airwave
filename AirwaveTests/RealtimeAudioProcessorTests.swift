@@ -732,6 +732,30 @@ final class SpatialRendererCrossfaderTests: XCTestCase {
         }
     }
 
+    func testRetirementSaturationEventuallyReachesNewestState() {
+        let crossfader = makeCrossfader()
+        let driver = Driver(crossfader)
+        var newest: HRIRManager.RendererState?
+
+        for index in 1...20 {
+            newest = makeState(gain: Float(index) / 20)
+            crossfader.observe(newest)
+            driver.run(callbacks: 1)
+        }
+
+        for _ in 0..<40 {
+            crossfader.drainRetiredStates()
+            driver.run(callbacks: 1)
+            if !crossfader.isFadingForTesting,
+               crossfader.activeStateForTesting === newest { break }
+        }
+
+        XCTAssertFalse(crossfader.isFadingForTesting)
+        XCTAssertTrue(crossfader.activeStateForTesting === newest)
+        crossfader.drainRetiredStates()
+        XCTAssertEqual(crossfader.retiredStateCountForTesting, 0)
+    }
+
     func testRemovingPresetFadesToPassthrough() {
         let crossfader = makeCrossfader()
         let driver = Driver(crossfader)
@@ -861,6 +885,7 @@ final class SpatialRendererCrossfaderPerformanceTests: XCTestCase {
         var outputLeft = [Float](repeating: .nan, count: blockSize)
         var outputRight = [Float](repeating: .nan, count: blockSize)
         var elapsed: Double = 0
+        var completedTransitions = 0
 
         input.withUnsafeMutableBufferPointer { inputBuffer in
             let inputBase = UnsafePointer(inputBuffer.baseAddress!)
@@ -883,7 +908,10 @@ final class SpatialRendererCrossfaderPerformanceTests: XCTestCase {
 
                         let start = DispatchTime.now().uptimeNanoseconds
                         for callback in 0..<192 {
-                            crossfader.observe(callback.isMultiple(of: 2) ? stateB : stateA)
+                            if !crossfader.isFadingForTesting, callback.isMultiple(of: 8) {
+                                crossfader.observe((callback / 8).isMultiple(of: 2) ? stateB : stateA)
+                            }
+                            let wasFading = crossfader.isFadingForTesting
                             _ = crossfader.processIfNeeded(
                                 inputChannels: pointers.baseAddress!,
                                 inputChannelCount: channelSpeakers.count,
@@ -891,6 +919,10 @@ final class SpatialRendererCrossfaderPerformanceTests: XCTestCase {
                                 rightOutput: rightBuffer.baseAddress!,
                                 frameCount: blockSize
                             )
+                            if wasFading && !crossfader.isFadingForTesting {
+                                completedTransitions += 1
+                                crossfader.drainRetiredStates()
+                            }
                         }
                         let end = DispatchTime.now().uptimeNanoseconds
                         elapsed = Double(end - start) / 1_000_000_000
@@ -900,6 +932,8 @@ final class SpatialRendererCrossfaderPerformanceTests: XCTestCase {
         }
 
         let ratio = elapsed / audioSeconds
+        XCTAssertGreaterThanOrEqual(completedTransitions, 20)
+        XCTAssertEqual(crossfader.retiredStateCountForTesting, 0)
         for sample in outputLeft {
             XCTAssertTrue(sample.isFinite)
             XCTAssertLessThanOrEqual(abs(sample), 2.0)

@@ -733,7 +733,8 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
         var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
         let status = AudioObjectGetPropertyData(objectID, &address, 0, nil, &size, &value)
         guard status == noErr, let value else { throw AudioRuntimeError.deviceLost }
-        return value.takeUnretainedValue() as String
+        // Core Audio returns owned values for the device UID and object name.
+        return value.takeRetainedValue() as String
     }
 
     private func streamChannelCounts(_ objectID: AudioObjectID, scope: AudioObjectPropertyScope) throws -> [Int] {

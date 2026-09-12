@@ -54,7 +54,7 @@ final class DeviceProfileRuntimeCoordinatorTests: XCTestCase {
         XCTAssertEqual(context.pipelines.liveCount, 0)
 
         context.profiles.setCurrentHRIRPresetID(second.id)
-        try await context.settle()
+        try await context.wait { context.hrir.activePreset == nil && context.pipelines.liveCount == 0 }
 
         XCTAssertNil(context.hrir.activePreset)
         XCTAssertEqual(context.pipelines.purposes, [.processing])
@@ -67,7 +67,7 @@ final class DeviceProfileRuntimeCoordinatorTests: XCTestCase {
 
         context.profiles.setCurrentHRIRPresetID(second.id)
         try await context.wait { context.hrir.errorMessage != nil }
-        try await context.settle()
+        try await context.wait { context.pipelines.liveCount == 0 }
 
         XCTAssertNil(context.hrir.activePreset)
         XCTAssertEqual(context.pipelines.liveCount, 0)
@@ -80,7 +80,7 @@ final class DeviceProfileRuntimeCoordinatorTests: XCTestCase {
         let context = try await SpatialContext()
 
         context.profiles.setCurrentHRIRPresetID(nil)
-        try await context.settle()
+        try await context.wait { context.hrir.activePreset == nil && context.pipelines.liveCount == 0 }
 
         XCTAssertNil(context.hrir.activePreset)
         XCTAssertEqual(context.pipelines.liveCount, 0)
@@ -121,8 +121,9 @@ private final class SpatialContext {
             profiles: profiles, hrir: hrir, equalizer: equalizer, controller: controller
         )
 
-        // The initial directory sync publishes asynchronously; importing before
-        // it lands would be overwritten by the empty scan result.
+        // The initial directory sync publishes on the manager queue; drain it
+        // before import so the scan cannot overwrite the import result.
+        await hrir.waitForLibrarySync()
         try await wait { self.hrir.initialLibrarySyncReady }
         let sources = root.appendingPathComponent("sources")
         try FileManager.default.createDirectory(at: sources, withIntermediateDirectories: true)

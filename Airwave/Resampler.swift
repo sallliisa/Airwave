@@ -1,69 +1,52 @@
-//
-//  Resampler.swift
-//  Airwave
-//
-//  High-quality audio resampling using Accelerate (vDSP)
-//
-//
-
+import AVFoundation
 import Foundation
-import Accelerate
 
-/// Provides audio resampling functionality using vDSP
-class Resampler {
+enum ResamplerError: Error { case invalidRate, outputTooLarge, conversionFailed }
 
-    /// Resample audio from one sample rate to another using linear interpolation (vDSP)
-    /// - Parameters:
-    ///   - input: Input audio samples
-    ///   - fromRate: Source sample rate
-    ///   - toRate: Target sample rate
-    /// - Returns: Resampled audio
-    static func resample(input: [Float], fromRate: Double, toRate: Double) -> [Float] {
-        return resampleHighQuality(input: input, fromRate: fromRate, toRate: toRate)
+enum Resampler {
+    static let maximumOutputFrames = 96_000
+
+    static func resample(input: [Float], fromRate: Double, toRate: Double) throws -> [Float] {
+        try resampleHighQuality(input: input, fromRate: fromRate, toRate: toRate)
     }
 
-    /// Resample audio using vDSP linear interpolation
-    /// - Parameters:
-    ///   - input: Input audio samples
-    ///   - fromRate: Source sample rate
-    ///   - toRate: Target sample rate
-    /// - Returns: Resampled audio
-    static func resampleHighQuality(input: [Float], fromRate: Double, toRate: Double) -> [Float] {
-        // If sample rates match, return input as-is
-        if abs(fromRate - toRate) < 0.01 {
-            return input
+    static func resampleHighQuality(input: [Float], fromRate: Double, toRate: Double) throws -> [Float] {
+        guard fromRate.isFinite, toRate.isFinite, fromRate > 0, toRate > 0 else { throw ResamplerError.invalidRate }
+        guard !input.isEmpty else { return [] }
+        guard fromRate != toRate else { return input }
+        let estimated = ceil(Double(input.count) * toRate / fromRate) + 256
+        guard estimated.isFinite, estimated > 0, estimated <= Double(maximumOutputFrames),
+              input.count <= Int(AVAudioFrameCount.max),
+              let sourceFormat = AVAudioFormat(standardFormatWithSampleRate: fromRate, channels: 1),
+              let destinationFormat = AVAudioFormat(standardFormatWithSampleRate: toRate, channels: 1),
+              let converter = AVAudioConverter(from: sourceFormat, to: destinationFormat),
+              let source = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: AVAudioFrameCount(input.count)),
+              let destination = AVAudioPCMBuffer(pcmFormat: destinationFormat, frameCapacity: AVAudioFrameCount(estimated)) else {
+            throw ResamplerError.outputTooLarge
         }
-
-        let count = input.count
-        let stride = fromRate / toRate
-        let outputCount = Int(Double(count) / stride)
-
-        guard outputCount > 0 else { return [] }
-
-        var output = [Float](repeating: 0, count: outputCount)
-        
-        // vDSP_vgenp uses a control vector to determine interpolation points.
-        // However, for uniform resampling, vDSP_vlint (vector linear interpolation) is easier if we construct the control vector,
-        // OR we can use vDSP_vgenp which takes a control vector of indices.
-        
-        // Let's use a simpler approach for linear interpolation:
-        // We need to interpolate at indices: 0, stride, 2*stride, ...
-        
-        // 1. Generate control vector (indices)
-        var control = [Float](repeating: 0, count: outputCount)
-        var start: Float = 0
-        var step: Float = Float(stride)
-        vDSP_vramp(&start, &step, &control, 1, vDSP_Length(outputCount))
-        
-        // 2. Perform interpolation
-        // vDSP_vlint interpolates based on integer and fractional parts.
-        // But vDSP_vgenp is more direct for "gather and interpolate".
-        // Note: vDSP_vgenp requires the control vector to be 1-based indices if I recall correctly?
-        // Checking documentation: vDSP_vgenp interpolates A at indices I.
-        // "The integer part of each element of I is the index... The fractional part is the weight..."
-        
-        vDSP_vgenp(input, 1, control, 1, &output, 1, vDSP_Length(outputCount), vDSP_Length(count))
-        
-        return output
+        source.frameLength = AVAudioFrameCount(input.count)
+        input.withUnsafeBufferPointer { source.floatChannelData![0].update(from: $0.baseAddress!, count: input.count) }
+        var supplied = false
+        var output: [Float] = []
+        output.reserveCapacity(Int(estimated))
+        while true {
+            destination.frameLength = 0
+            var conversionError: NSError?
+            let status = converter.convert(to: destination, error: &conversionError) { _, state in
+                guard !supplied else { state.pointee = .endOfStream; return nil }
+                supplied = true
+                state.pointee = .haveData
+                return source
+            }
+            guard conversionError == nil, status != .error, status != .inputRanDry else {
+                throw ResamplerError.conversionFailed
+            }
+            let count = Int(destination.frameLength)
+            guard output.count + count <= maximumOutputFrames else { throw ResamplerError.outputTooLarge }
+            output.append(contentsOf: UnsafeBufferPointer(start: destination.floatChannelData![0], count: count))
+            if status == .endOfStream { break }
+        }
+        let scale = Float(fromRate / toRate)
+        return output.map { $0 * scale }
     }
 }

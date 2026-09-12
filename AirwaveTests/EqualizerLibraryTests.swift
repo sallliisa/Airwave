@@ -247,31 +247,35 @@ final class EqualizerLibraryTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: context.managed.appendingPathComponent("Link.txt").path))
     }
 
-    func testSettingsCoordinatorSuppressesSuccessfulActionsAndSkippedImports() throws {
+    func testSettingsCoordinatorSuppressesSuccessfulActionsAndSkippedImports() async throws {
         let context = try TestContext()
         let source = try context.writePreset(named: "Curve.txt", preamp: 1)
         let coordinator = PresetLibraryCoordinator(manager: context.manager, configuration: .equalizer)
 
         coordinator.receive([source])
+        await coordinator.waitForIdle()
         let imported = try XCTUnwrap(context.manager.presets.first)
         XCTAssertNil(coordinator.message)
 
         coordinator.receive([source])
+        await coordinator.waitForIdle()
         XCTAssertEqual(coordinator.conflicts, [source])
         coordinator.resolveConflicts(.keepExisting)
+        await coordinator.waitForIdle()
         XCTAssertNil(coordinator.message)
 
         XCTAssertTrue(coordinator.delete(context.manager.libraryDeletion(for: imported), decision: .confirm))
         XCTAssertNil(coordinator.message)
     }
 
-    func testSettingsCoordinatorRetainsMixedImportFailures() throws {
+    func testSettingsCoordinatorRetainsMixedImportFailures() async throws {
         let context = try TestContext()
         let valid = try context.writePreset(named: "Valid.txt", preamp: 1)
         let invalid = try context.writePreset(named: "Invalid.txt", preamp: nil)
         let coordinator = PresetLibraryCoordinator(manager: context.manager, configuration: .equalizer)
 
         coordinator.receive([invalid, valid])
+        await coordinator.waitForIdle()
 
         XCTAssertTrue(coordinator.message?.text.contains("Invalid.txt") == true)
         XCTAssertTrue(coordinator.message?.text.contains("unsupported directive") == true)

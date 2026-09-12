@@ -130,6 +130,14 @@ final class EqualizerSafetySoakTests: XCTestCase {
 }
 
 final class ParametricEqualizerProcessorTests: XCTestCase {
+    func testPreampThatOverflowsFloatIsRejectedWithoutFilters() throws {
+        XCTAssertThrowsError(try ParametricEqualizerProcessor.prepare(
+            definition: EqualizerDefinition(preampDB: 800, filters: []),
+            sampleRate: 48_000
+        )) { error in
+            XCTAssertEqual(error as? ParametricEqualizerPreparationError, .nonFinitePreamp)
+        }
+    }
     func testGoldenCoefficientsMatchEqualizerAPOQEquationsAtSupportedSampleRates() throws {
         let cases: [(EqualizerFilterType, Double, Double, Double, Double, [Double])] = [
             (.peaking, 6, 1_000, 0.707, 44_100, [

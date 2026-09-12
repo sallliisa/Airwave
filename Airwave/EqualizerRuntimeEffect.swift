@@ -4,10 +4,20 @@ import os
 /// Control-thread adapter that publishes sample-rate-specific EQ processors to the graph.
 nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
     private let processorLock = OSAllocatedUnfairLock<ParametricEqualizerProcessor?>(initialState: nil)
+    private let retiredProcessorLock = OSAllocatedUnfairLock<ParametricEqualizerProcessor?>(initialState: nil)
     private var controlProcessor: ParametricEqualizerProcessor?
     private var audioThreadProcessor: ParametricEqualizerProcessor?
 
+    var isBypassed: Bool { audioThreadProcessor?.isBypassed ?? true }
+
+    func cleanupAfterIOStopped() {
+        audioThreadProcessor?.cleanupAfterIOStopped()
+        audioThreadProcessor = nil
+        retiredProcessorLock.withLock { $0 = nil }
+    }
+
     func prepare(definition: EqualizerDefinition?, sampleRate: Double) throws {
+        retiredProcessorLock.withLock { $0 = nil }
         guard sampleRate.isFinite, sampleRate > 0 else {
             throw EqualizerAudioEffectError.invalidSampleRate
         }
@@ -27,7 +37,6 @@ nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
             try processor.setTarget(definition: definition)
             processor.drainRetiredStates()
         } catch let error as ParametricEqualizerPreparationError {
-            try? processor.setTarget(definition: nil)
             processor.drainRetiredStates()
             throw map(error, definition: definition)
         }
@@ -41,7 +50,6 @@ nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
             try processor.setTarget(definition: definition)
             processor.drainRetiredStates()
         } catch let error as ParametricEqualizerPreparationError {
-            try? processor.setTarget(definition: nil)
             processor.drainRetiredStates()
             throw map(error, definition: definition)
         }
@@ -56,8 +64,19 @@ nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
     ) {
         var processor = audioThreadProcessor
         if let published = processorLock.withLockIfAvailable({ $0 }) {
-            processor = published
-            audioThreadProcessor = published
+            if published !== audioThreadProcessor {
+                if let old = audioThreadProcessor,
+                   retiredProcessorLock.withLockIfAvailable({ retired in
+                       guard retired == nil else { return false }
+                       retired = old
+                       return true
+                   }) != true {
+                    // Keep the old processor until the control thread drains it.
+                } else {
+                    processor = published
+                    audioThreadProcessor = published
+                }
+            }
         }
         guard let processor else {
             memcpy(outputLeft, inputLeft, frameCount * MemoryLayout<Float>.size)
@@ -91,6 +110,8 @@ nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
             return .invalidSampleRate
         case .nonFinitePreamp:
             return .invalidFilter(line: nil, reason: "Preamp produces a non-finite gain.")
+        case .nonFiniteCoefficients:
+            return .invalidFilter(line: nil, reason: "Equalizer coefficients are non-finite.")
         case .tooManyFilters(let count):
             return .invalidFilter(
                 line: nil,

@@ -113,6 +113,7 @@ nonisolated final class ParametricEqualizerState {
 nonisolated enum ParametricEqualizerPreparationError: Error, Equatable, LocalizedError {
     case invalidSampleRate
     case nonFinitePreamp
+    case nonFiniteCoefficients
     case tooManyFilters(Int)
     case invalidFilter(index: Int, error: BiquadCoefficientError)
 
@@ -122,6 +123,8 @@ nonisolated enum ParametricEqualizerPreparationError: Error, Equatable, Localize
             return "Sample rate must be finite and positive."
         case .nonFinitePreamp:
             return "Preamp must produce a finite linear gain."
+        case .nonFiniteCoefficients:
+            return "Equalizer coefficients must be finite."
         case .tooManyFilters(let count):
             return "Equalizer supports at most \(ParametricEqualizerState.maximumFilterCount) filters; received \(count)."
         case .invalidFilter(let index, let error):
@@ -142,6 +145,7 @@ nonisolated final class ParametricEqualizerProcessor {
     private let targetLock = OSAllocatedUnfairLock<ParametricEqualizerState?>(initialState: nil)
     private let retirementLock = OSAllocatedUnfairLock<ParametricEqualizerState?>(initialState: nil)
     private let resetLock = OSAllocatedUnfairLock<Bool>(initialState: false)
+    private let bypassLock = OSAllocatedUnfairLock<Bool>(initialState: true)
     private var audioThreadTarget: ParametricEqualizerState?
     private var activeState: ParametricEqualizerState
     private var transitionFrom: ParametricEqualizerState?
@@ -197,7 +201,7 @@ nonisolated final class ParametricEqualizerProcessor {
             throw ParametricEqualizerPreparationError.nonFinitePreamp
         }
         let preampLinear = pow(10, preampDB / 20)
-        guard preampLinear.isFinite else {
+        guard preampLinear.isFinite, Float(preampLinear).isFinite else {
             throw ParametricEqualizerPreparationError.nonFinitePreamp
         }
 
@@ -222,6 +226,13 @@ nonisolated final class ParametricEqualizerProcessor {
             }
         }
 
+        guard coefficients.allSatisfy({ coefficient in
+            [coefficient.b0 * preampLinear, coefficient.b1 * preampLinear,
+             coefficient.b2 * preampLinear, coefficient.a1, coefficient.a2].allSatisfy(\.isFinite)
+        }) else {
+            throw ParametricEqualizerPreparationError.nonFiniteCoefficients
+        }
+
         return ParametricEqualizerState(
             sampleRate: sampleRate,
             preampDB: preampDB,
@@ -236,7 +247,10 @@ nonisolated final class ParametricEqualizerProcessor {
         targetLock.withLock { target in
             target = state
         }
+        if state !== unityState { bypassLock.withLock { $0 = false } }
     }
+
+    var isBypassed: Bool { bypassLock.withLockIfAvailable { $0 } ?? false }
 
     #if DEBUG
     func withPublicationLockForTesting(_ body: () -> Void) {
@@ -261,6 +275,20 @@ nonisolated final class ParametricEqualizerProcessor {
         retirementLock.withLock { retired in
             retired = nil
         }
+    }
+
+    /// Call only after the I/O callback has stopped.
+    func cleanupAfterIOStopped() {
+        retirementLock.withLock { $0 = nil }
+        pendingRetirement = nil
+        audioThreadTarget = nil
+        activeState = unityState
+        transitionFrom = nil
+        transitionTo = nil
+        pendingTarget = nil
+        observedTarget = nil
+        transitionFrame = 0
+        bypassLock.withLock { $0 = true }
     }
 
     // BEGIN REALTIME CALLBACK
@@ -339,6 +367,10 @@ nonisolated final class ParametricEqualizerProcessor {
         }
 
         guard let target = audioThreadTarget, target !== observedTarget else { return }
+        if transitionTo != nil, let pendingTarget, pendingTarget !== target {
+            guard retire(pendingTarget) else { return }
+            self.pendingTarget = nil
+        }
         observedTarget = target
         if transitionTo != nil {
             if target !== transitionTo {
@@ -377,6 +409,7 @@ nonisolated final class ParametricEqualizerProcessor {
         transitionFrom = nil
         transitionTo = nil
         transitionFrame = 0
+        if to === unityState { bypassLock.withLockIfAvailable { $0 = true } }
         guard retire(from) else { return }
 
         if let pending = pendingTarget {
@@ -398,7 +431,7 @@ nonisolated final class ParametricEqualizerProcessor {
             return true
         }
         pendingRetirement = state
-        return false
+        return true
     }
 
     private func flushPendingRetirement() {

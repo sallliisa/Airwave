@@ -3,6 +3,23 @@ import XCTest
 
 @MainActor
 final class AudioRuntimeControllerTests: XCTestCase {
+    func testDispatchSchedulerReleasesCompletedClosure() async {
+        final class Sentinel {}
+        let fired = expectation(description: "fired")
+        weak var weakSentinel: Sentinel?
+        var sentinel: Sentinel? = Sentinel()
+        weakSentinel = sentinel
+        let scheduler = DispatchRuntimeScheduler()
+        var token: AudioRuntimeCancellation? = scheduler.schedule(after: 0) { [sentinel] in
+            _ = sentinel
+            fired.fulfill()
+        }
+        sentinel = nil
+        await fulfillment(of: [fired], timeout: 1)
+        token = nil
+        XCTAssertNil(weakSentinel)
+        _ = token
+    }
     func testLaunchWithEffectStartsOnlyUnmutedPassiveVerification() {
         let h = Harness(effect: true)
         h.pipelines.automaticEvent = nil
@@ -574,6 +591,25 @@ final class AudioRuntimeControllerTests: XCTestCase {
         XCTAssertEqual(h.state.status, .inactive)
     }
 
+    func testLiveEqualizerRemovalStopsEQOnlyPipeline() {
+        let graph = EmptyOnNilEffectGraph()
+        let h = Harness(effect: true, effectGraph: graph)
+        h.controller.launch(
+            effectReadiness: AudioRuntimeEffectReadiness(
+                spatialReady: false,
+                equalizerDefinition: EqualizerDefinition(preampDB: 1)
+            ),
+            captureVerified: true
+        )
+        XCTAssertEqual(h.pipelines.liveCount, 1)
+
+        h.controller.updateCurrentEqualizer(nil)
+
+        XCTAssertEqual(graph.updates, 1)
+        XCTAssertEqual(h.pipelines.liveCount, 0)
+        XCTAssertEqual(h.state.status, .inactive)
+    }
+
     func testOutputChangeSleepAndTerminationReleaseResources() {
         let h = Harness(effect: true)
         h.controller.launch(presetReady: true)
@@ -654,16 +690,30 @@ private final class Harness {
     let pipelines = PipelineFactoryFake()
     let scheduler = SchedulerFake()
     let player = PlayerFake()
+    private let effectGraph: AudioEffectGraphControlling?
     private(set) lazy var controller: AudioRuntimeController = AudioRuntimeController(
         state: state,
         platform: platform,
         pipelineFactory: { [pipelines] in pipelines.make() },
         scheduler: scheduler,
+        effectGraph: effectGraph,
         stimulusPlayer: player
     )
 
-    init(effect: Bool = false) {
+    init(effect: Bool = false, effectGraph: AudioEffectGraphControlling? = nil) {
+        self.effectGraph = effectGraph
         pipelines.automaticEvent = effect ? .signalDetected : nil
+    }
+}
+
+private final class EmptyOnNilEffectGraph: AudioEffectGraphControlling {
+    var updates = 0
+    func prepare(for output: OutputDeviceDescriptor, equalizerDefinition: EqualizerDefinition?) -> AudioEffectPreparationResult {
+        AudioEffectPreparationResult(runnableEffects: [.equalizer], equalizerWarning: nil)
+    }
+    func updateEqualizer(definition: EqualizerDefinition?) -> AudioEffectPreparationResult {
+        updates += 1
+        return AudioEffectPreparationResult(runnableEffects: definition == nil ? [] : [.equalizer], equalizerWarning: nil)
     }
 }
 

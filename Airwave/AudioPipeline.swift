@@ -9,7 +9,10 @@ nonisolated protocol StereoAudioProcessing: AnyObject {
         outputRight: UnsafeMutablePointer<Float>,
         frameCount: Int
     )
+    func cleanupAfterIOStopped()
 }
+
+extension StereoAudioProcessing { nonisolated func cleanupAfterIOStopped() {} }
 
 nonisolated protocol AudioPipelineControlling: AnyObject {
     func start(
@@ -215,6 +218,7 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
                 // preserves the complete chain so a later stop() can retry safely.
                 try platform.stopIO(io)
                 ioStarted = false
+                processor.cleanupAfterIOStopped()
                 AirwaveLog.audio.info("Pipeline stop: stopped IO \(io.value) (\(String(describing: pipelineID))).")
             }
             try platform.destroyIO(io)
@@ -280,6 +284,7 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
         if let io, ioStarted {
             try platform.stopIO(io)
             ioStarted = false
+            processor.cleanupAfterIOStopped()
         }
         guard tap != nil || aggregate != nil || io != nil else {
             onTeardownComplete?(nil)

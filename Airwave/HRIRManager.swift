@@ -226,6 +226,21 @@ nonisolated final class SpatialRendererCrossfader {
         }
     }
 
+    /// Call only after the I/O callback has stopped.
+    func cleanupAfterIOStopped() {
+        retirementLock.withLock { $0.clear() }
+        pendingRetirement.clear()
+        activeState = nil
+        observedState = nil
+        fadeFrom = nil
+        fadeTo = nil
+        pendingTarget = nil
+        hasPendingTarget = false
+        isFading = false
+        fadeFrame = 0
+        primeFrames = 0
+    }
+
     /// Drops the render-thread state without fading. Used when the pipeline is
     /// torn down, so a rebuilt pipeline never resumes a stale preset.
     func requestReset() {
@@ -237,6 +252,10 @@ nonisolated final class SpatialRendererCrossfader {
     // BEGIN REALTIME CALLBACK
     func observe(_ published: RendererState?) {
         guard published !== observedState else { return }
+        if isFading, let pendingTarget, pendingTarget !== published {
+            guard retire(pendingTarget) else { return }
+            self.pendingTarget = nil
+        }
         observedState = published
         if isFading {
             if published !== fadeTo {
@@ -408,7 +427,7 @@ nonisolated final class SpatialRendererCrossfader {
     }
 
     private func startPendingFadeIfNeeded() {
-        guard hasPendingTarget else { return }
+        guard hasPendingTarget, pendingRetirement.isEmpty else { return }
         let pending = pendingTarget
         pendingTarget = nil
         hasPendingTarget = false
@@ -443,8 +462,7 @@ nonisolated final class SpatialRendererCrossfader {
            retirementLock.withLockIfAvailable({ slots in slots.insert(state) }) == true {
             return true
         }
-        _ = pendingRetirement.insert(state)
-        return false
+        return pendingRetirement.insert(state)
     }
 
     private func flushPendingRetirement() {
@@ -517,6 +535,12 @@ class HRIRManager: ObservableObject {
     private var inFlightActivationKey: PresetActivationKey?
     private var activationCancellationToken: ActivationCancellationToken?
     private var activationCompletion: ((HRIRActivationResult) -> Void)?
+
+    // Serialized off-main import work: validation and copy run on one queue,
+    // commits land on the main actor in request order. Newer requests cancel
+    // older ones before any publish step.
+    private let importWorkQueue = DispatchQueue(label: "com.airwave.hrir.import", qos: .userInitiated)
+    private var importGeneration = 0
     
     private var rendererState: RendererState? {
         get { stateLock.withLock { $0 } }
@@ -596,8 +620,8 @@ class HRIRManager: ObservableObject {
                 rejected.append(.init(filename: url.lastPathComponent, reason: "The file could not be read.")); continue
             }
             do {
-                let wav = try WAVLoader.load(from: url)
-                guard wav.channelCount >= 2 else { throw HRIRError.invalidChannelCount(wav.channelCount) }
+                let header = try WAVLoader.headerInfo(from: url)
+                guard header.channelCount >= 2 else { throw HRIRError.invalidChannelCount(header.channelCount) }
                 let destination = presetsDirectory.appendingPathComponent(url.lastPathComponent)
                 if fileManager.fileExists(atPath: destination.path) { conflicts.append(url) }
                 else { acceptable.append(url) }
@@ -608,53 +632,312 @@ class HRIRManager: ObservableObject {
         return .init(acceptable: acceptable, conflicts: conflicts, rejected: rejected)
     }
 
+    private struct ValidatedHRIRImport: Sendable {
+        let source: URL
+        let filename: String
+        let destination: URL
+        let channelCount: Int
+        let sampleRate: Double
+        let securityScoped: Bool
+    }
+
+    private func validateImportURL(_ url: URL) throws -> ValidatedHRIRImport {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+            throw HRIRError.batchImportFailed("Choose a WAV file, not a folder.")
+        }
+        guard url.pathExtension.lowercased() == "wav" else {
+            throw HRIRError.batchImportFailed("Only WAV files can be imported.")
+        }
+        guard fileManager.isReadableFile(atPath: url.path) else {
+            throw HRIRError.batchImportFailed("The file could not be read.")
+        }
+        // Bounded header check on the caller thread; full sample validation
+        // runs on the worker before any managed file changes. Security-scoped
+        // access starts here and ends when the worker finishes the copy, so
+        // the worker can read panel URLs after this function returns.
+        let accessed = url.startAccessingSecurityScopedResource()
+        let header: WAVHeaderInfo
+        do {
+            header = try WAVLoader.headerInfo(from: url)
+        } catch {
+            if accessed { url.stopAccessingSecurityScopedResource() }
+            throw error
+        }
+        guard header.channelCount >= 2 else {
+            if accessed { url.stopAccessingSecurityScopedResource() }
+            throw HRIRError.invalidChannelCount(header.channelCount)
+        }
+        let filename = url.lastPathComponent
+        guard !filename.isEmpty, filename != ".", filename != ".." else {
+            if accessed { url.stopAccessingSecurityScopedResource() }
+            throw HRIRError.batchImportFailed("Invalid filename.")
+        }
+        let destination = presetsDirectory.appendingPathComponent(filename, isDirectory: false).standardizedFileURL
+        guard destination.deletingLastPathComponent() == presetsDirectory.standardizedFileURL else {
+            if accessed { url.stopAccessingSecurityScopedResource() }
+            throw HRIRError.batchImportFailed("Invalid filename.")
+        }
+        return ValidatedHRIRImport(
+            source: url,
+            filename: filename,
+            destination: destination,
+            channelCount: header.channelCount,
+            sampleRate: header.sampleRate,
+            securityScoped: accessed
+        )
+    }
+
+    private func copyValidatedImportToTemporary(_ input: ValidatedHRIRImport) throws -> CommittedHRIRFile {
+        // Full finite-sample validation before the managed copy. Security
+        // scope ends here: all source reads for this file complete below.
+        defer {
+            if input.securityScoped { input.source.stopAccessingSecurityScopedResource() }
+        }
+        // Full finite-sample validation before the managed copy.
+        let wav = try WAVLoader.load(from: input.source)
+        guard wav.channelCount >= 2 else { throw HRIRError.invalidChannelCount(wav.channelCount) }
+        let temporary = presetsDirectory.appendingPathComponent(".\(UUID().uuidString).wav")
+        try fileManager.copyItem(at: input.source, to: temporary)
+        return CommittedHRIRFile(
+            temporary: temporary,
+            filename: input.filename,
+            destination: input.destination,
+            channelCount: wav.channelCount,
+            sampleRate: wav.sampleRate
+        )
+    }
+
+    private struct CommittedHRIRFile: Sendable {
+        let temporary: URL
+        let filename: String
+        let destination: URL
+        let channelCount: Int
+        let sampleRate: Double
+    }
+
+    private enum CommittedHRIRImport: Sendable {
+        case committed(CommittedHRIRFile)
+        case skipped(String)
+        case failure(HRIRImportFailure)
+    }
+
+    private func commitValidatedImport(_ file: CommittedHRIRFile, collisionPolicy: HRIRImportCollisionPolicy) -> CommittedHRIRImport {
+        // Commits run serialized on the main actor in request order.
+        dispatchPrecondition(condition: .onQueue(.main))
+        let existing = presets.first { $0.fileURL.lastPathComponent == file.destination.lastPathComponent }
+        if fileManager.fileExists(atPath: file.destination.path), collisionPolicy == .reject {
+            try? fileManager.removeItem(at: file.temporary)
+            return .skipped(file.filename)
+        }
+        do {
+            if fileManager.fileExists(atPath: file.destination.path) {
+                _ = try fileManager.replaceItemAt(file.destination, withItemAt: file.temporary)
+            } else {
+                try fileManager.moveItem(at: file.temporary, to: file.destination)
+            }
+        } catch {
+            try? fileManager.removeItem(at: file.temporary)
+            return .failure(.init(filename: file.filename, reason: error.localizedDescription))
+        }
+        let preset = HRIRPreset(
+            id: existing?.id ?? UUID(), name: file.destination.deletingPathExtension().lastPathComponent,
+            fileURL: file.destination, channelCount: file.channelCount, sampleRate: file.sampleRate
+        )
+        if let index = presets.firstIndex(where: { $0.id == preset.id }) { presets[index] = preset }
+        else { presets.append(preset) }
+        if activePreset?.id == preset.id { activePreset = preset }
+        return .committed(file)
+    }
+
+    private func publishCommittedImport(_ file: CommittedHRIRFile) -> HRIRPreset? {
+        presets.first { $0.fileURL.lastPathComponent == file.destination.lastPathComponent }
+    }
+
     @discardableResult
     func importPresets(_ urls: [URL], collisionPolicy: HRIRImportCollisionPolicy) -> HRIRImportResult {
-        var imported: [HRIRPreset] = []
-        var skipped: [String] = []
+        dispatchPrecondition(condition: .onQueue(.main))
+        var staged: [ValidatedHRIRImport] = []
+        staged.reserveCapacity(urls.count)
         var failures: [HRIRImportFailure] = []
         for url in urls {
-            let accessed = url.startAccessingSecurityScopedResource()
-            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
             do {
-                guard url.pathExtension.lowercased() == "wav" else { throw HRIRError.batchImportFailed("Only WAV files can be imported.") }
-                let wav = try WAVLoader.load(from: url)
-                guard wav.channelCount >= 2 else { throw HRIRError.invalidChannelCount(wav.channelCount) }
-                let destination = presetsDirectory.appendingPathComponent(url.lastPathComponent).standardizedFileURL
-                guard destination.deletingLastPathComponent() == presetsDirectory.standardizedFileURL else {
-                    throw HRIRError.batchImportFailed("Invalid filename.")
-                }
-                let existing = presets.first { $0.fileURL.lastPathComponent == destination.lastPathComponent }
-                if fileManager.fileExists(atPath: destination.path), collisionPolicy == .reject {
-                    skipped.append(url.lastPathComponent); continue
-                }
-                let temporary = presetsDirectory.appendingPathComponent(".\(UUID().uuidString).wav")
-                try fileManager.copyItem(at: url, to: temporary)
-                do {
-                    if fileManager.fileExists(atPath: destination.path) {
-                        _ = try fileManager.replaceItemAt(destination, withItemAt: temporary)
-                    } else {
-                        try fileManager.moveItem(at: temporary, to: destination)
-                    }
-                } catch {
-                    try? fileManager.removeItem(at: temporary)
-                    throw error
-                }
-                let preset = HRIRPreset(
-                    id: existing?.id ?? UUID(), name: destination.deletingPathExtension().lastPathComponent,
-                    fileURL: destination, channelCount: wav.channelCount, sampleRate: wav.sampleRate
-                )
-                if let index = presets.firstIndex(where: { $0.id == preset.id }) { presets[index] = preset }
-                else { presets.append(preset) }
-                if activePreset?.id == preset.id { activePreset = preset }
-                imported.append(preset)
+                staged.append(try validateImportURL(url))
             } catch {
                 failures.append(.init(filename: url.lastPathComponent, reason: error.localizedDescription))
             }
         }
-        savePresets()
-        return .init(imported: imported, skipped: skipped, failures: failures)
+        guard !staged.isEmpty else {
+            savePresets()
+            return .init(imported: [], skipped: [], failures: failures)
+        }
+        return importPresetsStaged(staged, collisionPolicy: collisionPolicy, priorFailures: failures)
     }
+
+    private func importPresetsStaged(
+        _ staged: [ValidatedHRIRImport],
+        collisionPolicy: HRIRImportCollisionPolicy,
+        priorFailures: [HRIRImportFailure]
+    ) -> HRIRImportResult {
+        dispatchPrecondition(condition: .onQueue(.main))
+        // Synchronous entry (tests, init paths): run worker validation inline
+        // on the caller, then commit in order on the main actor.
+        var failures = priorFailures
+        var files: [CommittedHRIRFile] = []
+        for input in staged {
+            do {
+                files.append(try copyValidatedImportToTemporary(input))
+            } catch {
+                failures.append(.init(filename: input.filename, reason: error.localizedDescription))
+            }
+        }
+        var imported: [HRIRPreset] = []
+        var skipped: [String] = []
+        files.sort { $0.filename < $1.filename }
+        for file in files {
+            switch commitValidatedImport(file, collisionPolicy: collisionPolicy) {
+            case .committed(let committed):
+                if let preset = publishCommittedImport(committed) { imported.append(preset) }
+            case .skipped(let name):
+                skipped.append(name)
+            case .failure(let failure):
+                failures.append(failure)
+            }
+        }
+        savePresets()
+        return HRIRImportResult(imported: imported, skipped: skipped, failures: failures)
+    }
+
+    private func importPresetsStagedAsync(
+        _ staged: [ValidatedHRIRImport],
+        collisionPolicy: HRIRImportCollisionPolicy,
+        priorFailures: [HRIRImportFailure]
+    ) async -> HRIRImportResult {
+        // Worker stage: full WAV decode + finite-sample check + copy to a
+        // managed temporary. Runs serialized on importWorkQueue.
+        let policy = collisionPolicy
+        struct WorkerOutcome: Sendable {
+            var files: [CommittedHRIRFile] = []
+            var failures: [HRIRImportFailure] = []
+        }
+        let workerOutcome = await withCheckedContinuation { continuation in
+            importWorkQueue.async { [weak self] in
+                var outcome = WorkerOutcome()
+                guard let self else {
+                    continuation.resume(returning: outcome)
+                    return
+                }
+                for input in staged {
+                    do {
+                        outcome.files.append(try self.copyValidatedImportToTemporary(input))
+                    } catch {
+                        outcome.failures.append(.init(filename: input.filename, reason: error.localizedDescription))
+                    }
+                }
+                continuation.resume(returning: outcome)
+            }
+        }
+        // Commit stage on the main actor, in filename order.
+        return await MainActor.run { [weak self] in
+            guard let self else {
+                return HRIRImportResult(imported: [], skipped: [], failures: priorFailures + workerOutcome.failures)
+            }
+            var failures = priorFailures + workerOutcome.failures
+            var imported: [HRIRPreset] = []
+            var skipped: [String] = []
+            let files = workerOutcome.files.sorted { $0.filename < $1.filename }
+            for file in files {
+                switch self.commitValidatedImport(file, collisionPolicy: policy) {
+                case .committed(let committed):
+                    if let preset = self.publishCommittedImport(committed) { imported.append(preset) }
+                case .skipped(let name):
+                    skipped.append(name)
+                case .failure(let failure):
+                    failures.append(failure)
+                }
+            }
+            self.savePresets()
+            return HRIRImportResult(imported: imported, skipped: skipped, failures: failures)
+        }
+    }
+
+    func importPresetsAsync(_ urls: [URL], collisionPolicy: HRIRImportCollisionPolicy) async -> HRIRImportResult {
+        // Newest-wins across overlapping requests. The generation orders
+        // callers; each request runs validation on main, then worker decode on
+        // the serial queue, then commit on main. A request that lost the race
+        // before its commit publishes nothing; its temporaries are removed and
+        // its security-scoped access is balanced.
+        let generation: Int = await MainActor.run { [weak self] in
+            guard let self else { return 0 }
+            self.importGeneration += 1
+            return self.importGeneration
+        }
+        return await importPresetsAsyncWithGeneration(urls, collisionPolicy: collisionPolicy, generation: generation)
+    }
+
+    private func importPresetsAsyncWithGeneration(
+        _ urls: [URL],
+        collisionPolicy: HRIRImportCollisionPolicy,
+        generation: Int
+    ) async -> HRIRImportResult {
+        var staged: [ValidatedHRIRImport] = []
+        var failures: [HRIRImportFailure] = []
+        await MainActor.run { [weak self] in
+            guard let self else { return }
+            for url in urls {
+                do {
+                    staged.append(try self.validateImportURL(url))
+                } catch {
+                    failures.append(.init(filename: url.lastPathComponent, reason: error.localizedDescription))
+                }
+            }
+        }
+        guard !staged.isEmpty else {
+            await MainActor.run { [weak self] in self?.savePresets() }
+            return HRIRImportResult(imported: [], skipped: [], failures: failures)
+        }
+        let result = await importPresetsStagedAsync(staged, collisionPolicy: collisionPolicy, priorFailures: failures)
+        // Newest-wins: only the latest generation keeps its commit. An older
+        // request that already committed rolls back exactly its own presets.
+        let isNewest = await MainActor.run { [weak self] in
+            guard let self else { return false }
+            return generation == self.importGeneration
+        }
+        guard isNewest else {
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                for preset in result.imported {
+                    if let stored = self.presets.first(where: { $0.id == preset.id }) {
+                        try? self.fileManager.removeItem(at: stored.fileURL)
+                        self.presets.removeAll { $0.id == stored.id }
+                        if self.activePreset?.id == stored.id { self.activePreset = nil }
+                    }
+                }
+                self.savePresets()
+            }
+            return HRIRImportResult(imported: [], skipped: [], failures: [])
+        }
+        return result
+    }
+
+#if DEBUG
+    func takeImportTicketForTesting() async -> Int {
+        await MainActor.run { [weak self] in
+            guard let self else { return 0 }
+            self.importGeneration += 1
+            return self.importGeneration
+        }
+    }
+
+    func importPresetsStagedForTesting(
+        _ urls: [URL],
+        collisionPolicy: HRIRImportCollisionPolicy,
+        ticketTaker: @escaping () async -> Int
+    ) async -> HRIRImportResult {
+        let generation = await ticketTaker()
+        return await importPresetsAsyncWithGeneration(urls, collisionPolicy: collisionPolicy, generation: generation)
+    }
+#endif
 
     /// Remove a preset
     /// - Parameter preset: The preset to remove
@@ -704,10 +987,26 @@ class HRIRManager: ObservableObject {
         if let activationKey,
            activationKey == currentActivationKey,
            rendererState != nil {
+            if inFlightActivationKey != nil && inFlightActivationKey != activationKey {
+                activationTask?.cancel()
+                activationTask = nil
+                activationCancellationToken?.cancel()
+                activationCancellationToken = nil
+                activationCompletion = nil
+                inFlightActivationKey = nil
+                activationGeneration += 1
+            }
             completion?(.success)
             return
         }
         if let activationKey, activationKey == inFlightActivationKey {
+            if let completion {
+                let prior = activationCompletion
+                activationCompletion = { result in
+                    prior?(result)
+                    completion(result)
+                }
+            }
             return
         }
 
@@ -767,12 +1066,12 @@ class HRIRManager: ObservableObject {
                     let resampledRight: [Float]
                     
                     if abs(wavData.sampleRate - targetSampleRate) > 0.01 {
-                        resampledLeft = Resampler.resampleHighQuality(
+                        resampledLeft = try Resampler.resampleHighQuality(
                             input: leftEarIR,
                             fromRate: wavData.sampleRate,
                             toRate: targetSampleRate
                         )
-                        resampledRight = Resampler.resampleHighQuality(
+                        resampledRight = try Resampler.resampleHighQuality(
                             input: rightEarIR,
                             fromRate: wavData.sampleRate,
                             toRate: targetSampleRate
@@ -811,7 +1110,7 @@ class HRIRManager: ObservableObject {
                         inputLayout: inputLayout,
                         channelMap: channelMap,
                         renderers: newRenderers,
-                        completion: completion
+                        completion: self?.activationCompletion
                     )
                 }
             } catch {
@@ -820,7 +1119,7 @@ class HRIRManager: ObservableObject {
                     self?.publishActivationFailure(
                         generation: generation,
                         message: "Failed to activate preset: \(error.localizedDescription)",
-                        completion: completion
+                        completion: self?.activationCompletion
                     )
                 }
             }
@@ -941,6 +1240,10 @@ class HRIRManager: ObservableObject {
         crossfader.drainRetiredStates()
     }
 
+    nonisolated func cleanupAfterIOStopped() {
+        crossfader.cleanupAfterIOStopped()
+    }
+
 
     /// Reset the internal state of all convolution engines
     /// Useful when changing presets or seeking to clear old audio buffers
@@ -1009,34 +1312,46 @@ class HRIRManager: ObservableObject {
         }
     }
 
+    func waitForLibrarySync() async {
+        // Drain pending import work, then publish the directory scan on main.
+        await withCheckedContinuation { continuation in
+            importWorkQueue.async {
+                continuation.resume()
+            }
+        }
+        loadAndSyncPresets()
+    }
+
     private func loadAndSyncPresets() {
+        dispatchPrecondition(condition: .onQueue(.main))
         // 1. Load known presets from JSON
         var knownPresets: [HRIRPreset] = []
         let metadataURL = presetsDirectory.appendingPathComponent("presets.json")
-        
+
         if let data = try? Data(contentsOf: metadataURL),
            let decoded = try? JSONDecoder().decode([HRIRPreset].self, from: data) {
             knownPresets = decoded
         }
-        
+
         // 2. Scan directory for WAV files
         guard let fileURLs = try? fileManager.contentsOfDirectory(
             at: presetsDirectory,
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]
         ) else {
-            DispatchQueue.main.async { self.initialLibrarySyncReady = true }
+            self.initialLibrarySyncReady = true
             return
         }
-        
+
         let wavFiles = fileURLs.filter { $0.pathExtension.lowercased() == "wav" }
-        
+
         var updatedPresets: [HRIRPreset] = []
         var hasChanges = false
-        
-        // 3. Reconcile
+
+        // 3. Reconcile. The scan uses the bounded header read only; a corrupt
+        // file that passes the header still fails at activation/import time.
         let existingFilenames = Set(wavFiles.map { $0.lastPathComponent })
-        
+
         for fileURL in wavFiles {
             // Check if we already have this file
             if let existing = knownPresets.first(where: { $0.fileURL.lastPathComponent == fileURL.lastPathComponent }) {
@@ -1052,42 +1367,52 @@ class HRIRManager: ObservableObject {
                 updatedPresets.append(updated)
             } else {
                 // New file found!
-                if let newPreset = try? createPreset(from: fileURL) {
+                if let newPreset = try? createPresetHeaderOnly(from: fileURL) {
                     updatedPresets.append(newPreset)
                     hasChanges = true
                 }
             }
         }
-        
+
         // Check if any were removed (orphaned)
         // We use the filename set to explicitly identify presets whose files are gone
         let orphanedPresets = knownPresets.filter { preset in
             !existingFilenames.contains(preset.fileURL.lastPathComponent)
         }
-        
+
         if !orphanedPresets.isEmpty {
             Logger.log("[HRIRManager] Removing \(orphanedPresets.count) orphaned presets")
             hasChanges = true
         }
-        
-        // 4. Update State
-        DispatchQueue.main.async {
-            if hasChanges || self.presets != updatedPresets {
-                self.presets = updatedPresets
-                self.savePresets()
-            }
-            
-            // Check if active preset is still valid
-            if let active = self.activePreset, !updatedPresets.contains(where: { $0.id == active.id }) {
-                self.deactivatePreset()
-            }
-            self.initialLibrarySyncReady = true
+
+        // 4. Update State. The caller holds the main actor.
+        if hasChanges || self.presets != updatedPresets {
+            self.presets = updatedPresets
+            self.savePresets()
         }
+
+        // Check if active preset is still valid
+        if let active = self.activePreset, !updatedPresets.contains(where: { $0.id == active.id }) {
+            self.deactivatePreset()
+        }
+        self.initialLibrarySyncReady = true
     }
-    
+
+    private func createPresetHeaderOnly(from fileURL: URL) throws -> HRIRPreset {
+        let header = try WAVLoader.headerInfo(from: fileURL)
+
+        return HRIRPreset(
+            id: UUID(),
+            name: fileURL.deletingPathExtension().lastPathComponent,
+            fileURL: fileURL,
+            channelCount: header.channelCount,
+            sampleRate: header.sampleRate
+        )
+    }
+
     private func createPreset(from fileURL: URL) throws -> HRIRPreset {
         let wavData = try WAVLoader.load(from: fileURL)
-        
+
         return HRIRPreset(
             id: UUID(),
             name: fileURL.deletingPathExtension().lastPathComponent,

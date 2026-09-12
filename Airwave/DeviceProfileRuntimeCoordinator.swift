@@ -181,6 +181,7 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
             // Nothing left to run: publish passthrough (the renderer fades)
             // and let the controller defer the tap teardown past the fade, so
             // destroying the tap cannot unmute native audio into program audio.
+            if includesEqualizer { controller.updateCurrentEqualizer(nil) }
             _ = controller.updateSpatialLive(isReady: false)
             return
         }

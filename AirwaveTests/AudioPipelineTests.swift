@@ -13,7 +13,8 @@ final class AudioPipelineTests: XCTestCase {
 
     func testSuccessfulLifecycleUsesStrictOrderAndRequiredTapConfiguration() throws {
         let platform = RecordingAudioPlatformClient()
-        let pipeline = AudioPipeline(platform: platform, processor: PassthroughProcessor())
+        let processor = PassthroughProcessor()
+        let pipeline = AudioPipeline(platform: platform, processor: processor)
 
         try pipeline.start()
         try pipeline.stop()
@@ -31,6 +32,7 @@ final class AudioPipelineTests: XCTestCase {
         XCTAssertEqual(platform.tapRequests[0].muteBehavior, .mutedWhenTapped)
         XCTAssertEqual(platform.tapRequests[0].channelCount, 2)
         XCTAssertTrue(platform.hasNoLiveResources)
+        XCTAssertEqual(processor.cleanupCount, 1)
     }
 
     func testPipelineForwardsCaptureVerificationEvents() throws {
@@ -482,10 +484,12 @@ final class AudioPipelineTests: XCTestCase {
 }
 
 private final class PassthroughProcessor: StereoAudioProcessing {
+    var cleanupCount = 0
     func process(
         inputChannels: UnsafePointer<UnsafePointer<Float>?>, inputChannelCount: Int,
         outputLeft: UnsafeMutablePointer<Float>, outputRight: UnsafeMutablePointer<Float>, frameCount: Int
     ) {}
+    func cleanupAfterIOStopped() { cleanupCount += 1 }
 }
 
 private final class RecordingProcessor: StereoAudioProcessing {

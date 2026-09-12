@@ -34,17 +34,22 @@ protocol AudioRuntimeScheduling: AnyObject {
 protocol AudioRuntimeCancellation: AnyObject { func cancel() }
 
 @MainActor
-private final class DispatchRuntimeScheduler: AudioRuntimeScheduling {
+final class DispatchRuntimeScheduler: AudioRuntimeScheduling {
     private final class Token: AudioRuntimeCancellation {
         var workItem: DispatchWorkItem?
         func cancel() { workItem?.cancel(); workItem = nil }
+
+        func fire(_ action: @escaping @MainActor () -> Void) {
+            guard workItem != nil else { return }
+            workItem = nil
+            action()
+        }
     }
 
     func schedule(after delay: TimeInterval, _ action: @escaping @MainActor () -> Void) -> AudioRuntimeCancellation {
         let token = Token()
         let item = DispatchWorkItem {
-            guard token.workItem != nil else { return }
-            Task { @MainActor in action() }
+            MainActor.assumeIsolated { token.fire(action) }
         }
         token.workItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
@@ -764,7 +769,10 @@ final class AudioRuntimeController {
     private func handleLiveEffectUpdate(_ result: AudioEffectPreparationResult) {
         publishEqualizerIssue(result.equalizerWarning)
         if result.noEffectCanRun, !effectReadiness.spatialReady {
-            state.publish(.nativePassthrough(reason: result.equalizerWarning?.errorDescription ?? "No compatible audio effect is available for this output."), output: state.currentOutput)
+            if stopForInvalidation(allowingPassthroughHold: true) {
+                captureProbeRequested = false
+                state.publish(.inactive, output: state.currentOutput)
+            }
             return
         }
         state.setHealthIssue(nil, for: .pipeline)

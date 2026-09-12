@@ -5,7 +5,7 @@ import XCTest
 
 @MainActor
 final class DeviceProfileManagementTests: XCTestCase {
-    func testBundledHRTFsSeedAndRemainAvailableOffline() throws {
+    func testBundledHRTFsSeedAndRemainAvailableOffline() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let sourceDirectory = root.appendingPathComponent("source", isDirectory: true)
         let managed = root.appendingPathComponent("managed", isDirectory: true)
@@ -24,7 +24,7 @@ final class DeviceProfileManagementTests: XCTestCase {
             startWatcher: false,
             bundledPresetCatalog: catalog
         )
-        waitForInitialHRIRSync(manager)
+        await waitForInitialHRIRSync(manager)
 
         XCTAssertEqual(Set(manager.presets.map(\.name)), ["NeutralSH1.0", "RoomSH1.0", "StageSH1.0"])
         XCTAssertTrue(manager.presets.allSatisfy { $0.channelCount == 2 && $0.sampleRate == 48_000 })
@@ -36,7 +36,7 @@ final class DeviceProfileManagementTests: XCTestCase {
             startWatcher: false,
             bundledPresetCatalog: catalog
         )
-        waitForInitialHRIRSync(relaunched)
+        await waitForInitialHRIRSync(relaunched)
 
         XCTAssertNil(relaunched.presets.first { $0.name == "RoomSH1.0" })
         XCTAssertEqual(Set(relaunched.presets.map(\.name)), ["NeutralSH1.0", "StageSH1.0"])
@@ -147,32 +147,38 @@ final class DeviceProfileManagementTests: XCTestCase {
         XCTAssertNil(coordinator.pendingConfirmation)
     }
 
-    func testHRIRSettingsCoordinatorSuppressesSuccessfulActionsAndSkippedImports() throws {
+    func testHRIRSettingsCoordinatorSuppressesSuccessfulActionsAndSkippedImports() async throws {
         let context = try ManagementContext()
         let source = context.root.appendingPathComponent("Room.wav")
         try writeTestWAV(to: source)
+        await context.hrir.waitForLibrarySync()
         let coordinator = PresetLibraryCoordinator(manager: context.hrir, configuration: .hrir)
 
         coordinator.receive([source])
+        await coordinator.waitForIdle()
         let imported = try XCTUnwrap(context.hrir.presets.first)
         XCTAssertNil(coordinator.message)
 
         coordinator.receive([source])
+        await coordinator.waitForIdle()
         XCTAssertEqual(coordinator.conflicts, [source])
         coordinator.resolveConflicts(.keepExisting)
+        await coordinator.waitForIdle()
         XCTAssertNil(coordinator.message)
 
         XCTAssertTrue(coordinator.delete(context.hrir.libraryDeletion(for: imported), decision: .confirm))
         XCTAssertNil(coordinator.message)
     }
 
-    func testHRIRSettingsCoordinatorRetainsImportFailures() throws {
+    func testHRIRSettingsCoordinatorRetainsImportFailures() async throws {
         let context = try ManagementContext()
         let invalid = context.root.appendingPathComponent("broken.txt")
         try Data("not a WAV\n".utf8).write(to: invalid)
+        await context.hrir.waitForLibrarySync()
         let coordinator = PresetLibraryCoordinator(manager: context.hrir, configuration: .hrir)
 
         coordinator.receive([invalid])
+        await coordinator.waitForIdle()
 
         XCTAssertTrue(coordinator.message?.text.contains("broken.txt") == true)
         XCTAssertTrue(coordinator.message?.text.contains("WAV") == true)
@@ -196,11 +202,8 @@ final class DeviceProfileManagementTests: XCTestCase {
 }
 
 @MainActor
-private func waitForInitialHRIRSync(_ manager: HRIRManager) {
-    let deadline = Date().addingTimeInterval(2)
-    while !manager.initialLibrarySyncReady && Date() < deadline {
-        RunLoop.main.run(until: Date().addingTimeInterval(0.01))
-    }
+private func waitForInitialHRIRSync(_ manager: HRIRManager) async {
+    await manager.waitForLibrarySync()
 }
 
 @MainActor

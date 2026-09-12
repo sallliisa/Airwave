@@ -265,6 +265,30 @@ final class AudioEffectGraphTests: XCTestCase {
         XCTAssertEqual(equalizer.processCount, 2)
     }
 
+    func testNewEqualizerTargetWinsRaceWithBypassCompletion() {
+        let equalizer = EqualizerEffectSpy(multiplier: 2)
+        let graph = AudioEffectGraph(
+            spatial: SpatialEffectSpy(isReady: false, processResult: false),
+            equalizer: equalizer,
+            maxFramesPerCallback: 8
+        )
+        _ = graph.prepare(
+            for: deviceOutput(sampleRate: 48_000),
+            equalizerDefinition: EqualizerDefinition(preampDB: 3)
+        )
+        equalizer.bypassed = true
+        equalizer.onBypassRead = {
+            equalizer.bypassed = false
+            _ = graph.updateEqualizer(definition: EqualizerDefinition(preampDB: 6))
+        }
+
+        _ = process(graph, left: [1], right: [1])
+        equalizer.onBypassRead = nil
+        _ = process(graph, left: [1], right: [1])
+
+        XCTAssertEqual(equalizer.processCount, 2)
+    }
+
     private func process(
         _ graph: AudioEffectGraph,
         left: [Float],
@@ -385,6 +409,12 @@ private final class EqualizerEffectSpy: AudioEqualizerEffect {
     private(set) var preparedSampleRates: [Double] = []
     var error: EqualizerAudioEffectError?
     var setTargetError: EqualizerAudioEffectError?
+    var bypassed = false
+    var onBypassRead: (() -> Void)?
+    var isBypassed: Bool {
+        onBypassRead?()
+        return bypassed
+    }
     let multiplier: Float
 
     init(multiplier: Float = 1) {

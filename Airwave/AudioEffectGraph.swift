@@ -54,7 +54,10 @@ nonisolated protocol AudioSpatialEffect: AnyObject {
         frameCount: Int
     ) -> Bool
     var isReady: Bool { get }
+    func cleanupAfterIOStopped()
 }
+
+extension AudioSpatialEffect { nonisolated func cleanupAfterIOStopped() {} }
 
 nonisolated protocol AudioEqualizerEffect: AnyObject {
     /// Operates on the stereo binaural signal downstream of the spatial stage.
@@ -67,6 +70,13 @@ nonisolated protocol AudioEqualizerEffect: AnyObject {
     )
     func prepare(definition: EqualizerDefinition?, sampleRate: Double) throws
     func setTarget(definition: EqualizerDefinition?) throws
+    var isBypassed: Bool { get }
+    func cleanupAfterIOStopped()
+}
+
+extension AudioEqualizerEffect {
+    nonisolated var isBypassed: Bool { false }
+    nonisolated func cleanupAfterIOStopped() {}
 }
 
 nonisolated protocol AudioEffectGraphControlling: AnyObject {
@@ -79,6 +89,10 @@ nonisolated protocol AudioEffectGraphControlling: AnyObject {
 
 /// Composes spatial processing and EQ while keeping resource ownership in AudioPipeline.
 nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGraphControlling {
+    private struct EqualizerActivation {
+        var active = false
+        var generation: UInt64 = 0
+    }
     static let maximumCallbackFrames = ParametricEqualizerProcessor.maximumCallbackFrames
 
     private let spatial: any AudioSpatialEffect
@@ -89,8 +103,9 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
     /// Resolved per-output speaker identity of every captured channel; used to
     /// fold down before the first prepare resolves a device layout.
     private var inputSpeakers: [VirtualSpeaker] = [.FL, .FR]
-    private let equalizerActiveLock = OSAllocatedUnfairLock<Bool>(initialState: false)
+    private let equalizerActiveLock = OSAllocatedUnfairLock<EqualizerActivation>(initialState: .init())
     private var audioThreadEqualizerActive = false
+    private var audioThreadEqualizerGeneration: UInt64 = 0
 
     init(
         spatial: any AudioSpatialEffect,
@@ -125,8 +140,9 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
 
         do {
             try equalizer.prepare(definition: equalizerDefinition, sampleRate: output.nominalSampleRate)
-            equalizerActiveLock.withLock { active in
-                active = equalizerDefinition != nil
+            equalizerActiveLock.withLock { state in
+                state.generation &+= 1
+                state.active = equalizerDefinition != nil
             }
             if equalizerDefinition != nil {
                 runnableEffects.insert(.equalizer)
@@ -136,8 +152,9 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
                 equalizerWarning: nil
             )
         } catch let error as EqualizerAudioEffectError {
-            equalizerActiveLock.withLock { active in
-                active = false
+            equalizerActiveLock.withLock { state in
+                state.generation &+= 1
+                state.active = false
             }
             return AudioEffectPreparationResult(
                 runnableEffects: runnableEffects,
@@ -147,8 +164,9 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
                 )
             )
         } catch {
-            equalizerActiveLock.withLock { active in
-                active = false
+            equalizerActiveLock.withLock { state in
+                state.generation &+= 1
+                state.active = false
             }
             return AudioEffectPreparationResult(
                 runnableEffects: runnableEffects,
@@ -169,16 +187,18 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
             try equalizer.setTarget(definition: definition)
             // Keep the processor in the callback path for the unity ramp when EQ is
             // removed. A later prepare(nil) bypasses it for a newly-created pipeline.
-            equalizerActiveLock.withLock { active in
-                active = true
+            equalizerActiveLock.withLock { state in
+                state.generation &+= 1
+                state.active = true
             }
             if definition != nil {
                 runnableEffects.insert(.equalizer)
             }
             return AudioEffectPreparationResult(runnableEffects: runnableEffects, equalizerWarning: nil)
         } catch let error as EqualizerAudioEffectError {
-            equalizerActiveLock.withLock { active in
-                active = true
+            equalizerActiveLock.withLock { state in
+                state.generation &+= 1
+                state.active = true
             }
             return AudioEffectPreparationResult(
                 runnableEffects: runnableEffects,
@@ -188,8 +208,9 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
                 )
             )
         } catch {
-            equalizerActiveLock.withLock { active in
-                active = true
+            equalizerActiveLock.withLock { state in
+                state.generation &+= 1
+                state.active = true
             }
             return AudioEffectPreparationResult(
                 runnableEffects: runnableEffects,
@@ -210,8 +231,9 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
         precondition(frameCount <= maxFramesPerCallback)
         var equalizerActive = audioThreadEqualizerActive
         if let published = equalizerActiveLock.withLockIfAvailable({ $0 }) {
-            equalizerActive = published
-            audioThreadEqualizerActive = published
+            equalizerActive = published.active
+            audioThreadEqualizerActive = published.active
+            audioThreadEqualizerGeneration = published.generation
         }
         if equalizerActive {
             let spatialWroteOutput = spatial.process(
@@ -239,6 +261,12 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
                 outputRight: outputRight,
                 frameCount: frameCount
             )
+            if equalizer.isBypassed {
+                let observedGeneration = audioThreadEqualizerGeneration
+                equalizerActiveLock.withLockIfAvailable { state in
+                    if state.generation == observedGeneration { state.active = false }
+                }
+            }
             return
         }
 
@@ -263,6 +291,16 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
         )
     }
     // END REALTIME CALLBACK
+
+    func cleanupAfterIOStopped() {
+        spatial.cleanupAfterIOStopped()
+        equalizer.cleanupAfterIOStopped()
+        equalizerActiveLock.withLock { state in
+            state.generation &+= 1
+            state.active = false
+        }
+        audioThreadEqualizerActive = false
+    }
 
 }
 
