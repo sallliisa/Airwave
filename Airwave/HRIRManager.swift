@@ -639,9 +639,13 @@ class HRIRManager: ObservableObject {
         let channelCount: Int
         let sampleRate: Double
         let securityScoped: Bool
+        /// Support closure runs on the worker and can suspend an import with
+        /// no managed-side effects, for the cancellation test path only.
+        /// Production passes nil.
+        let workerGate: (@Sendable () -> Bool)?
     }
 
-    private func validateImportURL(_ url: URL) throws -> ValidatedHRIRImport {
+    private func validateImportURL(_ url: URL, workerGate: (@Sendable () -> Bool)? = nil) throws -> ValidatedHRIRImport {
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
             throw HRIRError.batchImportFailed("Choose a WAV file, not a folder.")
@@ -684,7 +688,8 @@ class HRIRManager: ObservableObject {
             destination: destination,
             channelCount: header.channelCount,
             sampleRate: header.sampleRate,
-            securityScoped: accessed
+            securityScoped: accessed,
+            workerGate: workerGate
         )
     }
 
@@ -693,6 +698,14 @@ class HRIRManager: ObservableObject {
         // scope ends here: all source reads for this file complete below.
         defer {
             if input.securityScoped { input.source.stopAccessingSecurityScopedResource() }
+        }
+        // Test hook: while the gate holds, an outer cancellation request that
+        // arrives mid-worker must discard this import with no managed effect.
+        if let gate = input.workerGate {
+            while gate() { Thread.sleep(forTimeInterval: 0.005) }
+        }
+        guard !Task.isCancelled else {
+            throw CancellationError()
         }
         // Full finite-sample validation before the managed copy.
         let wav = try WAVLoader.load(from: input.source)
@@ -754,7 +767,6 @@ class HRIRManager: ObservableObject {
         presets.first { $0.fileURL.lastPathComponent == file.destination.lastPathComponent }
     }
 
-    @discardableResult
     func importPresets(_ urls: [URL], collisionPolicy: HRIRImportCollisionPolicy) -> HRIRImportResult {
         dispatchPrecondition(condition: .onQueue(.main))
         var staged: [ValidatedHRIRImport] = []
@@ -808,11 +820,17 @@ class HRIRManager: ObservableObject {
         return HRIRImportResult(imported: imported, skipped: skipped, failures: failures)
     }
 
+    private struct StagedAsyncImport {
+        let published: HRIRImportResult
+        let committedFilesForDiscard: [CommittedHRIRFile]
+    }
+
     private func importPresetsStagedAsync(
         _ staged: [ValidatedHRIRImport],
         collisionPolicy: HRIRImportCollisionPolicy,
-        priorFailures: [HRIRImportFailure]
-    ) async -> HRIRImportResult {
+        priorFailures: [HRIRImportFailure],
+        cancellation: ActivationCancellationToken?
+    ) async -> StagedAsyncImport {
         // Worker stage: full WAV decode + finite-sample check + copy to a
         // managed temporary. Runs serialized on importWorkQueue.
         let policy = collisionPolicy
@@ -820,35 +838,59 @@ class HRIRManager: ObservableObject {
             var files: [CommittedHRIRFile] = []
             var failures: [HRIRImportFailure] = []
         }
-        let workerOutcome = await withCheckedContinuation { continuation in
-            importWorkQueue.async { [weak self] in
-                var outcome = WorkerOutcome()
-                guard let self else {
-                    continuation.resume(returning: outcome)
-                    return
-                }
-                for input in staged {
-                    do {
-                        outcome.files.append(try self.copyValidatedImportToTemporary(input))
-                    } catch {
-                        outcome.failures.append(.init(filename: input.filename, reason: error.localizedDescription))
+        let workerOutcome = await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                importWorkQueue.async { [weak self] in
+                    var outcome = WorkerOutcome()
+                    guard let self else {
+                        continuation.resume(returning: outcome)
+                        return
                     }
+                    for input in staged {
+                        if let cancellation, cancellation.isCancelled { break }
+                        do {
+                            outcome.files.append(try self.copyValidatedImportToTemporary(input))
+                        } catch is CancellationError {
+                            break
+                        } catch {
+                            outcome.failures.append(.init(filename: input.filename, reason: error.localizedDescription))
+                        }
+                    }
+                    continuation.resume(returning: outcome)
                 }
-                continuation.resume(returning: outcome)
             }
+        } onCancel: {
+            cancellation?.cancel()
         }
-        // Commit stage on the main actor, in filename order.
+        guard !(cancellation?.isCancelled ?? false) else {
+            for file in workerOutcome.files {
+                try? FileManager.default.removeItem(at: file.temporary)
+            }
+            return StagedAsyncImport(
+                published: HRIRImportResult(imported: [], skipped: [], failures: []),
+                committedFilesForDiscard: []
+            )
+        }
+        // Commit stage on the main actor, in filename order. The caller
+        // checks generation and cancellation before this runs, and again
+        // before it keeps the commit, so a stale request never touches
+        // managed files or the preset array.
         return await MainActor.run { [weak self] in
             guard let self else {
-                return HRIRImportResult(imported: [], skipped: [], failures: priorFailures + workerOutcome.failures)
+                return StagedAsyncImport(
+                    published: HRIRImportResult(imported: [], skipped: [], failures: priorFailures + workerOutcome.failures),
+                    committedFilesForDiscard: []
+                )
             }
             var failures = priorFailures + workerOutcome.failures
             var imported: [HRIRPreset] = []
             var skipped: [String] = []
             let files = workerOutcome.files.sorted { $0.filename < $1.filename }
+            var committedFiles: [CommittedHRIRFile] = []
             for file in files {
                 switch self.commitValidatedImport(file, collisionPolicy: policy) {
                 case .committed(let committed):
+                    committedFiles.append(file)
                     if let preset = self.publishCommittedImport(committed) { imported.append(preset) }
                 case .skipped(let name):
                     skipped.append(name)
@@ -857,7 +899,10 @@ class HRIRManager: ObservableObject {
                 }
             }
             self.savePresets()
-            return HRIRImportResult(imported: imported, skipped: skipped, failures: failures)
+            return StagedAsyncImport(
+                published: HRIRImportResult(imported: imported, skipped: skipped, failures: failures),
+                committedFilesForDiscard: committedFiles
+            )
         }
     }
 
@@ -896,31 +941,47 @@ class HRIRManager: ObservableObject {
             await MainActor.run { [weak self] in self?.savePresets() }
             return HRIRImportResult(imported: [], skipped: [], failures: failures)
         }
-        let result = await importPresetsStagedAsync(staged, collisionPolicy: collisionPolicy, priorFailures: failures)
-        // Newest-wins: only the latest generation keeps its commit. An older
-        // request that already committed rolls back exactly its own presets.
-        let isNewest = await MainActor.run { [weak self] in
+        // Check generation and task cancellation before the worker commit:
+        // after the worker decodes a file, a commit that replaces the
+        // managed file or publishes a preset is irreversible.
+        let stillCurrent = await MainActor.run { [weak self] in
             guard let self else { return false }
             return generation == self.importGeneration
         }
-        guard isNewest else {
+        guard stillCurrent, !Task.isCancelled else {
+            return HRIRImportResult(imported: [], skipped: [], failures: [])
+        }
+        let importCancellation = ActivationCancellationToken()
+        let result = await importPresetsStagedAsync(
+            staged,
+            collisionPolicy: collisionPolicy,
+            priorFailures: failures,
+            cancellation: importCancellation
+        )
+        // A stale or cancelled request publishes nothing: its managed
+        // temporaries are removed and the working preset set is untouched.
+        // No rollback reads or deletes managed files by preset ID.
+        let isNewest = await MainActor.run { [weak self] () -> (Bool, Bool) in
+            guard let self else { return (false, false) }
+            let newest = generation == self.importGeneration
+            return (newest, Task.isCancelled)
+        }
+        guard isNewest.0, !importCancellation.isCancelled, !isNewest.1 else {
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                for preset in result.imported {
-                    if let stored = self.presets.first(where: { $0.id == preset.id }) {
-                        try? self.fileManager.removeItem(at: stored.fileURL)
-                        self.presets.removeAll { $0.id == stored.id }
-                        if self.activePreset?.id == stored.id { self.activePreset = nil }
-                    }
+                for file in result.committedFilesForDiscard {
+                    try? self.fileManager.removeItem(at: file.temporary)
                 }
                 self.savePresets()
             }
             return HRIRImportResult(imported: [], skipped: [], failures: [])
         }
-        return result
+        return result.published
     }
 
 #if DEBUG
+    var presetsDirectoryForTesting: URL { presetsDirectory }
+
     func takeImportTicketForTesting() async -> Int {
         await MainActor.run { [weak self] in
             guard let self else { return 0 }
@@ -936,6 +997,63 @@ class HRIRManager: ObservableObject {
     ) async -> HRIRImportResult {
         let generation = await ticketTaker()
         return await importPresetsAsyncWithGeneration(urls, collisionPolicy: collisionPolicy, generation: generation)
+    }
+
+    /// Same-file stale-replacement test path: holds one import inside worker
+    /// validation while the caller supersedes its generation, then checks
+    /// that the stale commit never runs. Production passes workerGate nil.
+    func importPresetsStagedForTesting(
+        _ urls: [URL],
+        collisionPolicy: HRIRImportCollisionPolicy,
+        generation: Int,
+        workerGate: (@Sendable () -> Bool)?,
+        onWorkerEntry: (@Sendable () -> Void)? = nil
+    ) async -> HRIRImportResult {
+        var staged: [ValidatedHRIRImport] = []
+        var failures: [HRIRImportFailure] = []
+        await MainActor.run { [weak self] in
+            guard let self else { return }
+            for url in urls {
+                do {
+                    staged.append(try self.validateImportURL(url, workerGate: workerGate))
+                } catch {
+                    failures.append(.init(filename: url.lastPathComponent, reason: error.localizedDescription))
+                }
+            }
+            onWorkerEntry?()
+        }
+        guard !staged.isEmpty else {
+            return HRIRImportResult(imported: [], skipped: [], failures: failures)
+        }
+        let stillCurrent = await MainActor.run { [weak self] in
+            guard let self else { return false }
+            return generation == self.importGeneration
+        }
+        guard stillCurrent, !Task.isCancelled else {
+            return HRIRImportResult(imported: [], skipped: [], failures: [])
+        }
+        let importCancellation = ActivationCancellationToken()
+        let result = await importPresetsStagedAsync(
+            staged,
+            collisionPolicy: collisionPolicy,
+            priorFailures: failures,
+            cancellation: importCancellation
+        )
+        let verdict = await MainActor.run { [weak self] () -> (Bool, Bool) in
+            guard let self else { return (false, false) }
+            return (generation == self.importGeneration, Task.isCancelled)
+        }
+        guard verdict.0, !importCancellation.isCancelled, !verdict.1 else {
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                for file in result.committedFilesForDiscard {
+                    try? self.fileManager.removeItem(at: file.temporary)
+                }
+                self.savePresets()
+            }
+            return HRIRImportResult(imported: [], skipped: [], failures: [])
+        }
+        return result.published
     }
 #endif
 

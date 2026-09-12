@@ -13,22 +13,29 @@ enum Resampler {
     static func resampleHighQuality(input: [Float], fromRate: Double, toRate: Double) throws -> [Float] {
         guard fromRate.isFinite, toRate.isFinite, fromRate > 0, toRate > 0 else { throw ResamplerError.invalidRate }
         guard !input.isEmpty else { return [] }
-        guard fromRate != toRate else { return input }
-        let estimated = ceil(Double(input.count) * toRate / fromRate) + 256
-        guard estimated.isFinite, estimated > 0, estimated <= Double(maximumOutputFrames),
-              input.count <= Int(AVAudioFrameCount.max),
+        guard fromRate != toRate else {
+            guard input.count <= maximumOutputFrames else { throw ResamplerError.outputTooLarge }
+            return input
+        }
+        let expectedFrames = ceil(Double(input.count) * toRate / fromRate)
+        guard expectedFrames.isFinite, expectedFrames > 0, expectedFrames <= Double(maximumOutputFrames),
+              input.count <= Int(AVAudioFrameCount.max) else {
+            throw ResamplerError.outputTooLarge
+        }
+        let bufferCapacity = Int(expectedFrames) + 256
+        guard bufferCapacity > 0, bufferCapacity <= Int(AVAudioFrameCount.max),
               let sourceFormat = AVAudioFormat(standardFormatWithSampleRate: fromRate, channels: 1),
               let destinationFormat = AVAudioFormat(standardFormatWithSampleRate: toRate, channels: 1),
               let converter = AVAudioConverter(from: sourceFormat, to: destinationFormat),
               let source = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: AVAudioFrameCount(input.count)),
-              let destination = AVAudioPCMBuffer(pcmFormat: destinationFormat, frameCapacity: AVAudioFrameCount(estimated)) else {
+              let destination = AVAudioPCMBuffer(pcmFormat: destinationFormat, frameCapacity: AVAudioFrameCount(bufferCapacity)) else {
             throw ResamplerError.outputTooLarge
         }
         source.frameLength = AVAudioFrameCount(input.count)
         input.withUnsafeBufferPointer { source.floatChannelData![0].update(from: $0.baseAddress!, count: input.count) }
         var supplied = false
         var output: [Float] = []
-        output.reserveCapacity(Int(estimated))
+        output.reserveCapacity(Int(expectedFrames))
         while true {
             destination.frameLength = 0
             var conversionError: NSError?

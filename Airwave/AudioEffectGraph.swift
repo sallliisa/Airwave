@@ -179,14 +179,14 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
     }
 
     func updateEqualizer(definition: EqualizerDefinition?) -> AudioEffectPreparationResult {
-        var runnableEffects = Set<AudioEffectKind>()
-        if spatial.isReady {
-            runnableEffects.insert(.spatial)
-        }
         do {
             try equalizer.setTarget(definition: definition)
             // Keep the processor in the callback path for the unity ramp when EQ is
             // removed. A later prepare(nil) bypasses it for a newly-created pipeline.
+            var runnableEffects = Set<AudioEffectKind>()
+            if spatial.isReady {
+                runnableEffects.insert(.spatial)
+            }
             equalizerActiveLock.withLock { state in
                 state.generation &+= 1
                 state.active = true
@@ -196,6 +196,13 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
             }
             return AudioEffectPreparationResult(runnableEffects: runnableEffects, equalizerWarning: nil)
         } catch let error as EqualizerAudioEffectError {
+            // The processor keeps its last working target, so the callback
+            // still runs EQ. Report that target, not an empty set: an empty
+            // set stops an EQ-only pipeline that still has audible output.
+            var runnableEffects = Set<AudioEffectKind>([.equalizer])
+            if spatial.isReady {
+                runnableEffects.insert(.spatial)
+            }
             equalizerActiveLock.withLock { state in
                 state.generation &+= 1
                 state.active = true
@@ -208,6 +215,10 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
                 )
             )
         } catch {
+            var runnableEffects = Set<AudioEffectKind>([.equalizer])
+            if spatial.isReady {
+                runnableEffects.insert(.spatial)
+            }
             equalizerActiveLock.withLock { state in
                 state.generation &+= 1
                 state.active = true

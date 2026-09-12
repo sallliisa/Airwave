@@ -151,17 +151,285 @@ final class ResamplerTests: XCTestCase {
             XCTAssertThrowsError(try Resampler.resampleHighQuality(input: [1], fromRate: 48_000, toRate: rate))
         }
     }
+
+    func testExact96000FrameOutputIsAccepted() throws {
+        // 24,000 frames at 48 kHz need 96,000 frames at 192 kHz.
+        // The limit applies to returned frames, not converter scratch.
+        let input = [Float](repeating: 0.1, count: 24_000)
+        let output = try Resampler.resampleHighQuality(input: input, fromRate: 48_000, toRate: 192_000)
+        XCTAssertLessThanOrEqual(output.count, Resampler.maximumOutputFrames)
+        XCTAssertEqual(output.count, 96_000, accuracy: 2)
+        XCTAssertTrue(output.allSatisfy(\.isFinite))
+    }
+
+    func testAbove96000FrameOutputIsRejected() {
+        // 24,001 frames at 48 kHz need 96,004 frames at 192 kHz.
+        let input = [Float](repeating: 0.1, count: 24_001)
+        XCTAssertThrowsError(try Resampler.resampleHighQuality(
+            input: input,
+            fromRate: 48_000,
+            toRate: 192_000
+        )) { error in
+            guard case ResamplerError.outputTooLarge = error else {
+                return XCTFail("expected outputTooLarge, got \(error)")
+            }
+        }
+    }
+
+    func testEqualRateRespectsOutputLimit() throws {
+        let exact = [Float](repeating: 0.25, count: Resampler.maximumOutputFrames)
+        XCTAssertEqual(
+            try Resampler.resampleHighQuality(input: exact, fromRate: 48_000, toRate: 48_000),
+            exact
+        )
+        let over = [Float](repeating: 0.25, count: Resampler.maximumOutputFrames + 1)
+        XCTAssertThrowsError(try Resampler.resampleHighQuality(
+            input: over,
+            fromRate: 48_000,
+            toRate: 48_000
+        )) { error in
+            guard case ResamplerError.outputTooLarge = error else {
+                return XCTFail("expected outputTooLarge, got \(error)")
+            }
+        }
+    }
+}
+
+@MainActor
+final class HRIRResamplingActivationTests: XCTestCase {
+    private func makeManager() -> (HRIRManager, URL) {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let manager = HRIRManager(
+            presetsDirectory: root.appendingPathComponent("hrir"),
+            startWatcher: false,
+            bundledPresetCatalog: BundledPresetCatalog(hrirFiles: [])
+        )
+        return (manager, root)
+    }
+
+    private func bundledURL(named name: String) -> URL {
+        // Tests run in the host app process, so the HRIR assets live in
+        // the main bundle. Copy to temp so AVAudioFile opens a
+        // sandbox-readable regular file path.
+        guard let url = Bundle.main.urls(forResourcesWithExtension: "wav", subdirectory: "assets/hrtf")?.first(where: { $0.lastPathComponent == name }) else {
+            fatalError("missing bundled resource \(name)")
+        }
+        let copy = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString)-\(name)")
+        try! FileManager.default.copyItem(at: url, to: copy)
+        return copy
+    }
+
+    private func activate(
+        manager: HRIRManager,
+        preset: HRIRPreset,
+        rate: Double,
+        layout: InputLayout = .stereo
+    ) async -> HRIRActivationResult {
+        await withCheckedContinuation { continuation in
+            manager.activatePreset(preset, targetSampleRate: rate, inputLayout: layout) { result in
+                continuation.resume(returning: result)
+            }
+        }
+    }
+
+    func testBundledPresetActivatesAt48kHz() async throws {
+        let (manager, root) = makeManager()
+        defer { try? FileManager.default.removeItem(at: root) }
+        await manager.waitForLibrarySync()
+        let url = bundledURL(named: "NeutralSH1.0.wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let preset = HRIRPreset(
+            id: UUID(), name: "NeutralSH1.0",
+            fileURL: url, channelCount: 14, sampleRate: 48_000
+        )
+
+        let result = await activate(manager: manager, preset: preset, rate: 48_000)
+
+        XCTAssertEqual(result, .success)
+        XCTAssertTrue(manager.isConvolutionActive)
+        XCTAssertNil(manager.errorMessage)
+    }
+
+    func testBundledPresetActivatesAt44_1kHz() async throws {
+        let (manager, root) = makeManager()
+        defer { try? FileManager.default.removeItem(at: root) }
+        await manager.waitForLibrarySync()
+        let url = bundledURL(named: "NeutralSH1.0.wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let preset = HRIRPreset(
+            id: UUID(), name: "NeutralSH1.0",
+            fileURL: url, channelCount: 14, sampleRate: 48_000
+        )
+
+        let result = await activate(manager: manager, preset: preset, rate: 44_100)
+
+        XCTAssertEqual(result, .success)
+        XCTAssertTrue(manager.isConvolutionActive)
+        XCTAssertNil(manager.errorMessage)
+    }
+
+    func testFailedConversionKeepsPriorRenderer() async throws {
+        let (manager, root) = makeManager()
+        defer { try? FileManager.default.removeItem(at: root) }
+        await manager.waitForLibrarySync()
+        let url = bundledURL(named: "NeutralSH1.0.wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let working = HRIRPreset(
+            id: UUID(), name: "NeutralSH1.0",
+            fileURL: url, channelCount: 14, sampleRate: 48_000
+        )
+
+        let first = await activate(manager: manager, preset: working, rate: 48_000)
+        XCTAssertEqual(first, .success)
+        XCTAssertTrue(manager.isConvolutionActive)
+        let activeID = try XCTUnwrap(manager.activePreset?.id)
+
+        // 4,320 frames at 48 kHz need 180,000 frames at 2 MHz.
+        // The resampler must reject the request and the manager
+        // must keep the working renderer.
+        let failed = await activate(manager: manager, preset: working, rate: 2_000_000)
+
+        guard case .failure = failed else {
+            return XCTFail("expected failure, got \(failed)")
+        }
+        XCTAssertEqual(manager.activePreset?.id, activeID)
+        XCTAssertTrue(manager.isConvolutionActive)
+        XCTAssertNotNil(manager.errorMessage)
+    }
 }
 
 @MainActor
 final class WAVLoaderBoundsTests: XCTestCase {
-    private func writeWAV(channels: Int, frames: Int, sampleRate: Double = 48_000) throws -> URL {
+    func testHeaderMatchesFullDecodeFor16BitStereoWithOddFrameCount() throws {
+        // 16-bit PCM file with an odd frame count (1001): data bytes = 4004.
+        // A width-blind reader that assumes 32-bit samples divides by
+        // channelCount * 4 = 8 and rejects the file (remainder 4) or reports
+        // 500 frames. The header reader must use the format block alignment
+        // (4 bytes/frame) and report 1001, matching full decode. Written by
+        // hand so the test does not depend on AVAudioFile integer layouts.
+        let url = try writeRawPCM16Stereo(frames: 1_001)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let header = try WAVLoader.headerInfo(from: url)
+        XCTAssertEqual(header.channelCount, 2)
+        XCTAssertEqual(header.frameCount, 1_001)
+
+        let full = try WAVLoader.load(from: url)
+        XCTAssertEqual(full.frameCount, header.frameCount)
+        XCTAssertEqual(full.channelCount, header.channelCount)
+    }
+
+    func testHeaderMatchesFullDecodeFor24BitStereo() throws {
+        // 24-bit PCM file: block alignment is 6 bytes/frame. A reader that
+        // assumes 32-bit samples divides by 8 and mis-reports 750 frames for
+        // 1000 real frames (6000 bytes). Written by hand; AVAudioFile has no
+        // 24-bit common format, and its integer layouts hang the test host.
+        let url = try writeRawPCM24Stereo(frames: 1_000)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let header = try WAVLoader.headerInfo(from: url)
+        let full = try WAVLoader.load(from: url)
+        XCTAssertEqual(header.frameCount, 1_000)
+        XCTAssertEqual(full.frameCount, header.frameCount)
+        XCTAssertEqual(full.channelCount, header.channelCount)
+    }
+
+    func testHeaderFindsDataAfterLargeMetadataChunk() throws {
+        let url = try writeWAV(channels: 2, frames: 64)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try insertChunk(id: "bext", size: 8 * 1_024, into: url)
+
+        let header = try WAVLoader.headerInfo(from: url)
+        XCTAssertEqual(header.channelCount, 2)
+        XCTAssertEqual(header.frameCount, 64)
+
+        let full = try WAVLoader.load(from: url)
+        XCTAssertEqual(full.frameCount, header.frameCount)
+    }
+
+    func testHeaderRejectsMissingDataChunk() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        var bytes = Data("RIFF".utf8)
+        var size = UInt32(36).littleEndian
+        bytes.append(Data(bytes: &size, count: 4))
+        bytes.append(Data("WAVE".utf8))
+        bytes.append(Data("fmt ".utf8))
+        var fmtSize = UInt32(16).littleEndian
+        bytes.append(Data(bytes: &fmtSize, count: 4))
+        var fmt = Data(count: 16)
+        fmt[0] = 3; fmt[2] = 2; fmt[4] = 0x80; fmt[5] = 0xBB; fmt[6] = 0; fmt[7] = 0
+        fmt[12] = 8; fmt[14] = 32
+        bytes.append(fmt)
+        try bytes.write(to: url)
+
+        XCTAssertThrowsError(try WAVLoader.headerInfo(from: url)) { error in
+            guard case WAVError.fileReadError = error else {
+                return XCTFail("expected fileReadError for missing data chunk, got \(error)")
+            }
+        }
+    }
+
+    func testFullDecodeRejectsNonFiniteWAVFixture() throws {
+        // int16/int32 paths convert to finite Float and pass; only a float
+        // file can carry a NaN through AVAudioFile for the finite check.
+        let url = try writeWAV(channels: 2, frames: 8)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try overwriteFloatSample(url: url, channel: 0, frame: 3, value: .nan)
+
+        XCTAssertThrowsError(try WAVLoader.load(from: url)) { error in
+            guard case WAVError.nonFiniteSample = error else {
+                return XCTFail("expected nonFiniteSample, got \(error)")
+            }
+        }
+    }
+
+    func testSparseOversizedFileFailsWithoutAllocation() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        // Sparse 64 MiB + 1 byte file: header claims 2 Float32 channels at
+        // 48 kHz; only the header is written, so the test allocates nothing
+        // near the advertised frame count.
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: url)
+        var riff = Data("RIFF".utf8)
+        var riffSize = UInt32(WAVLoader.maximumFileSize + 1 - 8).littleEndian
+        riff.append(Data(bytes: &riffSize, count: 4))
+        riff.append(Data("WAVE".utf8))
+        riff.append(Data("fmt ".utf8))
+        var fmtSize = UInt32(16).littleEndian
+        riff.append(Data(bytes: &fmtSize, count: 4))
+        var fmt = Data(count: 16)
+        fmt[0] = 3; fmt[2] = 2
+        fmt[4] = 0x80; fmt[5] = 0xBB; fmt[6] = 0; fmt[7] = 0
+        fmt[12] = 8; fmt[14] = 32
+        riff.append(fmt)
+        riff.append(Data("data".utf8))
+        var dataSize = UInt32(WAVLoader.maximumFileSize + 1 - 44).littleEndian
+        riff.append(Data(bytes: &dataSize, count: 4))
+        try handle.write(contentsOf: riff)
+        try handle.truncate(atOffset: UInt64(WAVLoader.maximumFileSize + 1))
+        try handle.close()
+
+        XCTAssertThrowsError(try WAVLoader.load(from: url)) { error in
+            guard case WAVError.fileTooLarge = error else {
+                return XCTFail("expected fileTooLarge, got \(error)")
+            }
+        }
+    }
+
+    private func writeWAV(
+        channels: Int,
+        frames: Int,
+        sampleRate: Double = 48_000,
+        format commonFormat: AVAudioCommonFormat = .pcmFormatFloat32
+    ) throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
         let layout = try XCTUnwrap(AVAudioChannelLayout(
             layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | UInt32(channels)
         ))
         let format = try XCTUnwrap(AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
+            commonFormat: commonFormat,
             sampleRate: sampleRate,
             interleaved: false,
             channelLayout: layout
@@ -169,11 +437,163 @@ final class WAVLoaderBoundsTests: XCTestCase {
         let file = try AVAudioFile(forWriting: url, settings: format.settings)
         let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)))
         buffer.frameLength = AVAudioFrameCount(frames)
-        for channel in 0..<channels {
-            let samples = try XCTUnwrap(buffer.floatChannelData)[channel]
-            for frame in 0..<frames { samples[frame] = frame == 0 ? 0.5 : 0 }
+        if let floatData = buffer.floatChannelData {
+            for channel in 0..<channels {
+                let samples = floatData[channel]
+                for frame in 0..<frames { samples[frame] = frame == 0 ? 0.5 : 0 }
+            }
+        } else if let int16Data = buffer.int16ChannelData {
+            for channel in 0..<channels {
+                let samples = int16Data[channel]
+                for frame in 0..<frames { samples[frame] = frame == 0 ? 16_000 : 0 }
+            }
+        } else if let int32Data = buffer.int32ChannelData {
+            for channel in 0..<channels {
+                let samples = int32Data[channel]
+                for frame in 0..<frames { samples[frame] = frame == 0 ? 1_000_000_000 : 0 }
+            }
+        } else {
+            throw XCTSkip("unsupported test buffer layout")
         }
         try file.write(from: buffer)
+        return url
+    }
+
+    /// Inserts a metadata chunk after the fmt chunk, so the data chunk moves
+    /// past small-prefix readers. The file stays valid for full decoding.
+    private func insertChunk(id: String, size: Int, into url: URL) throws {
+        var bytes = try Data(contentsOf: url)
+        let raw = [UInt8](bytes.prefix(64))
+        var cursor = 12
+        var fmtEnd: Int?
+        while cursor + 8 <= raw.count {
+            let chunkID = String(bytes: raw[cursor..<(cursor + 4)], encoding: .ascii) ?? ""
+            let chunkSize = Int(raw[cursor + 4]) | (Int(raw[cursor + 5]) << 8)
+                | (Int(raw[cursor + 6]) << 16) | (Int(raw[cursor + 7]) << 24)
+            let advance = 8 + chunkSize + (chunkSize % 2)
+            if chunkID == "fmt " { fmtEnd = cursor + advance; break }
+            guard advance > 0 else { break }
+            cursor += advance
+        }
+        let insertAt = try XCTUnwrap(fmtEnd)
+        var chunk = Data(id.utf8)
+        var chunkSize = UInt32(size).littleEndian
+        chunk.append(Data(bytes: &chunkSize, count: 4))
+        chunk.append(Data(repeating: 0, count: size))
+        bytes.insert(contentsOf: chunk, at: insertAt)
+        // Fix the RIFF size field.
+        var riffSize = UInt32(bytes.count - 8).littleEndian
+        bytes.replaceSubrange(4..<8, with: Data(bytes: &riffSize, count: 4))
+        try bytes.write(to: url)
+    }
+
+    /// Writes one Float32 sample in place through AVAudioFile's layout.
+    /// The first frame of channel 0 sits at the data-chunk start for the
+    /// non-interleaved Float32 files this helper writes.
+    private func overwriteFloatSample(url: URL, channel: Int, frame: Int, value: Float) throws {
+        let bytes = try Data(contentsOf: url)
+        let raw = [UInt8](bytes)
+        var cursor = 12
+        var dataStart: Int?
+        while cursor + 8 <= raw.count {
+            let chunkID = String(bytes: raw[cursor..<(cursor + 4)], encoding: .ascii) ?? ""
+            let chunkSize = Int(raw[cursor + 4]) | (Int(raw[cursor + 5]) << 8)
+                | (Int(raw[cursor + 6]) << 16) | (Int(raw[cursor + 7]) << 24)
+            if chunkID == "data" { dataStart = cursor + 8; break }
+            let advance = 8 + chunkSize + (chunkSize % 2)
+            guard advance > 0 else { break }
+            cursor += advance
+        }
+        let start = try XCTUnwrap(dataStart)
+        let header = try WAVLoader.headerInfo(from: url)
+        // AVAudioFile writes non-interleaved Float32 files channel by channel.
+        let offset = start + channel * header.frameCount * 4 + frame * 4
+        let handle = try FileHandle(forUpdating: url)
+        defer { try? handle.close() }
+        try handle.seek(toOffset: UInt64(offset))
+        var bits = value.bitPattern.littleEndian
+        try handle.write(contentsOf: Data(bytes: &bits, count: 4))
+    }
+
+    /// Writes a hand-built 16-bit PCM stereo WAV (interleaved, block
+    /// alignment 4). Avoids AVAudioFile integer layouts, which hang the
+    /// test host (non-interleaved flag ignored, then watchdog kills it).
+    private func writeRawPCM16Stereo(frames: Int, sampleRate: UInt32 = 48_000) throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
+        var bytes = Data("RIFF".utf8)
+        let dataBytes = frames * 2 * 2
+        var riffSize = UInt32(36 + dataBytes).littleEndian
+        bytes.append(Data(bytes: &riffSize, count: 4))
+        bytes.append(Data("WAVE".utf8))
+        bytes.append(Data("fmt ".utf8))
+        var fmtSize = UInt32(16).littleEndian
+        bytes.append(Data(bytes: &fmtSize, count: 4))
+        var fmt = Data(count: 16)
+        fmt[0] = 1 // PCM
+        fmt[2] = 2 // channels
+        fmt[4] = UInt8(sampleRate & 0xFF); fmt[5] = UInt8((sampleRate >> 8) & 0xFF)
+        fmt[6] = UInt8((sampleRate >> 16) & 0xFF); fmt[7] = UInt8((sampleRate >> 24) & 0xFF)
+        let byteRate = sampleRate * 4
+        fmt[8] = UInt8(byteRate & 0xFF); fmt[9] = UInt8((byteRate >> 8) & 0xFF)
+        fmt[10] = UInt8((byteRate >> 16) & 0xFF); fmt[11] = UInt8((byteRate >> 24) & 0xFF)
+        fmt[12] = 4; fmt[13] = 0 // block alignment
+        fmt[14] = 16; fmt[15] = 0 // bits per sample
+        bytes.append(fmt)
+        bytes.append(Data("data".utf8))
+        var dataSize = UInt32(dataBytes).littleEndian
+        bytes.append(Data(bytes: &dataSize, count: 4))
+        var samples = Data(count: dataBytes)
+        samples.withUnsafeMutableBytes { pointer in
+            let words = pointer.bindMemory(to: Int16.self)
+            for frame in 0..<frames {
+                words[frame * 2] = frame == 0 ? 16_000 : 0
+                words[frame * 2 + 1] = 0
+            }
+        }
+        bytes.append(samples)
+        try bytes.write(to: url)
+        return url
+    }
+
+    /// Writes a hand-built 24-bit PCM stereo WAV (interleaved, block
+    /// alignment 6).
+    private func writeRawPCM24Stereo(frames: Int, sampleRate: UInt32 = 48_000) throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).wav")
+        var bytes = Data("RIFF".utf8)
+        let dataBytes = frames * 2 * 3
+        var riffSize = UInt32(36 + dataBytes).littleEndian
+        bytes.append(Data(bytes: &riffSize, count: 4))
+        bytes.append(Data("WAVE".utf8))
+        bytes.append(Data("fmt ".utf8))
+        var fmtSize = UInt32(16).littleEndian
+        bytes.append(Data(bytes: &fmtSize, count: 4))
+        var fmt = Data(count: 16)
+        fmt[0] = 1 // PCM
+        fmt[2] = 2 // channels
+        fmt[4] = UInt8(sampleRate & 0xFF); fmt[5] = UInt8((sampleRate >> 8) & 0xFF)
+        fmt[6] = UInt8((sampleRate >> 16) & 0xFF); fmt[7] = UInt8((sampleRate >> 24) & 0xFF)
+        let byteRate = sampleRate * 6
+        fmt[8] = UInt8(byteRate & 0xFF); fmt[9] = UInt8((byteRate >> 8) & 0xFF)
+        fmt[10] = UInt8((byteRate >> 16) & 0xFF); fmt[11] = UInt8((byteRate >> 24) & 0xFF)
+        fmt[12] = 6; fmt[13] = 0 // block alignment
+        fmt[14] = 24; fmt[15] = 0 // bits per sample
+        bytes.append(fmt)
+        bytes.append(Data("data".utf8))
+        var dataSize = UInt32(dataBytes).littleEndian
+        bytes.append(Data(bytes: &dataSize, count: 4))
+        var samples = Data(count: dataBytes)
+        samples.withUnsafeMutableBytes { pointer in
+            let raw = pointer.bindMemory(to: UInt8.self)
+            for frame in 0..<frames {
+                // First left sample = 0x400000 (positive quarter scale).
+                let value: UInt32 = frame == 0 ? 0x400000 : 0
+                raw[frame * 6] = UInt8(value & 0xFF)
+                raw[frame * 6 + 1] = UInt8((value >> 8) & 0xFF)
+                raw[frame * 6 + 2] = UInt8((value >> 16) & 0xFF)
+            }
+        }
+        bytes.append(samples)
+        try bytes.write(to: url)
         return url
     }
 
@@ -376,6 +796,115 @@ final class HRIRLibraryImportTests: XCTestCase {
         XCTAssertEqual(failed.failures.count, 1)
         XCTAssertEqual(try Data(contentsOf: preset.fileURL), originalBytes)
         XCTAssertEqual(manager.presets.count, 1)
+    }
+
+    func testStaleSameFileReplacementKeepsWorkingPresetAndSelection() async throws {
+        let (manager, root) = makeManager()
+        defer { try? FileManager.default.removeItem(at: root) }
+        await manager.waitForLibrarySync()
+        let source = root.appendingPathComponent("sources/Curve.wav")
+        try writeWAV(to: source, gain: 0.25)
+        let first = await manager.importPresetsAsync([source], collisionPolicy: .reject)
+        let preset = try XCTUnwrap(first.imported.first)
+        let presetID = preset.id
+        // Select the working preset through the production activation path.
+        // The 2-channel file maps through the default 14-channel table with
+        // no matching renderers, so activation fails; retry with the bundled
+        // 14-channel fixture for a working active preset.
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            manager.activatePreset(preset, targetSampleRate: 48_000, inputLayout: .stereo) { _ in
+                continuation.resume()
+            }
+        }
+        let activeBeforeStale: HRIRPreset?
+        if manager.activePreset?.id == presetID {
+            activeBeforeStale = manager.activePreset
+        } else {
+            let bundled = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString)-NeutralSH1.0.wav")
+            let source14 = Bundle.main.urls(forResourcesWithExtension: "wav", subdirectory: "assets/hrtf")!
+                .first { $0.lastPathComponent == "NeutralSH1.0.wav" }!
+            try FileManager.default.copyItem(at: source14, to: bundled)
+            defer { try? FileManager.default.removeItem(at: bundled) }
+            let wide = await manager.importPresetsAsync([bundled], collisionPolicy: .reject)
+            let widePreset = try XCTUnwrap(wide.imported.first)
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                manager.activatePreset(widePreset, targetSampleRate: 48_000, inputLayout: .stereo) { _ in
+                    continuation.resume()
+                }
+            }
+            // The stale same-file request below targets Curve.wav; the
+            // selected wide preset must survive it untouched.
+            activeBeforeStale = manager.activePreset
+            XCTAssertEqual(activeBeforeStale?.id, widePreset.id)
+        }
+        XCTAssertNotNil(activeBeforeStale)
+        let activeID = try XCTUnwrap(activeBeforeStale?.id)
+        XCTAssertTrue(manager.isConvolutionActive)
+        let originalBytes = try Data(contentsOf: preset.fileURL)
+
+        // A stale replacement of the same filename validates after a newer
+        // generation exists. The pre-commit check must discard it before it
+        // replaces the managed file or republishes the preset.
+        try writeWAV(to: source, gain: 0.75)
+        let staleTicket = await manager.takeImportTicketForTesting()
+        _ = await manager.takeImportTicketForTesting()
+        let stale = await manager.importPresetsStagedForTesting(
+            [source],
+            collisionPolicy: .replace,
+            generation: staleTicket,
+            workerGate: nil
+        )
+
+        XCTAssertTrue(stale.imported.isEmpty)
+        XCTAssertNotNil(manager.presets.first { $0.id == presetID })
+        XCTAssertEqual(try Data(contentsOf: preset.fileURL), originalBytes)
+        XCTAssertEqual(manager.activePreset?.id, activeID)
+        XCTAssertTrue(manager.isConvolutionActive)
+    }
+
+    func testCancelledWorkerImportCommitsNothing() async throws {
+        let (manager, root) = makeManager()
+        defer { try? FileManager.default.removeItem(at: root) }
+        await manager.waitForLibrarySync()
+        let source = root.appendingPathComponent("sources/Curve.wav")
+        try writeWAV(to: source, gain: 0.5)
+        let gate = LockedFlag(true)
+        let ticket = await manager.takeImportTicketForTesting()
+        let importTask = Task {
+            await manager.importPresetsStagedForTesting(
+                [source],
+                collisionPolicy: .replace,
+                generation: ticket,
+                workerGate: { gate.value },
+                onWorkerEntry: {}
+            )
+        }
+        // Wait until the worker blocks inside validation, then supersede the
+        // generation and cancel the request. The stale commit must not run.
+        try await Task.sleep(nanoseconds: 100_000_000)
+        _ = await manager.takeImportTicketForTesting()
+        importTask.cancel()
+        gate.value = false
+        let result = await importTask.value
+
+        XCTAssertTrue(result.imported.isEmpty)
+        XCTAssertTrue(manager.presets.isEmpty)
+        let managed = try FileManager.default.contentsOfDirectory(
+            atPath: manager.presetsDirectoryForTesting.path
+        ).filter { $0.hasSuffix(".wav") && !$0.hasPrefix(".") }
+        XCTAssertTrue(managed.isEmpty)
+    }
+}
+
+private final class LockedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var flag: Bool
+
+    init(_ value: Bool) { flag = value }
+
+    var value: Bool {
+        get { lock.withLock { flag } }
+        set { lock.withLock { flag = newValue } }
     }
 }
 

@@ -260,9 +260,48 @@ final class AudioEffectGraphTests: XCTestCase {
         )
 
         XCTAssertTrue(result.noEffectCanRun == false)
-        XCTAssertEqual(result.runnableEffects, [.spatial])
+        XCTAssertEqual(result.runnableEffects, [.spatial, .equalizer])
         _ = process(graph, left: [1], right: [1])
         XCTAssertEqual(equalizer.processCount, 2)
+    }
+
+    func testRejectedEQOnlyUpdateKeepsWorkingTargetRunnable() throws {
+        // Production path: no spatial effect, one active EQ target, then an
+        // invalid replacement. The processor keeps the old target, so the
+        // returned status must keep .equalizer runnable and the callback must
+        // keep the old gain. An empty status would stop an EQ-only pipeline
+        // that still has audible output.
+        let equalizer = EqualizerRuntimeEffect()
+        let graph = AudioEffectGraph(
+            spatial: SpatialEffectSpy(isReady: false, processResult: false),
+            equalizer: equalizer,
+            maxFramesPerCallback: 4_096
+        )
+        let output = deviceOutput(sampleRate: 48_000)
+        let working = EqualizerDefinition(preampDB: 6)
+        let workingGain = Float(pow(10.0, 6.0 / 20.0))
+
+        let prepared = graph.prepare(for: output, equalizerDefinition: working)
+        XCTAssertEqual(prepared.runnableEffects, [.equalizer])
+        // Settle the 20 ms unity->+6 dB ramp before the rejection: the graph
+        // holds the working target through the fade, so the check below reads
+        // the retained gain, not a mid-ramp sample.
+        _ = processConstant(graph, frameCount: 960)
+        XCTAssertEqual(
+            process(graph, left: [1], right: [1]).left,
+            [workingGain]
+        )
+
+        let invalid = EqualizerDefinition(filters: [testFilter(line: 31, frequency: 30_000)])
+        let rejected = graph.updateEqualizer(definition: invalid)
+
+        XCTAssertEqual(rejected.runnableEffects, [.equalizer])
+        XCTAssertFalse(rejected.noEffectCanRun)
+        XCTAssertEqual(rejected.equalizerWarning?.filterLine, 31)
+        XCTAssertEqual(
+            process(graph, left: [1], right: [1]).left,
+            [workingGain]
+        )
     }
 
     func testNewEqualizerTargetWinsRaceWithBypassCompletion() {
