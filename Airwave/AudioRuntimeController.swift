@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import os
 
 nonisolated struct AudioRuntimeEffectReadiness: Equatable, Sendable {
     let spatialReady: Bool
@@ -33,17 +34,22 @@ protocol AudioRuntimeScheduling: AnyObject {
 protocol AudioRuntimeCancellation: AnyObject { func cancel() }
 
 @MainActor
-private final class DispatchRuntimeScheduler: AudioRuntimeScheduling {
+final class DispatchRuntimeScheduler: AudioRuntimeScheduling {
     private final class Token: AudioRuntimeCancellation {
         var workItem: DispatchWorkItem?
         func cancel() { workItem?.cancel(); workItem = nil }
+
+        func fire(_ action: @escaping @MainActor () -> Void) {
+            guard workItem != nil else { return }
+            workItem = nil
+            action()
+        }
     }
 
     func schedule(after delay: TimeInterval, _ action: @escaping @MainActor () -> Void) -> AudioRuntimeCancellation {
         let token = Token()
         let item = DispatchWorkItem {
-            guard token.workItem != nil else { return }
-            Task { @MainActor in action() }
+            MainActor.assumeIsolated { token.fire(action) }
         }
         token.workItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
@@ -98,7 +104,6 @@ final class AudioRuntimeController {
     private weak var profilePreparer: (any OutputEffectProfilePreparing)?
     private var desiredOutput: OutputDeviceDescriptor?
     private var hasPreparedDesiredOutput = false
-    private var tapConflict: TapConflictMonitor.Snapshot = .none
 
     init(
         state: AudioRuntimeState,
@@ -148,20 +153,6 @@ final class AudioRuntimeController {
         reconcile()
     }
 
-    /// Apps that install always-on muted process taps deadlock against Airwave's
-    /// own tap. Processing suspends while one runs and resumes when it quits.
-    func tapConflictsChanged(_ snapshot: TapConflictMonitor.Snapshot) {
-        guard snapshot != tapConflict else { return }
-        tapConflict = snapshot
-        state.setHealthIssue(
-            snapshot.isEmpty ? nil : .incompatibleAudioApp(appNames: snapshot.appNames),
-            for: .coexistence
-        )
-        guard launched, !sleeping, !terminated else { return }
-        guard stopForInvalidation() else { return }
-        reconcile()
-    }
-
     func updateReadiness(_ effectReadiness: AudioRuntimeEffectReadiness, invalidation: AudioRuntimeInvalidation) {
         let changed = self.effectReadiness != effectReadiness
         self.effectReadiness = effectReadiness
@@ -191,8 +182,19 @@ final class AudioRuntimeController {
     var canUpdateSpatialLive: Bool {
         launched && !sleeping && !terminated
             && pipeline != nil && captureVerified
-            && state.status.isProcessing && tapConflict.isEmpty
+            && state.status.isProcessing
     }
+
+    /// True while a passthrough-hold teardown is scheduled but has not yet
+    /// destroyed the tap/aggregate/IO. During this window no new pipeline may
+    /// start, and a preset re-selected mid-window is routed down the full
+    /// restart path instead of a live update into an already-dying chain.
+    private var isDeferredTeardownPending: Bool {
+        pipeline?.isDeferredTeardownPending ?? false
+    }
+
+    /// Testable/internal view of a pending passthrough-hold teardown.
+    var isDeferredTeardownPendingForTesting: Bool { isDeferredTeardownPending }
 
     /// Applies a spatial readiness change without stopping the tap. The renderer
     /// state was already published to the render thread, which crossfades to it.
@@ -203,13 +205,31 @@ final class AudioRuntimeController {
             spatialReady: isReady,
             equalizerDefinition: effectReadiness.equalizerDefinition
         )
+        let isPipelineLive = canUpdateSpatialLive
         guard canUpdateSpatialLive, readiness.hasSelectedEffect else {
-            updateReadiness(readiness, invalidation: .spatial)
+            AirwaveLog.audio.info(
+                "updateSpatialLive refused (isReady \(isReady, privacy: .public), pipelineLive \(isPipelineLive, privacy: .public), effectRemains \(readiness.hasSelectedEffect, privacy: .public))."
+            )
+            // HRIR→None with no equalizer remaining: adopt the emptied
+            // readiness, publish the empty-renderer state (the renderer
+            // crossfades to passthrough — already implemented) and keep the
+            // tap running past the fade via the hold window, so destroying
+            // the tap can never unmute native audio into program audio.
+            guard readiness != effectReadiness else { return false }
+            effectReadiness = readiness
+            let stopped = stopForInvalidation(allowingPassthroughHold: true)
+            if stopped {
+                captureProbeRequested = false
+                state.publish(.inactive, output: state.currentOutput)
+            }
             return false
         }
         effectReadiness = readiness
         state.setHealthIssue(nil, for: .spatial)
         state.setHealthIssue(nil, for: .pipeline)
+        AirwaveLog.audio.info(
+            "updateSpatialLive accepted (isReady \(isReady, privacy: .public))."
+        )
         state.publish(
             .processing,
             output: state.currentOutput,
@@ -221,7 +241,38 @@ final class AudioRuntimeController {
     }
 
     func reprepareCurrentOutput() {
-        guard launched, !sleeping, !terminated, stopForInvalidation() else { return }
+        guard launched, !sleeping, !terminated else { return }
+        // A re-select inside the passthrough-hold window ends the hold
+        // early: cancel the in-flight preparation WITHOUT deactivating the
+        // freshly re-selected HRIR state (cancelPreparation nils it), reclaim
+        // the pending teardown, then stop the same object synchronously. The
+        // I/O loop was already stopped before the hold, so reclaiming never
+        // resumes program audio; the teardown's late-firing block becomes a
+        // no-op. Without this the restart refuses its stop behind the fade
+        // window and parks in passthrough until the hold elapses. The
+        // reclaimed handles stay registered (native audio stays muted) until
+        // the synchronous post-reclaim stop below destroys them.
+        if let pipeline, pipeline.isDeferredTeardownPending {
+            Logger.log("[AudioRuntime] Reclaiming pending passthrough-hold teardown for restart (\(ObjectIdentifier(pipeline)))")
+            AirwaveLog.audioRuntime.info("Reclaiming pending passthrough-hold teardown for restart.")
+            generation += 1
+            hasPreparedDesiredOutput = false
+            retryToken?.cancel(); retryToken = nil
+            stabilityToken?.cancel(); stabilityToken = nil
+            pipeline.reclaimPendingTeardown()
+            do {
+                try pipeline.stop()
+                self.pipeline = nil
+                state.setHealthIssue(nil, for: .recovery)
+            } catch {
+                scheduleCleanupRetry(error)
+                return
+            }
+            captureProbeRequested = explicitCaptureTest || (effectReadiness.hasSelectedEffect && !captureVerified)
+            reconcile()
+            return
+        }
+        guard stopForInvalidation() else { return }
         hasPreparedDesiredOutput = false
         // Rebuilding the effect graph does not revoke capture capability. Keep
         // verified state so HRIR swaps restart processing directly instead of
@@ -324,6 +375,15 @@ final class AudioRuntimeController {
         guard launched, !sleeping, !terminated else { return }
         outputLossToken?.cancel()
         outputLossToken = nil
+        // Plan 039 Step 1: same-identity events still reprepare when the
+        // processing format changed (rate, width, stream count, layout).
+        // Pure identity duplicates with an unchanged format and a live
+        // processing pipeline return early; everything else flows through
+        // the existing invalidation path so a changed format cannot leave
+        // old filters attached to a new rate.
+        if let output, let current = state.currentOutput, output.id == current.id,
+           !output.hasProcessingFormatChange(from: current),
+           pipeline != nil, state.status == .processing { return }
         if let output, output == state.currentOutput, pipeline != nil, state.status == .processing { return }
         desiredOutput = output
         hasPreparedDesiredOutput = false
@@ -413,14 +473,6 @@ final class AudioRuntimeController {
         let purpose: AudioPipelinePurpose = captureProbeRequested && !captureVerified
             ? .verification(includeOwnProcess: explicitCaptureTest)
             : .processing
-        if purpose == .processing, !tapConflict.isEmpty {
-            let names = tapConflict.appNames.joined(separator: ", ")
-            state.publish(
-                .nativePassthrough(reason: "\(names) is managing per-app audio. Airwave paused processing to keep sound working."),
-                output: output
-            )
-            return
-        }
         let preparation: AudioEffectPreparationResult?
         if let effectGraph {
             let result = effectGraph.prepare(for: output, equalizerDefinition: effectReadiness.equalizerDefinition)
@@ -433,7 +485,11 @@ final class AudioRuntimeController {
         } else { preparation = nil }
 
         let currentGeneration = generation
-        try? pipeline?.stop()
+        // Pipeline ownership is exclusive: a previous pipeline that still holds
+        // tap/aggregate/IO resources must never be overwritten by a candidate.
+        // A failed stop is fatal-in-order — keep the reference and let the
+        // cleanup retry release it before anything else starts.
+        guard stopLivePipeline() else { return }
         let candidate = pipelineFactory()
         let candidateIdentity = ObjectIdentifier(candidate)
         pipeline = candidate
@@ -472,8 +528,19 @@ final class AudioRuntimeController {
                 scheduleStabilityReset(for: currentGeneration)
             }
         } catch {
-            pipeline = nil
-            try? candidate.stop()
+            // The failed candidate still owns whatever it acquired; keep the
+            // reference so cleanup retries target it and nothing replaces it
+            // while its resources are live.
+            pipeline = candidate
+            do { try candidate.stop(); pipeline = nil }
+            catch {
+                state.publish(
+                    .recovering(reason: "Releasing audio resources…"),
+                    output: output,
+                    captureAccess: captureAccess
+                )
+                scheduleCleanupRetry(error)
+            }
             handleFailure(
                 error,
                 output: output,
@@ -530,7 +597,12 @@ final class AudioRuntimeController {
             stimulusToken?.cancel(); stimulusToken = nil
             verificationTimeoutToken?.cancel(); verificationTimeoutToken = nil
             stimulusPlayer.stop()
-            guard (try? pipeline?.stop()) != nil else { handleFailure(AudioRuntimeError.cleanupFailed("Stop verification pipeline"), output: output); return }
+            // Fatal-in-order: if the probe pipeline cannot be released, no new
+            // pipeline may be built while its tap/aggregate/IO still exist.
+            guard stopLivePipeline() else {
+                handleFailure(AudioRuntimeError.cleanupFailed("Stop verification pipeline"), output: output)
+                return
+            }
             pipeline = nil
             clearCaptureAndPipelineIssuesAfterSuccess()
             state.setCaptureAccess(.verified)
@@ -602,7 +674,20 @@ final class AudioRuntimeController {
         return false
     }
 
-    private func stopForInvalidation() -> Bool {
+    /// True when the pending readiness leaves no effect running at all
+    /// (spatial cleared and no equalizer remains) — the plan-021 trigger for
+    /// deferring tap teardown past the passthrough fade.
+    private var noEffectRemainsAfterUpdate: Bool {
+        !effectReadiness.spatialReady && effectReadiness.equalizerDefinition == nil
+    }
+
+    /// Stops the live pipeline for an invalidation. With `allowingPassthroughHold`
+    /// set and no effect remaining, the final teardown is deferred by a short
+    /// hold window (see `AudioPipeline.stop(holdingPassthroughFade:onTeardownComplete:)`)
+    /// so destroying the tap can never unmute native audio into program audio.
+    /// Until the deferred destruction completes, the pipeline object stays
+    /// owned and no replacement may be created.
+    private func stopForInvalidation(allowingPassthroughHold: Bool = false) -> Bool {
         generation += 1
         verificationTimeoutToken?.cancel(); verificationTimeoutToken = nil
         stimulusToken?.cancel(); stimulusToken = nil
@@ -615,12 +700,65 @@ final class AudioRuntimeController {
         stabilityToken?.cancel(); stabilityToken = nil
         guard let pipeline else { return true }
         do {
+            if allowingPassthroughHold, noEffectRemainsAfterUpdate {
+                try pipeline.stop(holdingPassthroughFade: true) { [weak self] error in
+                    guard let self else { return }
+                    MainActor.assumeIsolated {
+                        self.finishDeferredTeardown(of: pipeline, error: error)
+                    }
+                }
+                Logger.log("[AudioRuntime] Passthrough-hold teardown armed for \(ObjectIdentifier(pipeline))")
+                AirwaveLog.audioRuntime.info(
+                    "Passthrough-hold teardown armed for pipeline \(String(describing: ObjectIdentifier(pipeline)))."
+                )
+                return true
+            }
             try pipeline.stop()
             self.pipeline = nil
             state.setHealthIssue(nil, for: .recovery)
             return true
         }
         catch { scheduleCleanupRetry(error); return false }
+    }
+
+    /// Completes a passthrough-hold teardown: releases the reference on
+    /// success, or schedules a cleanup retry against THE SAME pipeline object
+    /// on failure. Exclusive ownership is preserved throughout — no candidate
+    /// pipeline is created while any handle of this object is still registered.
+    private func finishDeferredTeardown(of finished: AudioPipelineControlling, error: Error?) {
+        if let current = pipeline, ObjectIdentifier(current) != ObjectIdentifier(finished) {
+            // A different object owns the slot now; nothing to finalize.
+            return
+        }
+        guard error == nil else {
+            scheduleCleanupRetry(error!)
+            return
+        }
+        pipeline = nil
+        state.setHealthIssue(nil, for: .recovery)
+        Logger.log("[AudioRuntime] Deferred teardown released pipeline \(ObjectIdentifier(finished))")
+        AirwaveLog.audioRuntime.info("Deferred passthrough teardown completed.")
+    }
+
+    /// Stops the live pipeline without dropping it on failure. Pipeline
+    /// ownership is exclusive: while any tap/aggregate/IO resources remain
+    /// alive, no candidate pipeline may be created, so a failed stop is fatal
+    /// in order and recovery goes through `scheduleCleanupRetry`, which keeps
+    /// retrying this same object.
+    @discardableResult
+    private func stopLivePipeline() -> Bool {
+        guard let pipeline else { return true }
+        do {
+            try pipeline.stop()
+            self.pipeline = nil
+            state.setHealthIssue(nil, for: .recovery)
+            Logger.log("[AudioRuntime] Released live pipeline \(ObjectIdentifier(pipeline))")
+            return true
+        }
+        catch {
+            scheduleCleanupRetry(error)
+            return false
+        }
     }
 
     private func scheduleRetry(reason: String, output: OutputDeviceDescriptor?) {
@@ -643,6 +781,9 @@ final class AudioRuntimeController {
         let reason = "Releasing audio resources. Retrying in \(Int(delay))s."
         state.setHealthIssue(.resourceRecovery(reason: reason), for: .recovery)
         state.publish(.recovering(reason: reason))
+        AirwaveLog.audio.info(
+            "Cleanup retry scheduled in \(delay)s (generation \(retryGeneration)): \(reason, privacy: .public)"
+        )
         retryToken = scheduler.schedule(after: delay) { [weak self] in
             guard let self, self.generation == retryGeneration else { return }
             self.retryToken = nil
@@ -650,6 +791,9 @@ final class AudioRuntimeController {
             if self.effectReadiness.hasSelectedEffect && !self.explicitCaptureTest {
                 self.captureProbeRequested = true
             }
+            AirwaveLog.audio.info(
+                "Cleanup retry fired (generation \(retryGeneration)); reconciling."
+            )
             self.reconcile()
         }
     }
@@ -665,7 +809,10 @@ final class AudioRuntimeController {
     private func handleLiveEffectUpdate(_ result: AudioEffectPreparationResult) {
         publishEqualizerIssue(result.equalizerWarning)
         if result.noEffectCanRun, !effectReadiness.spatialReady {
-            state.publish(.nativePassthrough(reason: result.equalizerWarning?.errorDescription ?? "No compatible audio effect is available for this output."), output: state.currentOutput)
+            if stopForInvalidation(allowingPassthroughHold: true) {
+                captureProbeRequested = false
+                state.publish(.inactive, output: state.currentOutput)
+            }
             return
         }
         state.setHealthIssue(nil, for: .pipeline)

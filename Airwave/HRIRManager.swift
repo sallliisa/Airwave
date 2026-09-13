@@ -50,17 +50,66 @@ enum HRIRActivationResult: Equatable {
     case failure(String)
 }
 
+struct HRIRContentIdentity: Hashable, Sendable {
+    /// FNV-1a 64-bit digest over the raw managed bytes, computed off the
+    /// audio thread with one bounded read. Size and mtime are hints only;
+    /// a same-size/same-time replacement still changes this digest.
+    let digest: UInt64
+    let byteCount: Int
+
+    static func digest(bytes: UnsafeRawBufferPointer) -> UInt64 {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in bytes {
+            hash ^= UInt64(byte)
+            hash &*= 0x100000001b3
+        }
+        return hash
+    }
+
+    static func ofFile(at url: URL, maximumBytes: Int = WAVLoader.maximumFileSize) throws -> HRIRContentIdentity {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hash: UInt64 = 0xcbf29ce484222325
+        var total = 0
+        while true {
+            guard let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty else { break }
+            total += chunk.count
+            guard total <= maximumBytes else { throw WAVError.fileTooLarge }
+            chunk.withUnsafeBytes { raw in
+                for byte in raw {
+                    hash ^= UInt64(byte)
+                    hash &*= 0x100000001b3
+                }
+            }
+        }
+        return HRIRContentIdentity(digest: hash, byteCount: total)
+    }
+}
+
 struct PresetActivationKey: Hashable {
     let presetID: UUID
     let fileURL: URL
     let sampleRate: Double
     let inputChannels: [VirtualSpeaker]
+    /// Content identity of the managed bytes. Nil only for ad-hoc keys
+    /// (custom hrirMap path and legacy callers); activation of a managed
+    /// preset always carries a value, so a same-ID replacement rebuilds.
+    let contentRevision: HRIRContentIdentity?
 
     init(preset: HRIRPreset, targetSampleRate: Double, inputLayout: InputLayout) {
         self.presetID = preset.id
         self.fileURL = preset.fileURL.standardizedFileURL
         self.sampleRate = targetSampleRate
         self.inputChannels = inputLayout.channels
+        self.contentRevision = nil
+    }
+
+    init(preset: HRIRPreset, targetSampleRate: Double, inputLayout: InputLayout, contentRevision: HRIRContentIdentity?) {
+        self.presetID = preset.id
+        self.fileURL = preset.fileURL.standardizedFileURL
+        self.sampleRate = targetSampleRate
+        self.inputChannels = inputLayout.channels
+        self.contentRevision = contentRevision
     }
 }
 
@@ -176,11 +225,21 @@ nonisolated final class SpatialRendererCrossfader {
     private var fadeFrom: RendererState?
     private var fadeTo: RendererState?
     private var pendingTarget: RendererState?
+    #if DEBUG
+    // No owned probe array. Each RendererState carries its own DEBUG probe
+    // (see RendererState.destructionProbe), so probe death runs on the same
+    // thread that frees the last state owner. Never touch probes here.
+    #endif
     private var hasPendingTarget = false
     private var isFading = false
     private var fadeFrame = 0
     private var primeFrames = 0
     private var pendingRetirement = SpatialRetirementSlots()
+    // Bounded single-slot hold for a fade outgoing that found both retirement
+    // tiers full. flushPendingRetirement() retries it after the next
+    // successful control drain; cleanupAfterIOStopped() clears it. Never more
+    // than one state; never dropped on audio.
+    private var failedRetirementHold: RendererState?
 
     init(primeLength: Int, fadeLength: Int = 1_024, maxFramesPerCallback: Int = 4_096) {
         precondition(primeLength >= 0)
@@ -213,18 +272,54 @@ nonisolated final class SpatialRendererCrossfader {
         toRightScratch.deallocate()
     }
 
-    /// True while spatial output must stay in the callback path, including the
-    /// fade back to passthrough after a preset is removed.
-    var isRenderingSpatialAudio: Bool {
-        isFading || activeState?.renderers.isEmpty == false
-    }
-
-    var hasObservedRenderers: Bool { observedState?.renderers.isEmpty == false }
-
     #if DEBUG
     var retiredStateCountForTesting: Int { retirementLock.withLock { $0.count } }
     var isFadingForTesting: Bool { isFading }
     var activeStateForTesting: RendererState? { activeState }
+    /// DEBUG-only probe owned BY a RendererState, not by the crossfader. The
+    /// probe frees on the thread that drops the last state owner, so its
+    /// recorder sees audio-thread releases. The probe never captures its
+    /// state. The probe ID is the state identity.
+    final class DestructionRecorder: @unchecked Sendable {
+        struct Event: Sendable { let id: Int; let isAudioThread: Bool }
+        private let lock = NSLock()
+        private var events: [Event] = []
+        func record(id: Int, isAudioThread: Bool) {
+            lock.lock(); defer { lock.unlock() }
+            events.append(Event(id: id, isAudioThread: isAudioThread))
+        }
+        var snapshot: [Event] { lock.lock(); defer { lock.unlock() }; return events }
+        var audioThreadDestructionCount: Int { snapshot.filter(\.isAudioThread).count }
+    }
+    nonisolated final class DestructionProbe: @unchecked Sendable {
+        let id: Int
+        let recorder: DestructionRecorder?
+        let audioKey: DispatchSpecificKey<Void>?
+        init(id: Int, recorder: DestructionRecorder?, audioKey: DispatchSpecificKey<Void>?) {
+            self.id = id; self.recorder = recorder; self.audioKey = audioKey
+        }
+        deinit {
+            if let recorder, let audioKey {
+                recorder.record(id: id, isAudioThread: DispatchQueue.getSpecific(key: audioKey) != nil)
+            }
+        }
+    }
+    nonisolated static var destructionAudioKey: DispatchSpecificKey<Void>?
+    nonisolated static var destructionRecorder: DestructionRecorder?
+    nonisolated static func configureDestructionProbeForTesting(
+        audioKey: DispatchSpecificKey<Void>?,
+        recorder: DestructionRecorder?
+    ) {
+        destructionAudioKey = audioKey
+        destructionRecorder = recorder
+    }
+    #if DEBUG
+    /// DEBUG-only saturation hook. When set, retire() reports failure without
+    /// taking ownership, so tests can fill the bounded local tier without a
+    /// lock jam. The audio callback still never blocks. Call only from test
+    /// or control code, never from the callback body itself.
+    var forceRetireFailureForTesting = false
+    #endif
     #endif
 
     /// Releases states retired by the render thread. Call from the control thread.
@@ -232,6 +327,22 @@ nonisolated final class SpatialRendererCrossfader {
         retirementLock.withLock { slots in
             slots.clear()
         }
+    }
+
+    /// Call only after the I/O callback has stopped.
+    func cleanupAfterIOStopped() {
+        retirementLock.withLock { $0.clear() }
+        pendingRetirement.clear()
+        failedRetirementHold = nil
+        activeState = nil
+        observedState = nil
+        fadeFrom = nil
+        fadeTo = nil
+        pendingTarget = nil
+        hasPendingTarget = false
+        isFading = false
+        fadeFrame = 0
+        primeFrames = 0
     }
 
     /// Drops the render-thread state without fading. Used when the pipeline is
@@ -245,6 +356,21 @@ nonisolated final class SpatialRendererCrossfader {
     // BEGIN REALTIME CALLBACK
     func observe(_ published: RendererState?) {
         guard published !== observedState else { return }
+        if isFading, let pendingTarget, pendingTarget !== published {
+            guard retire(pendingTarget) else { return }
+            self.pendingTarget = nil
+        }
+        if !isFading, !pendingRetirement.isEmpty,
+           let old = pendingTarget, old !== published {
+            // Same rule as the fading preamble: retire the held pending
+            // before overwrite. retire() adds a slot owner, so one retire
+            // covers the aliased observedState field too (both fields point
+            // at old here). On failure keep the old pending and keep
+            // observedState on the old value; the newest stays alive in the
+            // control publisher for retry on a later callback.
+            guard retire(old) else { return }
+            self.pendingTarget = nil
+        }
         observedState = published
         if isFading {
             if published !== fadeTo {
@@ -262,42 +388,45 @@ nonisolated final class SpatialRendererCrossfader {
         }
     }
 
-    func process(
-        inputLeft: UnsafePointer<Float>,
-        inputRight: UnsafePointer<Float>?,
+    func processIfNeeded(
+        inputChannels: UnsafePointer<UnsafePointer<Float>?>,
+        inputChannelCount: Int,
         leftOutput: UnsafeMutablePointer<Float>,
         rightOutput: UnsafeMutablePointer<Float>,
         frameCount: Int
-    ) {
-        guard frameCount > 0 else { return }
+    ) -> Bool {
         precondition(frameCount <= maxFramesPerCallback)
         applyPendingReset()
         flushPendingRetirement()
+        guard frameCount > 0 else { return false }
+        guard isFading || activeState != nil else { return false }
 
+        var passthroughSpeakers: [VirtualSpeaker]?
         var offset = 0
         while offset < frameCount {
             guard isFading else {
                 render(
                     activeState,
-                    inputLeft: inputLeft.advanced(by: offset),
-                    inputRight: inputRight?.advanced(by: offset),
+                    inputChannels: inputChannels,
+                    inputChannelCount: inputChannelCount,
+                    inputOffset: offset,
                     leftOutput: leftOutput.advanced(by: offset),
                     rightOutput: rightOutput.advanced(by: offset),
-                    frameCount: frameCount - offset
+                    frameCount: frameCount - offset,
+                    fallbackSpeakers: passthroughSpeakers
                 )
-                return
+                return true
             }
 
             let boundary = fadeFrame < primeFrames ? primeFrames : primeFrames + fadeLength
             let segment = min(boundary - fadeFrame, frameCount - offset)
-            let segmentInputLeft = inputLeft.advanced(by: offset)
-            let segmentInputRight = inputRight?.advanced(by: offset)
 
             if fadeFrame < primeFrames {
                 render(
                     fadeFrom,
-                    inputLeft: segmentInputLeft,
-                    inputRight: segmentInputRight,
+                    inputChannels: inputChannels,
+                    inputChannelCount: inputChannelCount,
+                    inputOffset: offset,
                     leftOutput: leftOutput.advanced(by: offset),
                     rightOutput: rightOutput.advanced(by: offset),
                     frameCount: segment
@@ -305,8 +434,9 @@ nonisolated final class SpatialRendererCrossfader {
                 // Warm the incoming adapter; its output is still silence-padded.
                 render(
                     fadeTo,
-                    inputLeft: segmentInputLeft,
-                    inputRight: segmentInputRight,
+                    inputChannels: inputChannels,
+                    inputChannelCount: inputChannelCount,
+                    inputOffset: offset,
                     leftOutput: toLeftScratch,
                     rightOutput: toRightScratch,
                     frameCount: segment
@@ -314,16 +444,18 @@ nonisolated final class SpatialRendererCrossfader {
             } else {
                 render(
                     fadeFrom,
-                    inputLeft: segmentInputLeft,
-                    inputRight: segmentInputRight,
+                    inputChannels: inputChannels,
+                    inputChannelCount: inputChannelCount,
+                    inputOffset: offset,
                     leftOutput: fromLeftScratch,
                     rightOutput: fromRightScratch,
                     frameCount: segment
                 )
                 render(
                     fadeTo,
-                    inputLeft: segmentInputLeft,
-                    inputRight: segmentInputRight,
+                    inputChannels: inputChannels,
+                    inputChannelCount: inputChannelCount,
+                    inputOffset: offset,
                     leftOutput: toLeftScratch,
                     rightOutput: toRightScratch,
                     frameCount: segment
@@ -339,28 +471,49 @@ nonisolated final class SpatialRendererCrossfader {
 
             fadeFrame += segment
             offset += segment
-            if fadeFrame == primeFrames + fadeLength { finishFade() }
+            if fadeFrame == primeFrames + fadeLength {
+                if fadeTo == nil {
+                    passthroughSpeakers = fadeFrom?.fallbackSpeakers
+                }
+                finishFade()
+            }
         }
+        return true
     }
     // END REALTIME CALLBACK
 
     @inline(__always)
     private func render(
         _ state: RendererState?,
-        inputLeft: UnsafePointer<Float>,
-        inputRight: UnsafePointer<Float>?,
+        inputChannels: UnsafePointer<UnsafePointer<Float>?>,
+        inputChannelCount: Int,
+        inputOffset: Int,
         leftOutput: UnsafeMutablePointer<Float>,
         rightOutput: UnsafeMutablePointer<Float>,
-        frameCount: Int
+        frameCount: Int,
+        fallbackSpeakers: [VirtualSpeaker]? = nil
     ) {
         guard let state, !state.renderers.isEmpty else {
-            memcpy(leftOutput, inputLeft, frameCount * MemoryLayout<Float>.size)
-            memcpy(rightOutput, inputRight ?? inputLeft, frameCount * MemoryLayout<Float>.size)
+            let speakers = state?.fallbackSpeakers
+                ?? fadeTo?.fallbackSpeakers
+                ?? fadeFrom?.fallbackSpeakers
+                ?? fallbackSpeakers
+            guard let speakers else { return }
+            StereoDownmixGains.downmix(
+                inputChannels: inputChannels,
+                inputChannelCount: inputChannelCount,
+                inputOffset: inputOffset,
+                inputSpeakers: speakers,
+                outputLeft: leftOutput,
+                outputRight: rightOutput,
+                frameCount: frameCount
+            )
             return
         }
         state.processor.process(
-            inputLeft: inputLeft,
-            inputRight: inputRight,
+            inputChannels: inputChannels,
+            inputChannelCount: inputChannelCount,
+            inputOffset: inputOffset,
             leftOutput: leftOutput,
             rightOutput: rightOutput,
             frameCount: frameCount
@@ -384,12 +537,21 @@ nonisolated final class SpatialRendererCrossfader {
         fadeFrame = 0
         primeFrames = 0
         isFading = false
-        if let outgoing, !retire(outgoing) { return }
+        if let outgoing, !retire(outgoing) {
+            // Both retirement tiers are full. Hold the outgoing state in the
+            // bounded single failedRetirementHold slot (never fadeFrom, which
+            // must stay free for the next fade). flushPendingRetirement()
+            // retries the hold after the next successful control drain; the
+            // hold clears at the next successful flush or stop. Do not start
+            // a pending fade while retirement is full.
+            failedRetirementHold = outgoing
+            return
+        }
         startPendingFadeIfNeeded()
     }
 
     private func startPendingFadeIfNeeded() {
-        guard hasPendingTarget else { return }
+        guard hasPendingTarget, pendingRetirement.isEmpty, failedRetirementHold == nil else { return }
         let pending = pendingTarget
         pendingTarget = nil
         hasPendingTarget = false
@@ -404,37 +566,121 @@ nonisolated final class SpatialRendererCrossfader {
         }), requested else {
             return
         }
-        if let state = activeState { _ = retire(state) }
-        if let state = fadeTo, state !== activeState { _ = retire(state) }
-        if let state = pendingTarget, state !== activeState, state !== fadeTo { _ = retire(state) }
-        activeState = nil
-        observedState = nil
-        fadeFrom = nil
-        fadeTo = nil
-        pendingTarget = nil
-        hasPendingTarget = false
+        // Retire each field only when slots accept it. A field whose retire
+        // fails stays set for retry; hasPendingTarget stays true exactly
+        // while pendingTarget is non-nil, so a held pending still starts
+        // once retirement drains. Never clear the flag while keeping the
+        // field: that combination stalls the pending fade forever.
         isFading = false
         fadeFrame = 0
         primeFrames = 0
+        let origActive = activeState
+        let origFadeTo = fadeTo
+        let origPending = pendingTarget
+        let origObserved = observedState
+        var failed = false
+        if let state = activeState {
+            if retire(state) { activeState = nil } else { failed = true }
+        }
+        if let state = fadeTo {
+            if state === origActive { fadeTo = nil } else if retire(state) { fadeTo = nil } else { failed = true }
+        }
+        if let state = pendingTarget {
+            if state === origActive || state === origFadeTo { pendingTarget = nil; hasPendingTarget = false } else if retire(state) {
+                pendingTarget = nil
+                hasPendingTarget = false
+            } else {
+                // Keep both set: the pending fade must still start after the
+                // next successful drain. Clearing the flag here stalls it.
+                hasPendingTarget = true
+                failed = true
+            }
+        } else {
+            hasPendingTarget = false
+        }
+        if let state = observedState {
+            if state === origActive || state === origFadeTo || state === origPending { observedState = nil } else if retire(state) {
+                observedState = nil
+            } else {
+                failed = true
+            }
+        }
+        if let state = fadeFrom {
+            if state === origActive || state === origFadeTo || state === origPending || state === origObserved {
+                fadeFrom = nil
+            } else if retire(state) {
+                fadeFrom = nil
+            } else {
+                failed = true
+            }
+        }
+        if failed {
+            // Ask for one more run on the next callback to retry held fields.
+            _ = resetLock.withLockIfAvailable { requested in requested = true }
+        }
     }
+
+    #if DEBUG
+    /// DEBUG-only control helper. Tag a fresh state with its identity probe
+    /// before first publication (and before any audio observe). Call only
+    /// from test or control code, never from the realtime callback. Create
+    /// each state with this helper so every release path is observed.
+    nonisolated static func makeProbedStateForTesting(
+        renderers: [VirtualSpeakerRenderer],
+        inputChannelCount: Int,
+        fallbackSpeakers: [VirtualSpeaker],
+        blockSize: Int
+    ) -> RendererState {
+        let state = RendererState(
+            renderers: renderers,
+            inputChannelCount: inputChannelCount,
+            fallbackSpeakers: fallbackSpeakers,
+            blockSize: blockSize
+        )
+        let key = ObjectIdentifier(state as AnyObject)
+        state.destructionProbe = DestructionProbe(
+            id: key.hashValue,
+            recorder: destructionRecorder,
+            audioKey: destructionAudioKey
+        )
+        return state
+    }
+    #endif
 
     @discardableResult
     private func retire(_ state: RendererState) -> Bool {
+        #if DEBUG
+        if forceRetireFailureForTesting { return false }
+        #endif
         if pendingRetirement.isEmpty,
            retirementLock.withLockIfAvailable({ slots in slots.insert(state) }) == true {
             return true
         }
-        _ = pendingRetirement.insert(state)
-        return false
+        return pendingRetirement.insert(state)
     }
 
     private func flushPendingRetirement() {
-        guard !pendingRetirement.isEmpty else { return }
+        if let held = failedRetirementHold {
+            // Retry the bounded failed-retire hold first, through the normal
+            // retire path. On success the hold clears and the pending fade may
+            // start; on failure the hold stays for the next callback.
+            if retire(held) {
+                failedRetirementHold = nil
+            } else {
+                return
+            }
+        }
+        guard !pendingRetirement.isEmpty else {
+            if failedRetirementHold == nil { startPendingFadeIfNeeded() }
+            return
+        }
         guard retirementLock.withLockIfAvailable({ slots in
             pendingRetirement.moveAll(into: &slots)
         }) == true else {
             return
         }
+        // A fully drained local tier also clears a stale hold marker: the
+        // hold above already retired through this same path.
         startPendingFadeIfNeeded()
     }
 }
@@ -470,10 +716,24 @@ class HRIRManager: ObservableObject {
     nonisolated class RendererState {
         let renderers: [VirtualSpeakerRenderer]
         let processor: RealtimeAudioProcessor
-        
-        init(renderers: [VirtualSpeakerRenderer], blockSize: Int) {
+        let fallbackSpeakers: [VirtualSpeaker]
+        #if DEBUG
+        // DEBUG-only destruction sentinel. Assigned from control with the
+        // state identity before publication; frees on the thread that drops
+        // the last state owner, so its recorder sees audio-thread releases.
+        // Never read or written inside the realtime callback.
+        var destructionProbe: SpatialRendererCrossfader.DestructionProbe?
+        #endif
+
+        init(renderers: [VirtualSpeakerRenderer], inputChannelCount: Int, fallbackSpeakers: [VirtualSpeaker], blockSize: Int) {
             self.renderers = renderers
-            self.processor = RealtimeAudioProcessor(renderers: renderers, blockSize: blockSize)
+            self.fallbackSpeakers = fallbackSpeakers
+            self.processor = RealtimeAudioProcessor(
+                renderers: renderers,
+                inputChannelCount: inputChannelCount,
+                fallbackSpeakers: fallbackSpeakers,
+                blockSize: blockSize
+            )
         }
     }
     
@@ -491,6 +751,12 @@ class HRIRManager: ObservableObject {
     private var inFlightActivationKey: PresetActivationKey?
     private var activationCancellationToken: ActivationCancellationToken?
     private var activationCompletion: ((HRIRActivationResult) -> Void)?
+
+    // Serialized off-main import work: validation and copy run on one queue,
+    // commits land on the main actor in request order. Newer requests cancel
+    // older ones before any publish step.
+    private let importWorkQueue = DispatchQueue(label: "com.airwave.hrir.import", qos: .userInitiated)
+    private var importGeneration = 0
     
     private var rendererState: RendererState? {
         get { stateLock.withLock { $0 } }
@@ -502,8 +768,34 @@ class HRIRManager: ObservableObject {
     private let presetsDirectory: URL
     private let fileManager: FileManager
     private let bundledPresetCatalog: BundledPresetCatalog
+    /// Content identity of each managed file, keyed by filename. Updated only
+    /// after full validation and a current-generation commit (managed import)
+    /// or a validated stable scan (external write). A new process seeds its
+    /// initial value from the current file, so no manifest migration is used.
+    /// Stable IDs, user names, and presets.json stay unchanged by this map.
+    private var contentRevisions: [String: HRIRContentIdentity] = [:]
     private var eventStream: FSEventStreamRef?
     private var directoryDebounceTask: DispatchWorkItem?
+    /// Watcher lifetime. Every start and stop mints a new value. Event or
+    /// debounce work that carries an older value never publishes. All
+    /// watcher state lives on the main actor; the stream delivers on the
+    /// main queue, so no synchronous hop is needed.
+    private var watcherGeneration = 0
+    /// Owned callback context. The FSEvent stream keeps the box, never the
+    /// manager. The stream stops, invalidates, then releases, so the box
+    /// frees after shutdown. The manager keeps a strong hold too, so a live
+    /// manager can prove a balanced release at teardown.
+    private var watcherContext: WatcherContext?
+    /// Small owned callback context: weak manager plus watcher lifetime.
+    /// A plain class keeps retain/release balanced by hand.
+    private final class WatcherContext {
+        weak var manager: HRIRManager?
+        let generation: Int
+        init(manager: HRIRManager, generation: Int) {
+            self.manager = manager
+            self.generation = generation
+        }
+    }
 
     // MARK: - Initialization
 
@@ -570,8 +862,8 @@ class HRIRManager: ObservableObject {
                 rejected.append(.init(filename: url.lastPathComponent, reason: "The file could not be read.")); continue
             }
             do {
-                let wav = try WAVLoader.load(from: url)
-                guard wav.channelCount >= 2 else { throw HRIRError.invalidChannelCount(wav.channelCount) }
+                let header = try WAVLoader.headerInfo(from: url)
+                guard header.channelCount >= 2 else { throw HRIRError.invalidChannelCount(header.channelCount) }
                 let destination = presetsDirectory.appendingPathComponent(url.lastPathComponent)
                 if fileManager.fileExists(atPath: destination.path) { conflicts.append(url) }
                 else { acceptable.append(url) }
@@ -582,53 +874,442 @@ class HRIRManager: ObservableObject {
         return .init(acceptable: acceptable, conflicts: conflicts, rejected: rejected)
     }
 
-    @discardableResult
+    private struct ValidatedHRIRImport: Sendable {
+        let source: URL
+        let filename: String
+        let destination: URL
+        let channelCount: Int
+        let sampleRate: Double
+        let securityScoped: Bool
+        /// Support closure runs on the worker and can suspend an import with
+        /// no managed-side effects, for the cancellation test path only.
+        /// Production passes nil.
+        let workerGate: (@Sendable () -> Bool)?
+    }
+
+    private func validateImportURL(_ url: URL, workerGate: (@Sendable () -> Bool)? = nil) throws -> ValidatedHRIRImport {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+            throw HRIRError.batchImportFailed("Choose a WAV file, not a folder.")
+        }
+        guard url.pathExtension.lowercased() == "wav" else {
+            throw HRIRError.batchImportFailed("Only WAV files can be imported.")
+        }
+        guard fileManager.isReadableFile(atPath: url.path) else {
+            throw HRIRError.batchImportFailed("The file could not be read.")
+        }
+        // Bounded header check on the caller thread; full sample validation
+        // runs on the worker before any managed file changes. Security-scoped
+        // access starts here and ends when the worker finishes the copy, so
+        // the worker can read panel URLs after this function returns.
+        let accessed = url.startAccessingSecurityScopedResource()
+        let header: WAVHeaderInfo
+        do {
+            header = try WAVLoader.headerInfo(from: url)
+        } catch {
+            if accessed { url.stopAccessingSecurityScopedResource() }
+            throw error
+        }
+        guard header.channelCount >= 2 else {
+            if accessed { url.stopAccessingSecurityScopedResource() }
+            throw HRIRError.invalidChannelCount(header.channelCount)
+        }
+        let filename = url.lastPathComponent
+        guard !filename.isEmpty, filename != ".", filename != ".." else {
+            if accessed { url.stopAccessingSecurityScopedResource() }
+            throw HRIRError.batchImportFailed("Invalid filename.")
+        }
+        let destination = presetsDirectory.appendingPathComponent(filename, isDirectory: false).standardizedFileURL
+        guard destination.deletingLastPathComponent() == presetsDirectory.standardizedFileURL else {
+            if accessed { url.stopAccessingSecurityScopedResource() }
+            throw HRIRError.batchImportFailed("Invalid filename.")
+        }
+        return ValidatedHRIRImport(
+            source: url,
+            filename: filename,
+            destination: destination,
+            channelCount: header.channelCount,
+            sampleRate: header.sampleRate,
+            securityScoped: accessed,
+            workerGate: workerGate
+        )
+    }
+
+    private func copyValidatedImportToTemporary(_ input: ValidatedHRIRImport) throws -> CommittedHRIRFile {
+        // Full finite-sample validation before the managed copy. Security
+        // scope ends here: all source reads for this file complete below.
+        defer {
+            if input.securityScoped { input.source.stopAccessingSecurityScopedResource() }
+        }
+        // Test hook: while the gate holds, an outer cancellation request that
+        // arrives mid-worker must discard this import with no managed effect.
+        if let gate = input.workerGate {
+            while gate() { Thread.sleep(forTimeInterval: 0.005) }
+        }
+        guard !Task.isCancelled else {
+            throw CancellationError()
+        }
+        // Full finite-sample validation before the managed copy.
+        let wav = try WAVLoader.load(from: input.source)
+        guard wav.channelCount >= 2 else { throw HRIRError.invalidChannelCount(wav.channelCount) }
+        // Content identity of the validated source bytes. Off the audio
+        // thread, one bounded read; size and mtime are never used as the
+        // revision, only as scan hints elsewhere.
+        let contentRevision = try HRIRContentIdentity.ofFile(at: input.source)
+        let temporary = presetsDirectory.appendingPathComponent(".\(UUID().uuidString).wav")
+        try fileManager.copyItem(at: input.source, to: temporary)
+        return CommittedHRIRFile(
+            temporary: temporary,
+            filename: input.filename,
+            destination: input.destination,
+            channelCount: wav.channelCount,
+            sampleRate: wav.sampleRate,
+            contentRevision: contentRevision
+        )
+    }
+
+    private struct CommittedHRIRFile: Sendable {
+        let temporary: URL
+        let filename: String
+        let destination: URL
+        let channelCount: Int
+        let sampleRate: Double
+        /// Digest of the validated source bytes, recorded by the worker
+        /// before the managed copy. The commit stores it only on success.
+        let contentRevision: HRIRContentIdentity
+    }
+
+    private enum CommittedHRIRImport: Sendable {
+        case committed(CommittedHRIRFile)
+        case skipped(String)
+        case failure(HRIRImportFailure)
+    }
+
+    private func commitValidatedImport(_ file: CommittedHRIRFile, collisionPolicy: HRIRImportCollisionPolicy) -> CommittedHRIRImport {
+        // Commits run serialized on the main actor in request order.
+        dispatchPrecondition(condition: .onQueue(.main))
+        let existing = presets.first { $0.fileURL.lastPathComponent == file.destination.lastPathComponent }
+        if fileManager.fileExists(atPath: file.destination.path), collisionPolicy == .reject {
+            try? fileManager.removeItem(at: file.temporary)
+            return .skipped(file.filename)
+        }
+        do {
+            if fileManager.fileExists(atPath: file.destination.path) {
+                _ = try fileManager.replaceItemAt(file.destination, withItemAt: file.temporary)
+            } else {
+                try fileManager.moveItem(at: file.temporary, to: file.destination)
+            }
+        } catch {
+            try? fileManager.removeItem(at: file.temporary)
+            return .failure(.init(filename: file.filename, reason: error.localizedDescription))
+        }
+        let preset = HRIRPreset(
+            id: existing?.id ?? UUID(), name: file.destination.deletingPathExtension().lastPathComponent,
+            fileURL: file.destination, channelCount: file.channelCount, sampleRate: file.sampleRate
+        )
+        if let index = presets.firstIndex(where: { $0.id == preset.id }) { presets[index] = preset }
+        else { presets.append(preset) }
+        // Advance the DSP revision only after full validation and a
+        // successful current-generation commit. A failed or stale commit
+        // never reaches this line, so its bytes cannot change the live key.
+        contentRevisions[file.destination.lastPathComponent] = file.contentRevision
+        if activePreset?.id == preset.id { activePreset = preset }
+        return .committed(file)
+    }
+
+    private func publishCommittedImport(_ file: CommittedHRIRFile) -> HRIRPreset? {
+        presets.first { $0.fileURL.lastPathComponent == file.destination.lastPathComponent }
+    }
+
     func importPresets(_ urls: [URL], collisionPolicy: HRIRImportCollisionPolicy) -> HRIRImportResult {
-        var imported: [HRIRPreset] = []
-        var skipped: [String] = []
+        dispatchPrecondition(condition: .onQueue(.main))
+        var staged: [ValidatedHRIRImport] = []
+        staged.reserveCapacity(urls.count)
         var failures: [HRIRImportFailure] = []
         for url in urls {
-            let accessed = url.startAccessingSecurityScopedResource()
-            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
             do {
-                guard url.pathExtension.lowercased() == "wav" else { throw HRIRError.batchImportFailed("Only WAV files can be imported.") }
-                let wav = try WAVLoader.load(from: url)
-                guard wav.channelCount >= 2 else { throw HRIRError.invalidChannelCount(wav.channelCount) }
-                let destination = presetsDirectory.appendingPathComponent(url.lastPathComponent).standardizedFileURL
-                guard destination.deletingLastPathComponent() == presetsDirectory.standardizedFileURL else {
-                    throw HRIRError.batchImportFailed("Invalid filename.")
-                }
-                let existing = presets.first { $0.fileURL.lastPathComponent == destination.lastPathComponent }
-                if fileManager.fileExists(atPath: destination.path), collisionPolicy == .reject {
-                    skipped.append(url.lastPathComponent); continue
-                }
-                let temporary = presetsDirectory.appendingPathComponent(".\(UUID().uuidString).wav")
-                try fileManager.copyItem(at: url, to: temporary)
-                do {
-                    if fileManager.fileExists(atPath: destination.path) {
-                        _ = try fileManager.replaceItemAt(destination, withItemAt: temporary)
-                    } else {
-                        try fileManager.moveItem(at: temporary, to: destination)
-                    }
-                } catch {
-                    try? fileManager.removeItem(at: temporary)
-                    throw error
-                }
-                let preset = HRIRPreset(
-                    id: existing?.id ?? UUID(), name: destination.deletingPathExtension().lastPathComponent,
-                    fileURL: destination, channelCount: wav.channelCount, sampleRate: wav.sampleRate
-                )
-                if let index = presets.firstIndex(where: { $0.id == preset.id }) { presets[index] = preset }
-                else { presets.append(preset) }
-                if activePreset?.id == preset.id { activePreset = preset }
-                imported.append(preset)
+                staged.append(try validateImportURL(url))
             } catch {
                 failures.append(.init(filename: url.lastPathComponent, reason: error.localizedDescription))
             }
         }
-        savePresets()
-        return .init(imported: imported, skipped: skipped, failures: failures)
+        guard !staged.isEmpty else {
+            savePresets()
+            return .init(imported: [], skipped: [], failures: failures)
+        }
+        return importPresetsStaged(staged, collisionPolicy: collisionPolicy, priorFailures: failures)
     }
+
+    private func importPresetsStaged(
+        _ staged: [ValidatedHRIRImport],
+        collisionPolicy: HRIRImportCollisionPolicy,
+        priorFailures: [HRIRImportFailure]
+    ) -> HRIRImportResult {
+        dispatchPrecondition(condition: .onQueue(.main))
+        // Synchronous entry (tests, init paths): run worker validation inline
+        // on the caller, then commit in order on the main actor.
+        var failures = priorFailures
+        var files: [CommittedHRIRFile] = []
+        for input in staged {
+            do {
+                files.append(try copyValidatedImportToTemporary(input))
+            } catch {
+                failures.append(.init(filename: input.filename, reason: error.localizedDescription))
+            }
+        }
+        var imported: [HRIRPreset] = []
+        var skipped: [String] = []
+        files.sort { $0.filename < $1.filename }
+        for file in files {
+            switch commitValidatedImport(file, collisionPolicy: collisionPolicy) {
+            case .committed(let committed):
+                if let preset = publishCommittedImport(committed) { imported.append(preset) }
+            case .skipped(let name):
+                skipped.append(name)
+            case .failure(let failure):
+                failures.append(failure)
+            }
+        }
+        savePresets()
+        return HRIRImportResult(imported: imported, skipped: skipped, failures: failures)
+    }
+
+    private struct StagedAsyncImport {
+        let published: HRIRImportResult
+        let committedFilesForDiscard: [CommittedHRIRFile]
+    }
+
+    private func importPresetsStagedAsync(
+        _ staged: [ValidatedHRIRImport],
+        collisionPolicy: HRIRImportCollisionPolicy,
+        priorFailures: [HRIRImportFailure],
+        cancellation: ActivationCancellationToken?
+    ) async -> StagedAsyncImport {
+        // Worker stage: full WAV decode + finite-sample check + copy to a
+        // managed temporary. Runs serialized on importWorkQueue.
+        let policy = collisionPolicy
+        struct WorkerOutcome: Sendable {
+            var files: [CommittedHRIRFile] = []
+            var failures: [HRIRImportFailure] = []
+        }
+        let workerOutcome = await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                importWorkQueue.async { [weak self] in
+                    var outcome = WorkerOutcome()
+                    guard let self else {
+                        continuation.resume(returning: outcome)
+                        return
+                    }
+                    for input in staged {
+                        if let cancellation, cancellation.isCancelled { break }
+                        do {
+                            outcome.files.append(try self.copyValidatedImportToTemporary(input))
+                        } catch is CancellationError {
+                            break
+                        } catch {
+                            outcome.failures.append(.init(filename: input.filename, reason: error.localizedDescription))
+                        }
+                    }
+                    continuation.resume(returning: outcome)
+                }
+            }
+        } onCancel: {
+            cancellation?.cancel()
+        }
+        guard !(cancellation?.isCancelled ?? false) else {
+            for file in workerOutcome.files {
+                try? FileManager.default.removeItem(at: file.temporary)
+            }
+            return StagedAsyncImport(
+                published: HRIRImportResult(imported: [], skipped: [], failures: []),
+                committedFilesForDiscard: []
+            )
+        }
+        // Commit stage on the main actor, in filename order. The caller
+        // checks generation and cancellation before this runs, and again
+        // before it keeps the commit, so a stale request never touches
+        // managed files or the preset array.
+        return await MainActor.run { [weak self] in
+            guard let self else {
+                return StagedAsyncImport(
+                    published: HRIRImportResult(imported: [], skipped: [], failures: priorFailures + workerOutcome.failures),
+                    committedFilesForDiscard: []
+                )
+            }
+            var failures = priorFailures + workerOutcome.failures
+            var imported: [HRIRPreset] = []
+            var skipped: [String] = []
+            let files = workerOutcome.files.sorted { $0.filename < $1.filename }
+            var committedFiles: [CommittedHRIRFile] = []
+            for file in files {
+                switch self.commitValidatedImport(file, collisionPolicy: policy) {
+                case .committed(let committed):
+                    committedFiles.append(file)
+                    if let preset = self.publishCommittedImport(committed) { imported.append(preset) }
+                case .skipped(let name):
+                    skipped.append(name)
+                case .failure(let failure):
+                    failures.append(failure)
+                }
+            }
+            self.savePresets()
+            return StagedAsyncImport(
+                published: HRIRImportResult(imported: imported, skipped: skipped, failures: failures),
+                committedFilesForDiscard: committedFiles
+            )
+        }
+    }
+
+    func importPresetsAsync(_ urls: [URL], collisionPolicy: HRIRImportCollisionPolicy) async -> HRIRImportResult {
+        // Newest-wins across overlapping requests. The generation orders
+        // callers; each request runs validation on main, then worker decode on
+        // the serial queue, then commit on main. A request that lost the race
+        // before its commit publishes nothing; its temporaries are removed and
+        // its security-scoped access is balanced.
+        let generation: Int = await MainActor.run { [weak self] in
+            guard let self else { return 0 }
+            self.importGeneration += 1
+            return self.importGeneration
+        }
+        return await importPresetsAsyncWithGeneration(urls, collisionPolicy: collisionPolicy, generation: generation)
+    }
+
+    private func importPresetsAsyncWithGeneration(
+        _ urls: [URL],
+        collisionPolicy: HRIRImportCollisionPolicy,
+        generation: Int
+    ) async -> HRIRImportResult {
+        var staged: [ValidatedHRIRImport] = []
+        var failures: [HRIRImportFailure] = []
+        await MainActor.run { [weak self] in
+            guard let self else { return }
+            for url in urls {
+                do {
+                    staged.append(try self.validateImportURL(url))
+                } catch {
+                    failures.append(.init(filename: url.lastPathComponent, reason: error.localizedDescription))
+                }
+            }
+        }
+        guard !staged.isEmpty else {
+            await MainActor.run { [weak self] in self?.savePresets() }
+            return HRIRImportResult(imported: [], skipped: [], failures: failures)
+        }
+        // Check generation and task cancellation before the worker commit:
+        // after the worker decodes a file, a commit that replaces the
+        // managed file or publishes a preset is irreversible.
+        let stillCurrent = await MainActor.run { [weak self] in
+            guard let self else { return false }
+            return generation == self.importGeneration
+        }
+        guard stillCurrent, !Task.isCancelled else {
+            return HRIRImportResult(imported: [], skipped: [], failures: [])
+        }
+        let importCancellation = ActivationCancellationToken()
+        let result = await importPresetsStagedAsync(
+            staged,
+            collisionPolicy: collisionPolicy,
+            priorFailures: failures,
+            cancellation: importCancellation
+        )
+        // A stale or cancelled request publishes nothing: its managed
+        // temporaries are removed and the working preset set is untouched.
+        // No rollback reads or deletes managed files by preset ID.
+        let isNewest = await MainActor.run { [weak self] () -> (Bool, Bool) in
+            guard let self else { return (false, false) }
+            let newest = generation == self.importGeneration
+            return (newest, Task.isCancelled)
+        }
+        guard isNewest.0, !importCancellation.isCancelled, !isNewest.1 else {
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                for file in result.committedFilesForDiscard {
+                    try? self.fileManager.removeItem(at: file.temporary)
+                }
+                self.savePresets()
+            }
+            return HRIRImportResult(imported: [], skipped: [], failures: [])
+        }
+        return result.published
+    }
+
+#if DEBUG
+    var presetsDirectoryForTesting: URL { presetsDirectory }
+
+    func takeImportTicketForTesting() async -> Int {
+        await MainActor.run { [weak self] in
+            guard let self else { return 0 }
+            self.importGeneration += 1
+            return self.importGeneration
+        }
+    }
+
+    func importPresetsStagedForTesting(
+        _ urls: [URL],
+        collisionPolicy: HRIRImportCollisionPolicy,
+        ticketTaker: @escaping () async -> Int
+    ) async -> HRIRImportResult {
+        let generation = await ticketTaker()
+        return await importPresetsAsyncWithGeneration(urls, collisionPolicy: collisionPolicy, generation: generation)
+    }
+
+    /// Same-file stale-replacement test path: holds one import inside worker
+    /// validation while the caller supersedes its generation, then checks
+    /// that the stale commit never runs. Production passes workerGate nil.
+    func importPresetsStagedForTesting(
+        _ urls: [URL],
+        collisionPolicy: HRIRImportCollisionPolicy,
+        generation: Int,
+        workerGate: (@Sendable () -> Bool)?,
+        onWorkerEntry: (@Sendable () -> Void)? = nil
+    ) async -> HRIRImportResult {
+        var staged: [ValidatedHRIRImport] = []
+        var failures: [HRIRImportFailure] = []
+        await MainActor.run { [weak self] in
+            guard let self else { return }
+            for url in urls {
+                do {
+                    staged.append(try self.validateImportURL(url, workerGate: workerGate))
+                } catch {
+                    failures.append(.init(filename: url.lastPathComponent, reason: error.localizedDescription))
+                }
+            }
+            onWorkerEntry?()
+        }
+        guard !staged.isEmpty else {
+            return HRIRImportResult(imported: [], skipped: [], failures: failures)
+        }
+        let stillCurrent = await MainActor.run { [weak self] in
+            guard let self else { return false }
+            return generation == self.importGeneration
+        }
+        guard stillCurrent, !Task.isCancelled else {
+            return HRIRImportResult(imported: [], skipped: [], failures: [])
+        }
+        let importCancellation = ActivationCancellationToken()
+        let result = await importPresetsStagedAsync(
+            staged,
+            collisionPolicy: collisionPolicy,
+            priorFailures: failures,
+            cancellation: importCancellation
+        )
+        let verdict = await MainActor.run { [weak self] () -> (Bool, Bool) in
+            guard let self else { return (false, false) }
+            return (generation == self.importGeneration, Task.isCancelled)
+        }
+        guard verdict.0, !importCancellation.isCancelled, !verdict.1 else {
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                for file in result.committedFilesForDiscard {
+                    try? self.fileManager.removeItem(at: file.temporary)
+                }
+                self.savePresets()
+            }
+            return HRIRImportResult(imported: [], skipped: [], failures: [])
+        }
+        return result.published
+    }
+#endif
 
     /// Remove a preset
     /// - Parameter preset: The preset to remove
@@ -671,17 +1352,42 @@ class HRIRManager: ObservableObject {
         hrirMap: HRIRChannelMap? = nil,
         completion: ((HRIRActivationResult) -> Void)? = nil
     ) {
+        // The live key carries the managed content revision. A same-ID file
+        // replacement changes the digest, so the key differs and activation
+        // rebuilds; unchanged bytes keep the key and return cached success.
+        // A missing revision (legacy path) behaves as before: ID match hits.
         let activationKey = hrirMap == nil
-            ? PresetActivationKey(preset: preset, targetSampleRate: targetSampleRate, inputLayout: inputLayout)
+            ? PresetActivationKey(
+                preset: preset,
+                targetSampleRate: targetSampleRate,
+                inputLayout: inputLayout,
+                contentRevision: contentRevisions[preset.fileURL.lastPathComponent]
+            )
             : nil
 
         if let activationKey,
            activationKey == currentActivationKey,
            rendererState != nil {
+            if inFlightActivationKey != nil && inFlightActivationKey != activationKey {
+                activationTask?.cancel()
+                activationTask = nil
+                activationCancellationToken?.cancel()
+                activationCancellationToken = nil
+                activationCompletion = nil
+                inFlightActivationKey = nil
+                activationGeneration += 1
+            }
             completion?(.success)
             return
         }
         if let activationKey, activationKey == inFlightActivationKey {
+            if let completion {
+                let prior = activationCompletion
+                activationCompletion = { result in
+                    prior?(result)
+                    completion(result)
+                }
+            }
             return
         }
 
@@ -741,12 +1447,12 @@ class HRIRManager: ObservableObject {
                     let resampledRight: [Float]
                     
                     if abs(wavData.sampleRate - targetSampleRate) > 0.01 {
-                        resampledLeft = Resampler.resampleHighQuality(
+                        resampledLeft = try Resampler.resampleHighQuality(
                             input: leftEarIR,
                             fromRate: wavData.sampleRate,
                             toRate: targetSampleRate
                         )
-                        resampledRight = Resampler.resampleHighQuality(
+                        resampledRight = try Resampler.resampleHighQuality(
                             input: rightEarIR,
                             fromRate: wavData.sampleRate,
                             toRate: targetSampleRate
@@ -785,7 +1491,7 @@ class HRIRManager: ObservableObject {
                         inputLayout: inputLayout,
                         channelMap: channelMap,
                         renderers: newRenderers,
-                        completion: completion
+                        completion: self?.activationCompletion
                     )
                 }
             } catch {
@@ -794,7 +1500,7 @@ class HRIRManager: ObservableObject {
                     self?.publishActivationFailure(
                         generation: generation,
                         message: "Failed to activate preset: \(error.localizedDescription)",
-                        completion: completion
+                        completion: self?.activationCompletion
                     )
                 }
             }
@@ -806,7 +1512,12 @@ class HRIRManager: ObservableObject {
     /// Reuse matching renderer state; rebuild only when device configuration changed.
     func ensurePresetConfiguration(targetSampleRate: Double, inputLayout: InputLayout) {
         guard let preset = activePreset else { return }
-        let key = PresetActivationKey(preset: preset, targetSampleRate: targetSampleRate, inputLayout: inputLayout)
+        let key = PresetActivationKey(
+            preset: preset,
+            targetSampleRate: targetSampleRate,
+            inputLayout: inputLayout,
+            contentRevision: contentRevisions[preset.fileURL.lastPathComponent]
+        )
         if key != currentActivationKey {
             // Device configuration changed; the old convolvers no longer match.
             crossfader.requestReset()
@@ -851,7 +1562,12 @@ class HRIRManager: ObservableObject {
     ) {
         guard generation == activationGeneration else { return }
         crossfader.drainRetiredStates()
-        rendererState = RendererState(renderers: renderers, blockSize: Self.processingBlockSize)
+        rendererState = RendererState(
+            renderers: renderers,
+            inputChannelCount: inputLayout.channels.count,
+            fallbackSpeakers: inputLayout.channels,
+            blockSize: Self.processingBlockSize
+        )
         currentActivationKey = key
         inFlightActivationKey = nil
         activationTask = nil
@@ -878,37 +1594,27 @@ class HRIRManager: ObservableObject {
         completion?(.failure(message))
     }
 
-    private enum StateRead {
-        case available(RendererState?)
-    }
-
-    /// Read-only for the crossfader: the graph also queries this from the main
-    /// thread, so it must never advance render-thread state.
-    nonisolated func hasPublishedRendererForAudioCallback() -> Bool {
-        if crossfader.isRenderingSpatialAudio { return true }
-        if let read = stateLock.withLockIfAvailable({ StateRead.available($0) }),
-           case .available(let publishedState) = read {
-            return publishedState?.renderers.isEmpty == false
-        }
-        return crossfader.hasObservedRenderers
+    /// Control-only read of the published renderer state. Render-thread
+    /// crossfader state is not part of readiness.
+    nonisolated func hasPublishedRendererForControl() -> Bool {
+        stateLock.withLock { $0?.renderers.isEmpty == false }
     }
 
     nonisolated func processAudio(
-        inputLeft: UnsafePointer<Float>,
-        inputRight: UnsafePointer<Float>?,
+        inputChannels: UnsafePointer<UnsafePointer<Float>?>,
+        inputChannelCount: Int,
         leftOutput: UnsafeMutablePointer<Float>,
         rightOutput: UnsafeMutablePointer<Float>,
         frameCount: Int
-    ) {
+    ) -> Bool {
         // A writer can never stall the render thread. A failed attempt keeps prior immutable state.
-        if let read = stateLock.withLockIfAvailable({ StateRead.available($0) }),
-           case .available(let publishedState) = read {
+        if let publishedState = stateLock.withLockIfAvailable({ $0 }) {
             crossfader.observe(publishedState)
         }
 
-        crossfader.process(
-            inputLeft: inputLeft,
-            inputRight: inputRight,
+        return crossfader.processIfNeeded(
+            inputChannels: inputChannels,
+            inputChannelCount: inputChannelCount,
             leftOutput: leftOutput,
             rightOutput: rightOutput,
             frameCount: frameCount
@@ -918,6 +1624,10 @@ class HRIRManager: ObservableObject {
     /// Releases renderer states handed back by the render thread.
     func drainRetiredStates() {
         crossfader.drainRetiredStates()
+    }
+
+    nonisolated func cleanupAfterIOStopped() {
+        crossfader.cleanupAfterIOStopped()
     }
 
 
@@ -931,15 +1641,34 @@ class HRIRManager: ObservableObject {
     // MARK: - Private Methods
 
     private func startDirectoryWatcher() {
+        // One serialized owner: main-queue delivery, debounce replacement,
+        // and stop/invalidate/release all run on the main actor. The FSEvent
+        // callback never dereferences the manager directly: it reads a small
+        // owned context box (weak manager plus watcher lifetime) and re-enters
+        // through a weak async hop, so teardown of one lifetime cannot publish
+        // through the next. The box keeps the stream from retaining the
+        // manager: no manager/stream retain cycle. No re-entrant start: the
+        // manager never calls start from inside its own watcher callback or
+        // debounce work.
+        watcherGeneration &+= 1
+        let box = WatcherContext(manager: self, generation: watcherGeneration)
+        watcherContext = box
+        // Transfer one hold to the stream: retain stays nil, so the stream
+        // never adds its own hold; release below balances this passRetained
+        // exactly once at invalidate. Creation failure releases by hand.
+        let info = Unmanaged.passRetained(box).toOpaque()
         let pathsToWatch = [presetsDirectory.path] as CFArray
         var context = FSEventStreamContext(
             version: 0,
-            info: Unmanaged.passUnretained(self).toOpaque(),
+            info: info,
             retain: nil,
-            release: nil,
+            release: { raw in
+                guard let raw else { return }
+                Unmanaged<WatcherContext>.fromOpaque(raw).release()
+            },
             copyDescription: nil
         )
-        
+
         let callback: FSEventStreamCallback = { (
             streamRef,
             clientCallBackInfo,
@@ -949,19 +1678,17 @@ class HRIRManager: ObservableObject {
             eventIds
         ) in
             guard let info = clientCallBackInfo else { return }
-            let manager = Unmanaged<HRIRManager>.fromOpaque(info).takeUnretainedValue()
-            
-            // Cancel any pending reload
-            manager.directoryDebounceTask?.cancel()
-            
-            // Schedule new reload with debouncing (reduced to 0.2s for faster updates)
-            let task = DispatchWorkItem { [weak manager] in
-                manager?.loadAndSyncPresets()
+            let box = Unmanaged<WatcherContext>.fromOpaque(info).takeUnretainedValue()
+
+            // Serialized delivery: the stream runs on the main queue, so
+            // this hop lands on the manager actor with no blocking call.
+            // The weak load is safe even after manager teardown.
+            let generation = box.generation
+            DispatchQueue.main.async { [weak manager = box.manager] in
+                manager?.handleDirectoryEvents(generation: generation)
             }
-            manager.directoryDebounceTask = task
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: task)
         }
-        
+
         let stream = FSEventStreamCreate(
             kCFAllocatorDefault,
             callback,
@@ -971,56 +1698,200 @@ class HRIRManager: ObservableObject {
             0.1, // Latency in seconds
             UInt32(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagUseCFTypes)
         )
-        
-        if let stream = stream {
-            FSEventStreamSetDispatchQueue(stream, DispatchQueue.global(qos: .utility))
-            FSEventStreamStart(stream)
-            self.eventStream = stream
+        guard let stream else {
+            // Creation failed: balance the held box by hand and retire the
+            // claim. No re-entrant start can replace this lifetime: start
+            // never runs from inside the watcher callback or debounce work.
+            eventStream = nil
+            watcherContext = nil
+            directoryDebounceTask?.cancel()
+            directoryDebounceTask = nil
+            watcherGeneration &+= 1
+            Unmanaged<WatcherContext>.fromOpaque(info).release()
+            return
         }
+        // Replace any older lifetime before start, then keep the claimed
+        // generation only when this stream is the stored one.
+        if let old = eventStream {
+            FSEventStreamStop(old)
+            FSEventStreamInvalidate(old)
+            FSEventStreamRelease(old)
+            eventStream = nil
+            watcherContext = nil
+        }
+        FSEventStreamSetDispatchQueue(stream, DispatchQueue.main)
+        guard FSEventStreamStart(stream) else {
+            // Start failed after creation: release the created stream and
+            // retire the claimed lifetime.
+            FSEventStreamInvalidate(stream)
+            FSEventStreamRelease(stream)
+            eventStream = nil
+            watcherContext = nil
+            directoryDebounceTask?.cancel()
+            directoryDebounceTask = nil
+            watcherGeneration &+= 1
+            return
+        }
+        eventStream = stream
     }
-    
+
+    /// Serialized debounce step. Runs on the main actor. A cancelled or
+    /// stale call never publishes.
+    private func handleDirectoryEvents(generation: Int) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard generation == watcherGeneration, eventStream != nil else { return }
+        // Cancel any pending reload
+        directoryDebounceTask?.cancel()
+
+        // Schedule new reload with debouncing (reduced to 0.2s for faster updates)
+        let captured = watcherGeneration
+        let task = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            dispatchPrecondition(condition: .onQueue(.main))
+            guard captured == self.watcherGeneration else { return }
+            self.loadAndSyncPresets()
+        }
+        directoryDebounceTask = task
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: task)
+    }
+
     private func stopDirectoryWatcher() {
+        // Serialized teardown shares the manager queue with delivery and
+        // debounce: cancel and clear debounce first, retire the lifetime so
+        // queued event or debounce work turns stale, then stop and release
+        // the stream. Repeated stop is harmless.
+        directoryDebounceTask?.cancel()
+        directoryDebounceTask = nil
+        watcherGeneration &+= 1
         if let stream = eventStream {
             FSEventStreamStop(stream)
             FSEventStreamInvalidate(stream)
             FSEventStreamRelease(stream)
             eventStream = nil
         }
+        watcherContext = nil
+    }
+
+    /// 037 test hook. Reads the stored content revision for a managed file.
+    /// Nil means no validated revision is recorded yet.
+    func contentRevisionForTesting(filename: String) -> HRIRContentIdentity? {
+        dispatchPrecondition(condition: .onQueue(.main))
+        return contentRevisions[filename]
+    }
+
+    /// 037 step 2 entry: re-check the selected preset against the supplied
+    /// library snapshot and live-update when its validated content changed.
+    /// The snapshot is the array the `$presets` subscription emitted, not a
+    /// fresh read of the backing property (willSet timing: the property can
+    /// still hold the old value when this runs). Returns true when a live
+    /// activation started. The caller keeps pipeline identity: this never
+    /// creates a pipeline, only routes through `activatePreset`.
+    @discardableResult
+    func reloadSelectedPreset(
+        _ snapshot: [HRIRPreset],
+        selectedID: UUID?,
+        targetSampleRate: Double,
+        inputLayout: InputLayout,
+        activate: (HRIRPreset) -> Void
+    ) -> Bool {
+        guard let selectedID,
+              let selected = snapshot.first(where: { $0.id == selectedID }),
+              presets.contains(where: { $0.id == selectedID }) else { return false }
+        // The selected row still exists; compare revisions. A rename-only or
+        // duplicate snapshot keeps the revision and must not restart audio.
+        guard let stored = contentRevisions[selected.fileURL.lastPathComponent],
+              let live = currentActivationKey?.contentRevision,
+              currentActivationKey?.presetID == selectedID,
+              stored != live else { return false }
+        activate(selected)
+        return true
+    }
+
+#if DEBUG
+    /// 036 test hook. Must run on the main actor. Carries the current
+    /// watcher lifetime, so it proves the same invalidation rule that guards
+    /// real events: a stop between schedule and fire drops the reload.
+    /// Pre-fix FAIL proof: run this test against the old global-queue
+    /// callback, where the main-queue hop carries no lifetime and stop
+    /// cannot invalidate queued work. Post-fix, the same test passes.
+    func scheduleWatcherReloadForTesting() {
+        dispatchPrecondition(condition: .onQueue(.main))
+        handleDirectoryEvents(generation: watcherGeneration)
+    }
+
+    /// 036 test hook. Must run on the main actor. A call that carries a
+    /// stale lifetime returns without side effects, like a late FSEvent
+    /// delivery after stop.
+    func deliverStaleWatcherEventsForTesting() {
+        dispatchPrecondition(condition: .onQueue(.main))
+        handleDirectoryEvents(generation: watcherGeneration &- 1)
+    }
+
+    /// 036 test hook. Reports whether a watcher lifetime is active.
+    var isWatcherActiveForTesting: Bool {
+        dispatchPrecondition(condition: .onQueue(.main))
+        return eventStream != nil
+    }
+
+    /// 036 test hook. Runs the real serialized teardown on a live manager.
+    func stopWatcherForTesting() {
+        dispatchPrecondition(condition: .onQueue(.main))
+        stopDirectoryWatcher()
+    }
+
+    /// 036 test hook. Counts strong box owners held by this manager.
+    var watcherContextRetainCountForTesting: Int {
+        dispatchPrecondition(condition: .onQueue(.main))
+        return watcherContext == nil ? 0 : 1
+    }
+#endif
+
+    func waitForLibrarySync() async {
+        // Drain pending import work, then publish the directory scan on main.
+        await withCheckedContinuation { continuation in
+            importWorkQueue.async {
+                continuation.resume()
+            }
+        }
+        loadAndSyncPresets()
     }
 
     private func loadAndSyncPresets() {
+        dispatchPrecondition(condition: .onQueue(.main))
         // 1. Load known presets from JSON
         var knownPresets: [HRIRPreset] = []
         let metadataURL = presetsDirectory.appendingPathComponent("presets.json")
-        
+
         if let data = try? Data(contentsOf: metadataURL),
            let decoded = try? JSONDecoder().decode([HRIRPreset].self, from: data) {
             knownPresets = decoded
         }
-        
+
         // 2. Scan directory for WAV files
         guard let fileURLs = try? fileManager.contentsOfDirectory(
             at: presetsDirectory,
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]
         ) else {
-            DispatchQueue.main.async { self.initialLibrarySyncReady = true }
+            self.initialLibrarySyncReady = true
             return
         }
-        
+
         let wavFiles = fileURLs.filter { $0.pathExtension.lowercased() == "wav" }
-        
+
         var updatedPresets: [HRIRPreset] = []
         var hasChanges = false
-        
-        // 3. Reconcile
+
+        // 3. Reconcile. The scan uses the bounded header read only; a corrupt
+        // file that passes the header still fails at activation/import time.
         let existingFilenames = Set(wavFiles.map { $0.lastPathComponent })
-        
+
         for fileURL in wavFiles {
             // Check if we already have this file
             if let existing = knownPresets.first(where: { $0.fileURL.lastPathComponent == fileURL.lastPathComponent }) {
                 // Update path in case it moved (though unlikely if filename matches)
-                // But mostly just keep it
+                // But mostly just keep it. Stable ID and user name stay put;
+                // only the content revision can advance below.
                 let updated = HRIRPreset(
                     id: existing.id,
                     name: existing.name,
@@ -1029,44 +1900,81 @@ class HRIRManager: ObservableObject {
                     sampleRate: existing.sampleRate
                 )
                 updatedPresets.append(updated)
+                // External replacement path: detect real content changes by
+                // digest, not by size or mtime. Seed a missing revision from
+                // the current file (a new process has no in-memory value).
+                // Metadata-only edits (same bytes, renamed display name kept
+                // in the struct) never advance the revision; renames that
+                // change the filename follow the existing identity rule and
+                // appear as removal plus addition.
+                if contentRevisions[fileURL.lastPathComponent] == nil {
+                    if let seeded = try? HRIRContentIdentity.ofFile(at: fileURL),
+                       (try? WAVLoader.headerInfo(from: fileURL)) != nil {
+                        contentRevisions[fileURL.lastPathComponent] = seeded
+                    }
+                } else if let candidate = try? HRIRContentIdentity.ofFile(at: fileURL),
+                          candidate != contentRevisions[fileURL.lastPathComponent],
+                          (try? WAVLoader.load(from: fileURL)) != nil {
+                    // Stable candidate: bounded header plus full finite-sample
+                    // decode pass. Invalid bytes keep the old revision and
+                    // the working renderer; the error surfaces at activation.
+                    contentRevisions[fileURL.lastPathComponent] = candidate
+                    hasChanges = true
+                }
             } else {
                 // New file found!
-                if let newPreset = try? createPreset(from: fileURL) {
+                if let newPreset = try? createPresetHeaderOnly(from: fileURL) {
                     updatedPresets.append(newPreset)
+                    if let seeded = try? HRIRContentIdentity.ofFile(at: fileURL) {
+                        contentRevisions[fileURL.lastPathComponent] = seeded
+                    }
                     hasChanges = true
                 }
             }
         }
-        
+
         // Check if any were removed (orphaned)
         // We use the filename set to explicitly identify presets whose files are gone
         let orphanedPresets = knownPresets.filter { preset in
             !existingFilenames.contains(preset.fileURL.lastPathComponent)
         }
-        
+
         if !orphanedPresets.isEmpty {
             Logger.log("[HRIRManager] Removing \(orphanedPresets.count) orphaned presets")
+            for orphan in orphanedPresets {
+                contentRevisions.removeValue(forKey: orphan.fileURL.lastPathComponent)
+            }
             hasChanges = true
         }
-        
-        // 4. Update State
-        DispatchQueue.main.async {
-            if hasChanges || self.presets != updatedPresets {
-                self.presets = updatedPresets
-                self.savePresets()
-            }
-            
-            // Check if active preset is still valid
-            if let active = self.activePreset, !updatedPresets.contains(where: { $0.id == active.id }) {
-                self.deactivatePreset()
-            }
-            self.initialLibrarySyncReady = true
+
+        // 4. Update State. The caller holds the main actor.
+        if hasChanges || self.presets != updatedPresets {
+            self.presets = updatedPresets
+            self.savePresets()
         }
+
+        // Check if active preset is still valid
+        if let active = self.activePreset, !updatedPresets.contains(where: { $0.id == active.id }) {
+            self.deactivatePreset()
+        }
+        self.initialLibrarySyncReady = true
     }
-    
+
+    private func createPresetHeaderOnly(from fileURL: URL) throws -> HRIRPreset {
+        let header = try WAVLoader.headerInfo(from: fileURL)
+
+        return HRIRPreset(
+            id: UUID(),
+            name: fileURL.deletingPathExtension().lastPathComponent,
+            fileURL: fileURL,
+            channelCount: header.channelCount,
+            sampleRate: header.sampleRate
+        )
+    }
+
     private func createPreset(from fileURL: URL) throws -> HRIRPreset {
         let wavData = try WAVLoader.load(from: fileURL)
-        
+
         return HRIRPreset(
             id: UUID(),
             name: fileURL.deletingPathExtension().lastPathComponent,

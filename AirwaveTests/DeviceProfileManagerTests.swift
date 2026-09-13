@@ -130,12 +130,42 @@ final class DeviceProfileManagerTests: XCTestCase {
             profileDevice(id: 1, uid: "virtual", name: "Virtual", virtual: true),
             profileDevice(id: 2, uid: "aggregate", name: "Aggregate", aggregate: true),
             profileDevice(id: 3, uid: "mono", name: "Mono", channels: 1),
-            profileDevice(id: 4, uid: "", name: "No UID")
+            profileDevice(id: 4, uid: "", name: "No UID"),
+            profileDevice(id: 5, uid: "multi-stream", name: "Multi-stream", streamCount: 2)
         ])
 
         XCTAssertTrue(manager.targets.isEmpty)
         manager.setHRIRPresetID(UUID(), for: "virtual")
         XCTAssertTrue(manager.profiles.isEmpty)
+    }
+
+    func testAmbiguousLayoutInventoryNeverBecomesTargetOrProfile() throws {
+        let context = try Context()
+        let manager = DeviceProfileManager(defaults: context.defaults, now: { context.date })
+        manager.updateAvailableOutputs([
+            profileDevice(id: 11, uid: "dual-stereo", name: "Dual Stereo", channels: 4, channelLabels: [1, 2, 1, 2]),
+            profileDevice(id: 12, uid: "unknown-3", name: "Unknown 3", channels: 3, channelLabels: [1, 2, 999]),
+            profileDevice(id: 13, uid: "wrong-length", name: "Wrong Length", channels: 8, channelLabels: [1, 2])
+        ])
+
+        XCTAssertTrue(manager.targets.isEmpty)
+        manager.setHRIRPresetID(UUID(), for: "dual-stereo")
+        XCTAssertTrue(manager.profiles.isEmpty)
+        // Same decision at persistence: the valid sibling stays available.
+        manager.updateAvailableOutputs([
+            profileDevice(id: 14, uid: "mapped-3", name: "Mapped 3", channels: 3, channelLabels: [1, 2, 3])
+        ])
+        XCTAssertEqual(manager.targets.map(\.deviceUID), ["mapped-3"])
+    }
+
+    func testUnlabeledQuadFallbackStaysAvailable() throws {
+        let context = try Context()
+        let manager = DeviceProfileManager(defaults: context.defaults, now: { context.date })
+        manager.updateAvailableOutputs([
+            profileDevice(id: 21, uid: "quad", name: "Quad", channels: 4)
+        ])
+
+        XCTAssertEqual(manager.targets.map(\.deviceUID), ["quad"])
     }
 
     func testDisappearingUnsavedEditorFallsBackToMostRecentSavedProfile() throws {
@@ -431,12 +461,14 @@ private func profileDevice(
     transport: String = "built",
     virtual: Bool = false,
     aggregate: Bool = false,
-    channels: Int = 2
+    channels: Int = 2,
+    streamCount: Int = 1,
+    channelLabels: [UInt32]? = nil
 ) -> OutputDeviceDescriptor {
     OutputDeviceDescriptor(
         id: .init(id), uid: uid, name: name, transport: transport,
-        outputChannelCount: channels, nominalSampleRate: 48_000,
-        isVirtual: virtual, isAggregate: aggregate
+        channelLabels: channelLabels, outputChannelCount: channels, nominalSampleRate: 48_000,
+        isVirtual: virtual, isAggregate: aggregate, outputStreamCount: streamCount
     )
 }
 

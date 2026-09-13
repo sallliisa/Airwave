@@ -145,7 +145,7 @@ struct SettingsWindowContent: View {
                         Text(editing.deviceName)
                         Image(systemName: "chevron.down").font(.caption2)
                     }
-                    .frame(minWidth: 44, minHeight: 44)
+                    .frame(minWidth: AirwaveLayout.topBarControlMinSize, minHeight: AirwaveLayout.topBarControlMinSize)
                     .contentShape(Rectangle())
                     .foregroundStyle(.primary)
                 }
@@ -171,7 +171,7 @@ struct SettingsWindowContent: View {
                 isQuitConfirmationPresented = true
             } label: {
                 Image(systemName: "power")
-                    .frame(width: 44, height: 44)
+                    .frame(width: AirwaveLayout.topBarControlMinSize, height: AirwaveLayout.topBarControlMinSize)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)

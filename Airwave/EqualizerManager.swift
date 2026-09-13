@@ -388,7 +388,9 @@ final class EqualizerManager: ObservableObject {
         }
         let data: Data
         do {
-            data = try Data(contentsOf: url)
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            data = try handle.read(upToCount: EqualizerAPOParser.maximumDataSize + 1) ?? Data()
         } catch {
             throw InputValidationError(reason: "the file could not be read")
         }

@@ -4,10 +4,24 @@ import os
 /// Control-thread adapter that publishes sample-rate-specific EQ processors to the graph.
 nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
     private let processorLock = OSAllocatedUnfairLock<ParametricEqualizerProcessor?>(initialState: nil)
+    private let retiredProcessorLock = OSAllocatedUnfairLock<ParametricEqualizerProcessor?>(initialState: nil)
     private var controlProcessor: ParametricEqualizerProcessor?
     private var audioThreadProcessor: ParametricEqualizerProcessor?
+    #if DEBUG
+    // No owned probe array. Each ParametricEqualizerProcessor carries its
+    // own DEBUG probe (see destructionProbe). Never touch probes here.
+    #endif
+
+    var isBypassed: Bool { audioThreadProcessor?.isBypassed ?? true }
+
+    func cleanupAfterIOStopped() {
+        audioThreadProcessor?.cleanupAfterIOStopped()
+        audioThreadProcessor = nil
+        retiredProcessorLock.withLock { $0 = nil }
+    }
 
     func prepare(definition: EqualizerDefinition?, sampleRate: Double) throws {
+        retiredProcessorLock.withLock { $0 = nil }
         guard sampleRate.isFinite, sampleRate > 0 else {
             throw EqualizerAudioEffectError.invalidSampleRate
         }
@@ -17,6 +31,14 @@ nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
             processor = controlProcessor
         } else {
             processor = try ParametricEqualizerProcessor(sampleRate: sampleRate)
+            #if DEBUG
+            processor.destructionProbe = ParametricEqualizerProcessor.DestructionProbe(
+                id: ObjectIdentifier(processor as AnyObject).hashValue,
+                kind: "processor",
+                recorder: ParametricEqualizerProcessor.destructionRecorder,
+                audioKey: ParametricEqualizerProcessor.destructionAudioKey
+            )
+            #endif
             controlProcessor = processor
             processorLock.withLock { published in
                 published = processor
@@ -27,7 +49,6 @@ nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
             try processor.setTarget(definition: definition)
             processor.drainRetiredStates()
         } catch let error as ParametricEqualizerPreparationError {
-            try? processor.setTarget(definition: nil)
             processor.drainRetiredStates()
             throw map(error, definition: definition)
         }
@@ -41,7 +62,6 @@ nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
             try processor.setTarget(definition: definition)
             processor.drainRetiredStates()
         } catch let error as ParametricEqualizerPreparationError {
-            try? processor.setTarget(definition: nil)
             processor.drainRetiredStates()
             throw map(error, definition: definition)
         }
@@ -56,8 +76,26 @@ nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
     ) {
         var processor = audioThreadProcessor
         if let published = processorLock.withLockIfAvailable({ $0 }) {
-            processor = published
-            audioThreadProcessor = published
+            if published !== audioThreadProcessor {
+                if let old = audioThreadProcessor {
+                    let retired: Bool? = retiredProcessorLock.withLockIfAvailable { retired in
+                        guard retired == nil else { return false }
+                        retired = old
+                        return true
+                    }
+                    if retired != true {
+                        // Slot full: hold the old processor on audio and keep the
+                        // newest published processor for retry on a later
+                        // callback. Never release the last reference here.
+                    } else {
+                        processor = published
+                        audioThreadProcessor = published
+                    }
+                } else {
+                    processor = published
+                    audioThreadProcessor = published
+                }
+            }
         }
         guard let processor else {
             memcpy(outputLeft, inputLeft, frameCount * MemoryLayout<Float>.size)
@@ -77,6 +115,21 @@ nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
         )
     }
 
+    #if DEBUG
+    /// DEBUG-only control helper. Tag a fresh processor with its identity
+    /// probe. Call only from test or control code, never from the callback.
+    /// Production `prepare` tags its own processors; tests use this for
+    /// processors built directly.
+    func tagProcessorForDestructionTest(_ processor: ParametricEqualizerProcessor) {
+        processor.destructionProbe = ParametricEqualizerProcessor.DestructionProbe(
+            id: ObjectIdentifier(processor as AnyObject).hashValue,
+            kind: "processor",
+            recorder: ParametricEqualizerProcessor.destructionRecorder,
+            audioKey: ParametricEqualizerProcessor.destructionAudioKey
+        )
+    }
+    #endif
+
     private func map(
         _ error: ParametricEqualizerPreparationError,
         definition: EqualizerDefinition?
@@ -91,6 +144,8 @@ nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
             return .invalidSampleRate
         case .nonFinitePreamp:
             return .invalidFilter(line: nil, reason: "Preamp produces a non-finite gain.")
+        case .nonFiniteCoefficients:
+            return .invalidFilter(line: nil, reason: "Equalizer coefficients are non-finite.")
         case .tooManyFilters(let count):
             return .invalidFilter(
                 line: nil,

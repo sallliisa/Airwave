@@ -69,8 +69,8 @@ nonisolated struct PresetLibraryMessage: Equatable {
 protocol PresetLibraryManaging: AnyObject {
     associatedtype Preset: Identifiable & Equatable
 
-    func preflightLibraryImport(_ urls: [URL]) -> PresetLibraryPreflight
-    func importLibraryPresets(_ urls: [URL], replacingConflicts: Bool) -> [PresetLibraryFailure]
+    func preflightLibraryImport(_ urls: [URL]) async -> PresetLibraryPreflight
+    func importLibraryPresets(_ urls: [URL], replacingConflicts: Bool) async -> [PresetLibraryFailure]
     func deleteLibraryPreset(_ preset: Preset) -> Bool
     /// "<name>: <reason>" describing the last delete failure, if the manager has one.
     func deletionFailureDetail(for preset: Preset) -> String?
@@ -114,40 +114,47 @@ final class PresetLibraryCoordinator: ObservableObject {
     @Published private(set) var message: PresetLibraryMessage?
 
     let configuration: PresetLibraryConfiguration
-    private let preflight: ([URL]) -> PresetLibraryPreflight
-    private let performImport: ([URL], Bool) -> [PresetLibraryFailure]
+    private let preflight: ([URL]) async -> PresetLibraryPreflight
+    private let performImport: ([URL], Bool) async -> [PresetLibraryFailure]
     private let reveal: () -> Void
     private var pendingURLs: [URL] = []
     private var pendingFailures: [PresetLibraryFailure] = []
+    private var operation: Task<Void, Never>?
+    private var generation = 0
 
     init<Manager: PresetLibraryManaging>(
         manager: Manager,
         configuration: PresetLibraryConfiguration
     ) {
         self.configuration = configuration
-        self.preflight = { manager.preflightLibraryImport($0) }
-        self.performImport = { manager.importLibraryPresets($0, replacingConflicts: $1) }
+        self.preflight = { await manager.preflightLibraryImport($0) }
+        self.performImport = { await manager.importLibraryPresets($0, replacingConflicts: $1) }
         self.reveal = { manager.revealLibraryDirectory() }
     }
 
     func receive(_ urls: [URL]) {
+        generation += 1
+        let generation = generation
+        operation?.cancel()
         message = nil
         conflicts = []
         pendingURLs = []
         pendingFailures = []
         guard !urls.isEmpty else { return }
 
-        let preflight = preflight(urls)
-        let validURLs = urls.filter { url in
-            preflight.acceptable.contains(url) || preflight.conflicts.contains(url)
-        }
-        pendingFailures = preflight.rejected
-
-        if preflight.conflicts.isEmpty {
-            importURLs(validURLs, replacingConflicts: false, preflightFailures: pendingFailures)
-        } else {
-            pendingURLs = validURLs
-            conflicts = preflight.conflicts
+        operation = Task { [weak self, preflight] in
+            let result = await preflight(urls)
+            guard let self, !Task.isCancelled, self.generation == generation else { return }
+            let validURLs = urls.filter { url in
+                result.acceptable.contains(url) || result.conflicts.contains(url)
+            }
+            self.pendingFailures = result.rejected
+            if result.conflicts.isEmpty {
+                self.importURLs(validURLs, replacingConflicts: false, preflightFailures: result.rejected)
+            } else {
+                self.pendingURLs = validURLs
+                self.conflicts = result.conflicts
+            }
         }
     }
 
@@ -215,8 +222,24 @@ final class PresetLibraryCoordinator: ObservableObject {
         replacingConflicts: Bool,
         preflightFailures: [PresetLibraryFailure] = []
     ) {
-        let failures = performImport(urls, replacingConflicts)
-        message = makeMessage(failures: preflightFailures + failures)
+        let generation = generation
+        operation = Task { [weak self, performImport] in
+            let failures = await performImport(urls, replacingConflicts)
+            guard let self, !Task.isCancelled, self.generation == generation else { return }
+            self.message = self.makeMessage(failures: preflightFailures + failures)
+        }
+    }
+
+    func waitForIdle() async {
+        // Drain the newest operation chain. importURLs() replaces the handle
+        // from inside the preflight task, so loop until no unawaited task
+        // remains. Bounded: one receive installs at most a preflight task that
+        // installs at most one import task.
+        for _ in 0..<8 {
+            guard let current = operation else { return }
+            await current.value
+            guard operation != nil else { return }
+        }
     }
 
     private func makeMessage(failures: [PresetLibraryFailure]) -> PresetLibraryMessage? {
@@ -240,7 +263,11 @@ extension PresetLibraryManaging {
 // MARK: - Manager adapters
 
 extension HRIRManager: PresetLibraryManaging {
-    func preflightLibraryImport(_ urls: [URL]) -> PresetLibraryPreflight {
+    func preflightLibraryImport(_ urls: [URL]) async -> PresetLibraryPreflight {
+        // Bounded header read only; stays on the main actor with the
+        // manager. Full decode/copy runs off-main in importPresetsAsync.
+        // Never use Task.detached + assumeIsolated here: detached runs
+        // off-main and the assertion traps with EXC_BREAKPOINT.
         let preflight = preflightImport(urls)
         return PresetLibraryPreflight(
             acceptable: preflight.acceptable,
@@ -249,8 +276,8 @@ extension HRIRManager: PresetLibraryManaging {
         )
     }
 
-    func importLibraryPresets(_ urls: [URL], replacingConflicts: Bool) -> [PresetLibraryFailure] {
-        importPresets(urls, collisionPolicy: replacingConflicts ? .replace : .reject)
+    func importLibraryPresets(_ urls: [URL], replacingConflicts: Bool) async -> [PresetLibraryFailure] {
+        await importPresetsAsync(urls, collisionPolicy: replacingConflicts ? .replace : .reject)
             .failures
             .map { .init(filename: $0.filename, reason: $0.reason) }
     }
@@ -265,7 +292,7 @@ extension HRIRManager: PresetLibraryManaging {
 }
 
 extension EqualizerManager: PresetLibraryManaging {
-    func preflightLibraryImport(_ urls: [URL]) -> PresetLibraryPreflight {
+    func preflightLibraryImport(_ urls: [URL]) async -> PresetLibraryPreflight {
         let preflight = preflightImport(urls)
         return PresetLibraryPreflight(
             acceptable: preflight.acceptable,
@@ -274,7 +301,7 @@ extension EqualizerManager: PresetLibraryManaging {
         )
     }
 
-    func importLibraryPresets(_ urls: [URL], replacingConflicts: Bool) -> [PresetLibraryFailure] {
+    func importLibraryPresets(_ urls: [URL], replacingConflicts: Bool) async -> [PresetLibraryFailure] {
         importPresets(urls, collisionPolicy: replacingConflicts ? .replace : .reject)
             .failures
             .map { .init(filename: $0.filename, reason: $0.reason) }

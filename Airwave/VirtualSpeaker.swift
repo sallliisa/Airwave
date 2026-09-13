@@ -8,7 +8,7 @@
 import Foundation
 
 /// Represents a virtual speaker position in 3D space
-enum VirtualSpeaker: Hashable, Codable {
+nonisolated enum VirtualSpeaker: Hashable, Codable, Sendable {
     // Standard 7.1 Layout
     case FL  // Front Left
     case FR  // Front Right
@@ -18,22 +18,22 @@ enum VirtualSpeaker: Hashable, Codable {
     case BR  // Back Right
     case SL  // Side Left
     case SR  // Side Right
-    
+
     // Height/Atmos Channels (7.1.4)
     case TFL // Top Front Left
     case TFR // Top Front Right
     case TBL // Top Back Left
     case TBR // Top Back Right
-    
+
     // Additional positions
     case FLC // Front Left Center
     case FRC // Front Right Center
     case BC  // Back Center
-    
+
     // Custom speaker (for arbitrary layouts)
     case custom(String)
-    
-    var displayName: String {
+
+    nonisolated var displayName: String {
         switch self {
         case .FL: return "Front Left"
         case .FR: return "Front Right"
@@ -56,36 +56,36 @@ enum VirtualSpeaker: Hashable, Codable {
 }
 
 /// Defines the layout of input channels
-struct InputLayout {
+nonisolated struct InputLayout: Equatable, Sendable, Codable {
     let channels: [VirtualSpeaker]
     let name: String
     
     /// Standard stereo layout
-    static let stereo = InputLayout(
+    nonisolated static let stereo = InputLayout(
         channels: [.FL, .FR],
         name: "Stereo"
     )
     
     /// Standard 5.1 surround layout
-    static let surround51 = InputLayout(
+    nonisolated static let surround51 = InputLayout(
         channels: [.FL, .FR, .FC, .LFE, .BL, .BR],
         name: "5.1 Surround"
     )
     
     /// Standard 7.1 surround layout
-    static let surround71 = InputLayout(
+    nonisolated static let surround71 = InputLayout(
         channels: [.FL, .FR, .FC, .LFE, .BL, .BR, .SL, .SR],
         name: "7.1 Surround"
     )
     
     /// 7.1.4 Atmos layout
-    static let atmos714 = InputLayout(
+    nonisolated static let atmos714 = InputLayout(
         channels: [.FL, .FR, .FC, .LFE, .BL, .BR, .SL, .SR, .TFL, .TFR, .TBL, .TBR],
         name: "7.1.4 Atmos"
     )
     
     /// Detect layout from channel count
-    static func detect(channelCount: Int) -> InputLayout {
+    nonisolated static func detect(channelCount: Int) -> InputLayout {
         switch channelCount {
         case 2: return .stereo
         case 6: return .surround51

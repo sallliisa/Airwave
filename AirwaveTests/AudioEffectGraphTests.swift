@@ -4,7 +4,7 @@ import XCTest
 final class AudioEffectGraphTests: XCTestCase {
     func testNeitherEffectCopiesStereoAndDuplicatesMono() throws {
         let graph = AudioEffectGraph(
-            spatial: SpatialEffectSpy(isReady: false),
+            spatial: SpatialEffectSpy(isReady: false, processResult: false),
             equalizer: EqualizerEffectSpy(),
             maxFramesPerCallback: 8
         )
@@ -35,8 +35,34 @@ final class AudioEffectGraphTests: XCTestCase {
         XCTAssertEqual(equalizer.processCount, 0)
     }
 
+    func testCallbackUsesSpatialOutputWhenControlReadinessIsFalse() throws {
+        let spatial = SpatialEffectSpy(isReady: false, offset: 10, processResult: true)
+        let graph = AudioEffectGraph(spatial: spatial, equalizer: EqualizerEffectSpy(), maxFramesPerCallback: 8)
+        let preparation = graph.prepare(for: deviceOutput(sampleRate: 48_000), equalizerDefinition: nil)
+
+        XCTAssertTrue(preparation.noEffectCanRun)
+        let result = process(graph, left: [1], right: [2])
+
+        XCTAssertEqual(result.left, [11])
+        XCTAssertEqual(result.right, [12])
+        XCTAssertEqual(spatial.processCount, 1)
+    }
+
+    func testCallbackUsesFallbackWhenControlReadinessIsTrueButSpatialWritesNothing() throws {
+        let spatial = SpatialEffectSpy(isReady: true, processResult: false)
+        let graph = AudioEffectGraph(spatial: spatial, equalizer: EqualizerEffectSpy(), maxFramesPerCallback: 8)
+        let preparation = graph.prepare(for: deviceOutput(sampleRate: 48_000), equalizerDefinition: nil)
+
+        XCTAssertEqual(preparation.runnableEffects, [.spatial])
+        let result = process(graph, left: [1], right: [2])
+
+        XCTAssertEqual(result.left, [1])
+        XCTAssertEqual(result.right, [2])
+        XCTAssertEqual(spatial.processCount, 1)
+    }
+
     func testEqualizerOnlyRunsAfterInputPassthrough() throws {
-        let spatial = SpatialEffectSpy(isReady: false)
+        let spatial = SpatialEffectSpy(isReady: false, processResult: false)
         let equalizer = EqualizerEffectSpy(multiplier: 2)
         let graph = AudioEffectGraph(spatial: spatial, equalizer: equalizer, maxFramesPerCallback: 8)
         let definition = EqualizerDefinition(preampDB: 3)
@@ -49,6 +75,58 @@ final class AudioEffectGraphTests: XCTestCase {
         XCTAssertEqual(result.left, [2])
         XCTAssertEqual(result.right, [2])
         XCTAssertEqual(equalizer.processCount, 1)
+    }
+
+    func testWideDeviceFoldsDownThroughGainTableWhenSpatialInactive() throws {
+        let graph = AudioEffectGraph(
+            spatial: SpatialEffectSpy(isReady: false, processResult: false),
+            equalizer: EqualizerEffectSpy(),
+            maxFramesPerCallback: 8
+        )
+        // 5.1 device: FL, FR, FC, LFE, BL, BR.
+        let output = OutputDeviceDescriptor(
+            id: .init(3), uid: "avr", name: "AVR", transport: "HDMI",
+            channelLabels: nil, outputChannelCount: 6, nominalSampleRate: 48_000,
+            isVirtual: false, isAggregate: false
+        )
+        _ = graph.prepare(for: output, equalizerDefinition: nil)
+
+        // Channels carry 1.0; expected fold-down per the gain table:
+        // left = 0.707 (FL) + 0.707 (FC) + 0.5 (BL), right = FR/FC/BR likewise.
+        let result = process(graph, channels: [Float](repeating: 1, count: 6))
+        XCTAssertEqual(result.left.first!, 0.707 + 0.707 + 0.5, accuracy: 1e-4)
+        XCTAssertEqual(result.right.first!, 0.707 + 0.707 + 0.5, accuracy: 1e-4)
+    }
+
+    func testPlainStereoPassthroughStaysByteExactMemcpy() throws {
+        let spatial = SpatialEffectSpy(isReady: false, processResult: false)
+        let graph = AudioEffectGraph(spatial: spatial, equalizer: EqualizerEffectSpy(), maxFramesPerCallback: 8)
+        _ = graph.prepare(for: deviceOutput(sampleRate: 48_000), equalizerDefinition: nil)
+
+        let leftInput = [Float(1).nextDown, 0.5]
+        let rightInput = [Float(2).nextUp, -0.25]
+        let result = process(graph, left: leftInput, right: rightInput)
+
+        XCTAssertEqual(result.left, leftInput)
+        XCTAssertEqual(result.right, rightInput)
+    }
+
+    func testEqualizerRunsAfterWideFoldDown() throws {
+        let graph = AudioEffectGraph(
+            spatial: SpatialEffectSpy(isReady: false, processResult: false),
+            equalizer: EqualizerEffectSpy(multiplier: 2),
+            maxFramesPerCallback: 8
+        )
+        let output = OutputDeviceDescriptor(
+            id: .init(4), uid: "avr", name: "AVR", transport: "HDMI",
+            channelLabels: nil, outputChannelCount: 6, nominalSampleRate: 48_000,
+            isVirtual: false, isAggregate: false
+        )
+        _ = graph.prepare(for: output, equalizerDefinition: EqualizerDefinition(preampDB: 3))
+
+        let result = process(graph, channels: [Float](repeating: 1, count: 6))
+        XCTAssertEqual(result.left.first!, (0.707 + 0.707 + 0.5) * 2, accuracy: 1e-4)
+        XCTAssertEqual(result.right.first!, (0.707 + 0.707 + 0.5) * 2, accuracy: 1e-4)
     }
 
     func testBothEffectsRunInSpatialThenEqualizerOrder() throws {
@@ -88,7 +166,7 @@ final class AudioEffectGraphTests: XCTestCase {
 
     func testProductionEqualizerPreparationUsesOutputRateAndRejectsNyquist() throws {
         let graph = AudioEffectGraph(
-            spatial: SpatialEffectSpy(isReady: false),
+            spatial: SpatialEffectSpy(isReady: false, processResult: false),
             equalizer: EqualizerRuntimeEffect(),
             maxFramesPerCallback: 8
         )
@@ -112,7 +190,7 @@ final class AudioEffectGraphTests: XCTestCase {
 
     func testProductionEqualizerCanReenableAfterNoneSelection() throws {
         let graph = AudioEffectGraph(
-            spatial: SpatialEffectSpy(isReady: false),
+            spatial: SpatialEffectSpy(isReady: false, processResult: false),
             equalizer: EqualizerRuntimeEffect(),
             maxFramesPerCallback: 4_096
         )
@@ -182,8 +260,95 @@ final class AudioEffectGraphTests: XCTestCase {
         )
 
         XCTAssertTrue(result.noEffectCanRun == false)
-        XCTAssertEqual(result.runnableEffects, [.spatial])
+        XCTAssertEqual(result.runnableEffects, [.spatial, .equalizer])
         _ = process(graph, left: [1], right: [1])
+        XCTAssertEqual(equalizer.processCount, 2)
+    }
+
+    func testRejectedEQOnlyUpdateKeepsWorkingTargetRunnable() throws {
+        // Production path: no spatial effect, one active EQ target, then an
+        // invalid replacement. The processor keeps the old target, so the
+        // returned status must keep .equalizer runnable and the callback must
+        // keep the old gain. An empty status would stop an EQ-only pipeline
+        // that still has audible output.
+        let equalizer = EqualizerRuntimeEffect()
+        let graph = AudioEffectGraph(
+            spatial: SpatialEffectSpy(isReady: false, processResult: false),
+            equalizer: equalizer,
+            maxFramesPerCallback: 4_096
+        )
+        let output = deviceOutput(sampleRate: 48_000)
+        let working = EqualizerDefinition(preampDB: 6)
+        let workingGain = Float(pow(10.0, 6.0 / 20.0))
+
+        let prepared = graph.prepare(for: output, equalizerDefinition: working)
+        XCTAssertEqual(prepared.runnableEffects, [.equalizer])
+        // Settle the 20 ms unity->+6 dB ramp before the rejection: the graph
+        // holds the working target through the fade, so the check below reads
+        // the retained gain, not a mid-ramp sample.
+        _ = processConstant(graph, frameCount: 960)
+        XCTAssertEqual(
+            process(graph, left: [1], right: [1]).left,
+            [workingGain]
+        )
+
+        let invalid = EqualizerDefinition(filters: [testFilter(line: 31, frequency: 30_000)])
+        let rejected = graph.updateEqualizer(definition: invalid)
+
+        XCTAssertEqual(rejected.runnableEffects, [.equalizer])
+        XCTAssertFalse(rejected.noEffectCanRun)
+        XCTAssertEqual(rejected.equalizerWarning?.filterLine, 31)
+        XCTAssertEqual(
+            process(graph, left: [1], right: [1]).left,
+            [workingGain]
+        )
+    }
+
+    func testStopCleanupReleasesRetiredEQProcessor() throws {
+        let effect = EqualizerRuntimeEffect()
+        try effect.prepare(definition: EqualizerDefinition(preampDB: 6), sampleRate: 48_000)
+        let graph = AudioEffectGraph(
+            spatial: SpatialEffectSpy(isReady: false, processResult: false),
+            equalizer: effect,
+            maxFramesPerCallback: 8
+        )
+        _ = graph.prepare(
+            for: deviceOutput(sampleRate: 48_000),
+            equalizerDefinition: EqualizerDefinition(preampDB: 6)
+        )
+        // Drive one callback so the audio side adopts the processor, then
+        // replace the sample-rate processor and drive again so the old one
+        // retires. Stop cleanup must release every audio reference.
+        _ = process(graph, left: [Float](repeating: 0.25, count: 8), right: [Float](repeating: 0.25, count: 8))
+        try effect.prepare(definition: EqualizerDefinition(preampDB: -6), sampleRate: 44_100)
+        _ = process(graph, left: [Float](repeating: 0.25, count: 8), right: [Float](repeating: 0.25, count: 8))
+        graph.cleanupAfterIOStopped()
+        // Post-stop processing with no published EQ must passthrough.
+        let result = process(graph, left: [Float](repeating: 0.25, count: 8), right: [Float](repeating: 0.25, count: 8))
+        XCTAssertEqual(result.left, [Float](repeating: 0.25, count: 8))
+    }
+
+    func testNewEqualizerTargetWinsRaceWithBypassCompletion() {
+        let equalizer = EqualizerEffectSpy(multiplier: 2)
+        let graph = AudioEffectGraph(
+            spatial: SpatialEffectSpy(isReady: false, processResult: false),
+            equalizer: equalizer,
+            maxFramesPerCallback: 8
+        )
+        _ = graph.prepare(
+            for: deviceOutput(sampleRate: 48_000),
+            equalizerDefinition: EqualizerDefinition(preampDB: 3)
+        )
+        equalizer.bypassed = true
+        equalizer.onBypassRead = {
+            equalizer.bypassed = false
+            _ = graph.updateEqualizer(definition: EqualizerDefinition(preampDB: 6))
+        }
+
+        _ = process(graph, left: [1], right: [1])
+        equalizer.onBypassRead = nil
+        _ = process(graph, left: [1], right: [1])
+
         XCTAssertEqual(equalizer.processCount, 2)
     }
 
@@ -206,16 +371,37 @@ final class AudioEffectGraphTests: XCTestCase {
         return (outputLeft, outputRight)
     }
 
-    private func processConstant(
+    private func process(
         _ graph: AudioEffectGraph,
-        frameCount: Int,
-        value: Float = 1
+        channels: [Float],
+        frameCount: Int? = nil
     ) -> (left: [Float], right: [Float]) {
-        process(
-            graph,
-            left: [Float](repeating: value, count: frameCount),
-            right: [Float](repeating: value, count: frameCount)
-        )
+        let frames = frameCount ?? 1
+        var outputLeft = [Float](repeating: .nan, count: frames)
+        var outputRight = [Float](repeating: .nan, count: frames)
+        var storage = channels
+        if storage.count < 2 { storage.append(contentsOf: repeatElement(0, count: 2 - storage.count)) }
+        let channelCount = storage.count
+        storage.withUnsafeMutableBufferPointer { storageBuffer in
+            let base = UnsafePointer(storageBuffer.baseAddress!)
+            let pointers: [UnsafePointer<Float>?] = (0..<channelCount).map {
+                base.advanced(by: $0 * frames)
+            }
+            pointers.withUnsafeBufferPointer { channelPointers in
+                outputLeft.withUnsafeMutableBufferPointer { leftOutput in
+                    outputRight.withUnsafeMutableBufferPointer { rightOutput in
+                        graph.process(
+                            inputChannels: channelPointers.baseAddress!,
+                            inputChannelCount: channelCount,
+                            outputLeft: leftOutput.baseAddress!,
+                            outputRight: rightOutput.baseAddress!,
+                            frameCount: frames
+                        )
+                    }
+                }
+            }
+        }
+        return (outputLeft, outputRight)
     }
 
     private func render(
@@ -227,37 +413,57 @@ final class AudioEffectGraphTests: XCTestCase {
     ) {
         outputLeft.withUnsafeMutableBufferPointer { leftOutput in
             outputRight.withUnsafeMutableBufferPointer { rightOutput in
-                graph.process(
-                    inputLeft: leftPointer.baseAddress!,
-                    inputRight: rightPointer?.baseAddress,
-                    outputLeft: leftOutput.baseAddress!,
-                    outputRight: rightOutput.baseAddress!,
-                    frameCount: leftPointer.count
-                )
+                let channels: [UnsafePointer<Float>?] = [leftPointer.baseAddress!, rightPointer?.baseAddress]
+                channels.withUnsafeBufferPointer { channelPointers in
+                    graph.process(
+                        inputChannels: channelPointers.baseAddress!,
+                        inputChannelCount: 2,
+                        outputLeft: leftOutput.baseAddress!,
+                        outputRight: rightOutput.baseAddress!,
+                        frameCount: leftPointer.count
+                    )
+                }
             }
         }
+    }
+
+    private func processConstant(
+        _ graph: AudioEffectGraph,
+        frameCount: Int,
+        value: Float = 1
+    ) -> (left: [Float], right: [Float]) {
+        process(
+            graph,
+            left: [Float](repeating: value, count: frameCount),
+            right: [Float](repeating: value, count: frameCount)
+        )
     }
 }
 
 private final class SpatialEffectSpy: AudioSpatialEffect {
     let isReady: Bool
     let offset: Float
+    let processResult: Bool
     private(set) var processCount = 0
 
-    init(isReady: Bool, offset: Float = 0) {
+    init(isReady: Bool, offset: Float = 0, processResult: Bool = true) {
         self.isReady = isReady
         self.offset = offset
+        self.processResult = processResult
     }
 
     func process(
-        inputLeft: UnsafePointer<Float>, inputRight: UnsafePointer<Float>?,
+        inputChannels: UnsafePointer<UnsafePointer<Float>?>, inputChannelCount: Int,
         outputLeft: UnsafeMutablePointer<Float>, outputRight: UnsafeMutablePointer<Float>, frameCount: Int
-    ) {
+    ) -> Bool {
         processCount += 1
         for index in 0..<frameCount {
-            outputLeft[index] = inputLeft[index] + offset
-            outputRight[index] = (inputRight?[index] ?? inputLeft[index]) + offset
+            let left = inputChannels[0]
+            let right = inputChannelCount > 1 ? inputChannels[1] : inputChannels[0]
+            outputLeft[index] = (left?[index] ?? 0) + offset
+            outputRight[index] = (right?[index] ?? 0) + offset
         }
+        return processResult
     }
 }
 
@@ -266,6 +472,12 @@ private final class EqualizerEffectSpy: AudioEqualizerEffect {
     private(set) var preparedSampleRates: [Double] = []
     var error: EqualizerAudioEffectError?
     var setTargetError: EqualizerAudioEffectError?
+    var bypassed = false
+    var onBypassRead: (() -> Void)?
+    var isBypassed: Bool {
+        onBypassRead?()
+        return bypassed
+    }
     let multiplier: Float
 
     init(multiplier: Float = 1) {
@@ -296,7 +508,8 @@ private final class EqualizerEffectSpy: AudioEqualizerEffect {
 private func deviceOutput(sampleRate: Double) -> OutputDeviceDescriptor {
     OutputDeviceDescriptor(
         id: .init(1), uid: "test-output", name: "Test Output", transport: "test",
-        outputChannelCount: 2, nominalSampleRate: sampleRate, isVirtual: false, isAggregate: false
+        channelLabels: nil, outputChannelCount: 2, nominalSampleRate: sampleRate,
+        isVirtual: false, isAggregate: false
     )
 }
 

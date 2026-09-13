@@ -1,3 +1,4 @@
+import Accelerate
 import Foundation
 import os
 
@@ -44,13 +45,38 @@ nonisolated enum EqualizerAudioEffectError: Error, Equatable, LocalizedError, Se
     }
 }
 
-nonisolated protocol AudioSpatialEffect: StereoAudioProcessing {
+nonisolated protocol AudioSpatialEffect: AnyObject {
+    func process(
+        inputChannels: UnsafePointer<UnsafePointer<Float>?>,
+        inputChannelCount: Int,
+        outputLeft: UnsafeMutablePointer<Float>,
+        outputRight: UnsafeMutablePointer<Float>,
+        frameCount: Int
+    ) -> Bool
     var isReady: Bool { get }
+    func cleanupAfterIOStopped()
 }
 
-nonisolated protocol AudioEqualizerEffect: StereoAudioProcessing {
+extension AudioSpatialEffect { nonisolated func cleanupAfterIOStopped() {} }
+
+nonisolated protocol AudioEqualizerEffect: AnyObject {
+    /// Operates on the stereo binaural signal downstream of the spatial stage.
+    func process(
+        inputLeft: UnsafePointer<Float>,
+        inputRight: UnsafePointer<Float>?,
+        outputLeft: UnsafeMutablePointer<Float>,
+        outputRight: UnsafeMutablePointer<Float>,
+        frameCount: Int
+    )
     func prepare(definition: EqualizerDefinition?, sampleRate: Double) throws
     func setTarget(definition: EqualizerDefinition?) throws
+    var isBypassed: Bool { get }
+    func cleanupAfterIOStopped()
+}
+
+extension AudioEqualizerEffect {
+    nonisolated var isBypassed: Bool { false }
+    nonisolated func cleanupAfterIOStopped() {}
 }
 
 nonisolated protocol AudioEffectGraphControlling: AnyObject {
@@ -63,6 +89,10 @@ nonisolated protocol AudioEffectGraphControlling: AnyObject {
 
 /// Composes spatial processing and EQ while keeping resource ownership in AudioPipeline.
 nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGraphControlling {
+    private struct EqualizerActivation {
+        var active = false
+        var generation: UInt64 = 0
+    }
     static let maximumCallbackFrames = ParametricEqualizerProcessor.maximumCallbackFrames
 
     private let spatial: any AudioSpatialEffect
@@ -70,8 +100,12 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
     private let spatialLeftScratch: UnsafeMutablePointer<Float>
     private let spatialRightScratch: UnsafeMutablePointer<Float>
     private let maxFramesPerCallback: Int
-    private let equalizerActiveLock = OSAllocatedUnfairLock<Bool>(initialState: false)
+    /// Resolved per-output speaker identity of every captured channel; used to
+    /// fold down before the first prepare resolves a device layout.
+    private var inputSpeakers: [VirtualSpeaker] = [.FL, .FR]
+    private let equalizerActiveLock = OSAllocatedUnfairLock<EqualizerActivation>(initialState: .init())
     private var audioThreadEqualizerActive = false
+    private var audioThreadEqualizerGeneration: UInt64 = 0
 
     init(
         spatial: any AudioSpatialEffect,
@@ -95,6 +129,10 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
         for output: OutputDeviceDescriptor,
         equalizerDefinition: EqualizerDefinition?
     ) -> AudioEffectPreparationResult {
+        inputSpeakers = InputLayoutResolver.layout(
+            channelLabels: output.channelLabels,
+            channelCount: output.outputChannelCount
+        ).channels
         var runnableEffects = Set<AudioEffectKind>()
         if spatial.isReady {
             runnableEffects.insert(.spatial)
@@ -102,8 +140,9 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
 
         do {
             try equalizer.prepare(definition: equalizerDefinition, sampleRate: output.nominalSampleRate)
-            equalizerActiveLock.withLock { active in
-                active = equalizerDefinition != nil
+            equalizerActiveLock.withLock { state in
+                state.generation &+= 1
+                state.active = equalizerDefinition != nil
             }
             if equalizerDefinition != nil {
                 runnableEffects.insert(.equalizer)
@@ -113,8 +152,9 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
                 equalizerWarning: nil
             )
         } catch let error as EqualizerAudioEffectError {
-            equalizerActiveLock.withLock { active in
-                active = false
+            equalizerActiveLock.withLock { state in
+                state.generation &+= 1
+                state.active = false
             }
             return AudioEffectPreparationResult(
                 runnableEffects: runnableEffects,
@@ -124,8 +164,9 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
                 )
             )
         } catch {
-            equalizerActiveLock.withLock { active in
-                active = false
+            equalizerActiveLock.withLock { state in
+                state.generation &+= 1
+                state.active = false
             }
             return AudioEffectPreparationResult(
                 runnableEffects: runnableEffects,
@@ -138,24 +179,33 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
     }
 
     func updateEqualizer(definition: EqualizerDefinition?) -> AudioEffectPreparationResult {
-        var runnableEffects = Set<AudioEffectKind>()
-        if spatial.isReady {
-            runnableEffects.insert(.spatial)
-        }
         do {
             try equalizer.setTarget(definition: definition)
             // Keep the processor in the callback path for the unity ramp when EQ is
             // removed. A later prepare(nil) bypasses it for a newly-created pipeline.
-            equalizerActiveLock.withLock { active in
-                active = true
+            var runnableEffects = Set<AudioEffectKind>()
+            if spatial.isReady {
+                runnableEffects.insert(.spatial)
+            }
+            equalizerActiveLock.withLock { state in
+                state.generation &+= 1
+                state.active = true
             }
             if definition != nil {
                 runnableEffects.insert(.equalizer)
             }
             return AudioEffectPreparationResult(runnableEffects: runnableEffects, equalizerWarning: nil)
         } catch let error as EqualizerAudioEffectError {
-            equalizerActiveLock.withLock { active in
-                active = true
+            // The processor keeps its last working target, so the callback
+            // still runs EQ. Report that target, not an empty set: an empty
+            // set stops an EQ-only pipeline that still has audible output.
+            var runnableEffects = Set<AudioEffectKind>([.equalizer])
+            if spatial.isReady {
+                runnableEffects.insert(.spatial)
+            }
+            equalizerActiveLock.withLock { state in
+                state.generation &+= 1
+                state.active = true
             }
             return AudioEffectPreparationResult(
                 runnableEffects: runnableEffects,
@@ -165,8 +215,13 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
                 )
             )
         } catch {
-            equalizerActiveLock.withLock { active in
-                active = true
+            var runnableEffects = Set<AudioEffectKind>([.equalizer])
+            if spatial.isReady {
+                runnableEffects.insert(.spatial)
+            }
+            equalizerActiveLock.withLock { state in
+                state.generation &+= 1
+                state.active = true
             }
             return AudioEffectPreparationResult(
                 runnableEffects: runnableEffects,
@@ -177,8 +232,8 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
 
     // BEGIN REALTIME CALLBACK
     func process(
-        inputLeft: UnsafePointer<Float>,
-        inputRight: UnsafePointer<Float>?,
+        inputChannels: UnsafePointer<UnsafePointer<Float>?>,
+        inputChannelCount: Int,
         outputLeft: UnsafeMutablePointer<Float>,
         outputRight: UnsafeMutablePointer<Float>,
         frameCount: Int
@@ -187,66 +242,95 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
         precondition(frameCount <= maxFramesPerCallback)
         var equalizerActive = audioThreadEqualizerActive
         if let published = equalizerActiveLock.withLockIfAvailable({ $0 }) {
-            equalizerActive = published
-            audioThreadEqualizerActive = published
+            equalizerActive = published.active
+            audioThreadEqualizerActive = published.active
+            audioThreadEqualizerGeneration = published.generation
         }
-        let spatialReady = spatial.isReady
-
-        if spatialReady {
-            if equalizerActive {
-                spatial.process(
-                    inputLeft: inputLeft,
-                    inputRight: inputRight,
-                    outputLeft: spatialLeftScratch,
-                    outputRight: spatialRightScratch,
-                    frameCount: frameCount
-                )
-                equalizer.process(
-                    inputLeft: spatialLeftScratch,
-                    inputRight: spatialRightScratch,
-                    outputLeft: outputLeft,
-                    outputRight: outputRight,
-                    frameCount: frameCount
-                )
-            } else {
-                spatial.process(
-                    inputLeft: inputLeft,
-                    inputRight: inputRight,
-                    outputLeft: outputLeft,
-                    outputRight: outputRight,
-                    frameCount: frameCount
-                )
-            }
-            return
-        }
-
         if equalizerActive {
-            memcpy(outputLeft, inputLeft, frameCount * MemoryLayout<Float>.size)
-            if let inputRight {
-                memcpy(outputRight, inputRight, frameCount * MemoryLayout<Float>.size)
-            } else {
-                memcpy(outputRight, inputLeft, frameCount * MemoryLayout<Float>.size)
+            let spatialWroteOutput = spatial.process(
+                inputChannels: inputChannels,
+                inputChannelCount: inputChannelCount,
+                outputLeft: spatialLeftScratch,
+                outputRight: spatialRightScratch,
+                frameCount: frameCount
+            )
+            if !spatialWroteOutput {
+                StereoDownmixGains.downmix(
+                    inputChannels: inputChannels,
+                    inputChannelCount: inputChannelCount,
+                    inputOffset: 0,
+                    inputSpeakers: inputSpeakers,
+                    outputLeft: outputLeft,
+                    outputRight: outputRight,
+                    frameCount: frameCount
+                )
             }
             equalizer.process(
-                inputLeft: outputLeft,
-                inputRight: outputRight,
+                inputLeft: spatialWroteOutput ? spatialLeftScratch : outputLeft,
+                inputRight: spatialWroteOutput ? spatialRightScratch : outputRight,
                 outputLeft: outputLeft,
                 outputRight: outputRight,
                 frameCount: frameCount
             )
+            if equalizer.isBypassed {
+                let observedGeneration = audioThreadEqualizerGeneration
+                equalizerActiveLock.withLockIfAvailable { state in
+                    if state.generation == observedGeneration { state.active = false }
+                }
+            }
             return
         }
 
-        memcpy(outputLeft, inputLeft, frameCount * MemoryLayout<Float>.size)
-        if let inputRight {
-            memcpy(outputRight, inputRight, frameCount * MemoryLayout<Float>.size)
-        } else {
-            memcpy(outputRight, inputLeft, frameCount * MemoryLayout<Float>.size)
+        if spatial.process(
+            inputChannels: inputChannels,
+            inputChannelCount: inputChannelCount,
+            outputLeft: outputLeft,
+            outputRight: outputRight,
+            frameCount: frameCount
+        ) {
+            return
         }
+
+        StereoDownmixGains.downmix(
+            inputChannels: inputChannels,
+            inputChannelCount: inputChannelCount,
+            inputOffset: 0,
+            inputSpeakers: inputSpeakers,
+            outputLeft: outputLeft,
+            outputRight: outputRight,
+            frameCount: frameCount
+        )
     }
     // END REALTIME CALLBACK
+
+    func cleanupAfterIOStopped() {
+        spatial.cleanupAfterIOStopped()
+        equalizer.cleanupAfterIOStopped()
+        equalizerActiveLock.withLock { state in
+            state.generation &+= 1
+            state.active = false
+        }
+        audioThreadEqualizerActive = false
+    }
+
 }
 
 extension HRIRManager: AudioSpatialEffect {
-    nonisolated var isReady: Bool { hasPublishedRendererForAudioCallback() }
+    nonisolated var isReady: Bool { hasPublishedRendererForControl() }
+
+    nonisolated func process(
+        inputChannels: UnsafePointer<UnsafePointer<Float>?>,
+        inputChannelCount: Int,
+        outputLeft: UnsafeMutablePointer<Float>,
+        outputRight: UnsafeMutablePointer<Float>,
+        frameCount: Int
+    ) -> Bool {
+        processAudio(
+            inputChannels: inputChannels,
+            inputChannelCount: inputChannelCount,
+            leftOutput: outputLeft,
+            rightOutput: outputRight,
+            frameCount: frameCount
+        )
+    }
 }

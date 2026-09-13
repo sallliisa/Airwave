@@ -13,7 +13,7 @@ final class PresetLibraryCoordinatorTests: XCTestCase {
         PresetLibraryCoordinator(manager: manager, configuration: .equalizer)
     }
 
-    func testRejectedFilesSurfaceAsOneMessageAndNothingImports() {
+    func testRejectedFilesSurfaceAsOneMessageAndNothingImports() async {
         let manager = PresetLibraryManagerFake()
         let broken = url("broken.txt")
         manager.preflight = .init(acceptable: [], conflicts: [], rejected: [
@@ -22,6 +22,7 @@ final class PresetLibraryCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(manager)
 
         coordinator.receive([broken])
+        await coordinator.waitForIdle()
 
         XCTAssertEqual(coordinator.message?.text, "broken.txt: unsupported directive")
         XCTAssertEqual(manager.importCalls.count, 1)
@@ -29,17 +30,19 @@ final class PresetLibraryCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.conflicts.isEmpty)
     }
 
-    func testConflictReplaceImportsWithReplacement() {
+    func testConflictReplaceImportsWithReplacement() async {
         let manager = PresetLibraryManagerFake()
         let existing = url("Curve.txt")
         manager.preflight = .init(acceptable: [], conflicts: [existing], rejected: [])
         let coordinator = makeCoordinator(manager)
 
         coordinator.receive([existing])
+        await coordinator.waitForIdle()
         XCTAssertEqual(coordinator.conflicts, [existing])
         XCTAssertTrue(manager.importCalls.isEmpty)
 
         coordinator.resolveConflicts(.replace)
+        await coordinator.waitForIdle()
 
         XCTAssertEqual(manager.importCalls.count, 1)
         XCTAssertEqual(manager.importCalls.first?.urls, [existing])
@@ -48,19 +51,21 @@ final class PresetLibraryCoordinatorTests: XCTestCase {
         XCTAssertNil(coordinator.message)
     }
 
-    func testConflictKeepExistingImportsWithoutReplacement() {
+    func testConflictKeepExistingImportsWithoutReplacement() async {
         let manager = PresetLibraryManagerFake()
         let existing = url("Curve.txt")
         manager.preflight = .init(acceptable: [], conflicts: [existing], rejected: [])
         let coordinator = makeCoordinator(manager)
 
         coordinator.receive([existing])
+        await coordinator.waitForIdle()
         coordinator.resolveConflicts(.keepExisting)
+        await coordinator.waitForIdle()
 
         XCTAssertEqual(manager.importCalls.first?.replacing, false)
     }
 
-    func testCancellingConflictsImportsNothingButKeepsPreflightFailures() {
+    func testCancellingConflictsImportsNothingButKeepsPreflightFailures() async {
         let manager = PresetLibraryManagerFake()
         let existing = url("Curve.txt")
         manager.preflight = .init(
@@ -71,6 +76,7 @@ final class PresetLibraryCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(manager)
 
         coordinator.receive([existing, url("broken.txt")])
+        await coordinator.waitForIdle()
         coordinator.resolveConflicts(.cancel)
 
         XCTAssertTrue(manager.importCalls.isEmpty)
@@ -139,6 +145,30 @@ final class PresetLibraryCoordinatorTests: XCTestCase {
             presets: [FakePreset](), selectedID: nil, name: \.name, sortedByName: true
         ).isEmpty)
     }
+
+    func testNewRequestRejectsStalePreflightAndMainActorRemainsResponsive() async {
+        let manager = PresetLibraryManagerFake()
+        manager.suspendPreflight = true
+        let old = url("Old.txt")
+        let new = url("New.txt")
+        manager.preflightsByURL[old] = .init(acceptable: [], conflicts: [old], rejected: [])
+        manager.preflightsByURL[new] = .init(acceptable: [], conflicts: [new], rejected: [])
+        let coordinator = makeCoordinator(manager)
+
+        coordinator.receive([old])
+        await Task.yield()
+        coordinator.dismissMessage()
+        coordinator.receive([new])
+        await Task.yield()
+        XCTAssertEqual(manager.preflightWaiters.count, 2)
+
+        manager.resumePreflight(at: 1)
+        await coordinator.waitForIdle()
+        manager.resumePreflight(at: 0)
+        await Task.yield()
+
+        XCTAssertEqual(coordinator.conflicts, [new])
+    }
 }
 
 private struct FakePreset: Identifiable, Equatable {
@@ -149,6 +179,9 @@ private struct FakePreset: Identifiable, Equatable {
 @MainActor
 private final class PresetLibraryManagerFake: PresetLibraryManaging {
     var preflight = PresetLibraryPreflight(acceptable: [], conflicts: [], rejected: [])
+    var preflightsByURL: [URL: PresetLibraryPreflight] = [:]
+    var suspendPreflight = false
+    var preflightWaiters: [CheckedContinuation<Void, Never>] = []
     var importFailures: [PresetLibraryFailure] = []
     var deleteSucceeds = true
     var failureDetail: String?
@@ -156,9 +189,18 @@ private final class PresetLibraryManagerFake: PresetLibraryManaging {
     private(set) var deleted: [FakePreset] = []
     private(set) var revealCount = 0
 
-    func preflightLibraryImport(_ urls: [URL]) -> PresetLibraryPreflight { preflight }
+    func preflightLibraryImport(_ urls: [URL]) async -> PresetLibraryPreflight {
+        if suspendPreflight {
+            await withCheckedContinuation { preflightWaiters.append($0) }
+        }
+        return urls.first.flatMap { preflightsByURL[$0] } ?? preflight
+    }
 
-    func importLibraryPresets(_ urls: [URL], replacingConflicts: Bool) -> [PresetLibraryFailure] {
+    func resumePreflight(at index: Int) {
+        preflightWaiters[index].resume()
+    }
+
+    func importLibraryPresets(_ urls: [URL], replacingConflicts: Bool) async -> [PresetLibraryFailure] {
         importCalls.append((urls, replacingConflicts))
         return importFailures
     }

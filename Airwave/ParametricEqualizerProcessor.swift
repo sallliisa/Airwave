@@ -7,6 +7,12 @@ nonisolated final class ParametricEqualizerState {
     let sampleRate: Double
     let filterCount: Int
     let preampLinear: Double
+    #if DEBUG
+    // DEBUG-only destruction sentinel. Assigned from control before first
+    // publish; frees on the thread that drops the last state owner, so its
+    // recorder sees audio-thread releases. Never touched in the callback.
+    var destructionProbe: ParametricEqualizerProcessor.DestructionProbe?
+    #endif
 
     /// nil when there are no filters; that state only applies the preamp.
     private let setup: vDSP_biquadm_Setup?
@@ -113,6 +119,7 @@ nonisolated final class ParametricEqualizerState {
 nonisolated enum ParametricEqualizerPreparationError: Error, Equatable, LocalizedError {
     case invalidSampleRate
     case nonFinitePreamp
+    case nonFiniteCoefficients
     case tooManyFilters(Int)
     case invalidFilter(index: Int, error: BiquadCoefficientError)
 
@@ -122,6 +129,8 @@ nonisolated enum ParametricEqualizerPreparationError: Error, Equatable, Localize
             return "Sample rate must be finite and positive."
         case .nonFinitePreamp:
             return "Preamp must produce a finite linear gain."
+        case .nonFiniteCoefficients:
+            return "Equalizer coefficients must be finite."
         case .tooManyFilters(let count):
             return "Equalizer supports at most \(ParametricEqualizerState.maximumFilterCount) filters; received \(count)."
         case .invalidFilter(let index, let error):
@@ -142,12 +151,24 @@ nonisolated final class ParametricEqualizerProcessor {
     private let targetLock = OSAllocatedUnfairLock<ParametricEqualizerState?>(initialState: nil)
     private let retirementLock = OSAllocatedUnfairLock<ParametricEqualizerState?>(initialState: nil)
     private let resetLock = OSAllocatedUnfairLock<Bool>(initialState: false)
+    private let bypassLock = OSAllocatedUnfairLock<Bool>(initialState: true)
+    #if DEBUG
+    // DEBUG-only destruction sentinel. Assigned from control with the
+    // processor identity on creation; frees on the thread that drops the
+    // last processor owner, so its recorder sees audio-thread releases.
+    // Never read or written inside the realtime callback.
+    var destructionProbe: DestructionProbe?
+    #endif
     private var audioThreadTarget: ParametricEqualizerState?
     private var activeState: ParametricEqualizerState
     private var transitionFrom: ParametricEqualizerState?
     private var transitionTo: ParametricEqualizerState?
     private var pendingTarget: ParametricEqualizerState?
     private var observedTarget: ParametricEqualizerState?
+    #if DEBUG
+    // No owned probe array. Each filter state carries its own DEBUG probe
+    // (see ParametricEqualizerState.destructionProbe). Never touch probes here.
+    #endif
     private var transitionFrame = 0
     private let transitionLength: Int
     private let oldScratch: UnsafeMutablePointer<Float>
@@ -197,7 +218,7 @@ nonisolated final class ParametricEqualizerProcessor {
             throw ParametricEqualizerPreparationError.nonFinitePreamp
         }
         let preampLinear = pow(10, preampDB / 20)
-        guard preampLinear.isFinite else {
+        guard preampLinear.isFinite, Float(preampLinear).isFinite else {
             throw ParametricEqualizerPreparationError.nonFinitePreamp
         }
 
@@ -222,6 +243,13 @@ nonisolated final class ParametricEqualizerProcessor {
             }
         }
 
+        guard coefficients.allSatisfy({ coefficient in
+            [coefficient.b0 * preampLinear, coefficient.b1 * preampLinear,
+             coefficient.b2 * preampLinear, coefficient.a1, coefficient.a2].allSatisfy(\.isFinite)
+        }) else {
+            throw ParametricEqualizerPreparationError.nonFiniteCoefficients
+        }
+
         return ParametricEqualizerState(
             sampleRate: sampleRate,
             preampDB: preampDB,
@@ -236,7 +264,10 @@ nonisolated final class ParametricEqualizerProcessor {
         targetLock.withLock { target in
             target = state
         }
+        if state !== unityState { bypassLock.withLock { $0 = false } }
     }
+
+    var isBypassed: Bool { bypassLock.withLockIfAvailable { $0 } ?? false }
 
     #if DEBUG
     func withPublicationLockForTesting(_ body: () -> Void) {
@@ -244,10 +275,76 @@ nonisolated final class ParametricEqualizerProcessor {
             body()
         }
     }
+    /// Keep alive on the state, not on the processor. The probe records the
+    /// thread that runs its destruction. The probe must not capture the
+    /// object it observes.
+    final class DestructionRecorder: @unchecked Sendable {
+        struct Event: Sendable { let id: Int; let isAudioThread: Bool; let kind: String }
+        private let lock = NSLock()
+        private var events: [Event] = []
+        func record(id: Int, isAudioThread: Bool, kind: String) {
+            lock.lock(); defer { lock.unlock() }
+            events.append(Event(id: id, isAudioThread: isAudioThread, kind: kind))
+        }
+        var snapshot: [Event] { lock.lock(); defer { lock.unlock() }; return events }
+        var audioThreadDestructionCount: Int { snapshot.filter(\.isAudioThread).count }
+    }
+    nonisolated final class DestructionProbe: @unchecked Sendable {
+        let id: Int
+        let kind: String
+        let recorder: DestructionRecorder?
+        let audioKey: DispatchSpecificKey<Void>?
+        init(id: Int, kind: String, recorder: DestructionRecorder?, audioKey: DispatchSpecificKey<Void>?) {
+            self.id = id; self.kind = kind; self.recorder = recorder; self.audioKey = audioKey
+        }
+        deinit {
+            if let recorder, let audioKey {
+                recorder.record(id: id, isAudioThread: DispatchQueue.getSpecific(key: audioKey) != nil, kind: kind)
+            }
+        }
+    }
+    nonisolated static var destructionAudioKey: DispatchSpecificKey<Void>?
+    nonisolated static var destructionRecorder: DestructionRecorder?
+    nonisolated static func configureDestructionProbeForTesting(
+        audioKey: DispatchSpecificKey<Void>?,
+        recorder: DestructionRecorder?
+    ) {
+        destructionAudioKey = audioKey
+        destructionRecorder = recorder
+    }
+    /// DEBUG-only control helper. Tag a fresh filter state with its identity
+    /// probe before first publish. Call only from test or control code, never
+    /// from the realtime callback.
+    nonisolated static func makeProbedStateForTesting(
+        definition: EqualizerDefinition?,
+        sampleRate: Double
+    ) throws -> ParametricEqualizerState {
+        let state = try prepare(definition: definition, sampleRate: sampleRate)
+        state.destructionProbe = DestructionProbe(
+            id: ObjectIdentifier(state as AnyObject).hashValue,
+            kind: "filter",
+            recorder: destructionRecorder,
+            audioKey: destructionAudioKey
+        )
+        return state
+    }
     #endif
 
     func setTarget(definition: EqualizerDefinition?) throws {
-        try publish(Self.prepare(definition: definition, sampleRate: sampleRate))
+        let state = try Self.prepare(definition: definition, sampleRate: sampleRate)
+        #if DEBUG
+        // Tag the production state too: setTarget publishes fresh states on
+        // every call, and the proof must observe their release thread.
+        if state !== unityState {
+            state.destructionProbe = DestructionProbe(
+                id: ObjectIdentifier(state as AnyObject).hashValue,
+                kind: "filter",
+                recorder: Self.destructionRecorder,
+                audioKey: Self.destructionAudioKey
+            )
+        }
+        #endif
+        try publish(state)
     }
 
     func reset() {
@@ -261,6 +358,20 @@ nonisolated final class ParametricEqualizerProcessor {
         retirementLock.withLock { retired in
             retired = nil
         }
+    }
+
+    /// Call only after the I/O callback has stopped.
+    func cleanupAfterIOStopped() {
+        retirementLock.withLock { $0 = nil }
+        pendingRetirement = nil
+        audioThreadTarget = nil
+        activeState = unityState
+        transitionFrom = nil
+        transitionTo = nil
+        pendingTarget = nil
+        observedTarget = nil
+        transitionFrame = 0
+        bypassLock.withLock { $0 = true }
     }
 
     // BEGIN REALTIME CALLBACK
@@ -335,16 +446,33 @@ nonisolated final class ParametricEqualizerProcessor {
         if let read = targetLock.withLockIfAvailable({ TargetRead.value($0) }),
            case .value(let published) = read,
            let published {
+            // Keep the unobserved intermediate alive until the audio side has
+            // a retirement path. The control publisher retains the newest
+            // target for retry.
+            if let old = audioThreadTarget, old !== observedTarget, old !== published,
+               old !== activeState, old !== transitionTo {
+                guard retire(old) else { return }
+            }
             audioThreadTarget = published
         }
 
         guard let target = audioThreadTarget, target !== observedTarget else { return }
+        if transitionTo != nil, let pendingTarget, pendingTarget !== target {
+            guard retire(pendingTarget) else { return }
+            self.pendingTarget = nil
+        }
         observedTarget = target
         if transitionTo != nil {
             if target !== transitionTo {
+                if let old = pendingTarget, old !== target, old !== activeState, old !== transitionTo {
+                    guard retire(old) else { return }
+                }
                 pendingTarget = target
             }
         } else if pendingRetirement != nil {
+            if let old = pendingTarget, old !== target {
+                guard retire(old) else { return }
+            }
             pendingTarget = target
         } else if target !== activeState {
             beginTransition(to: target)
@@ -377,7 +505,15 @@ nonisolated final class ParametricEqualizerProcessor {
         transitionFrom = nil
         transitionTo = nil
         transitionFrame = 0
-        guard retire(from) else { return }
+        if to === unityState { bypassLock.withLockIfAvailable { $0 = true } }
+        // retire() never reports failure: it holds in pendingRetirement when
+        // the shared slot is full, and flushPendingRetirement() moves that
+        // hold to control on a later callback. The branch stays explicit so
+        // a future bounded retire keeps this call site honest.
+        guard retire(from) else {
+            transitionFrom = from
+            return
+        }
 
         if let pending = pendingTarget {
             pendingTarget = nil
@@ -398,7 +534,7 @@ nonisolated final class ParametricEqualizerProcessor {
             return true
         }
         pendingRetirement = state
-        return false
+        return true
     }
 
     private func flushPendingRetirement() {

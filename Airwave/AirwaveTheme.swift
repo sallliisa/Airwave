@@ -32,6 +32,8 @@ enum AirwaveLayout {
     static let menuRowVerticalPadding: CGFloat = 6
     static let menuOuterPadding: CGFloat = 6
     static let menuDividerInset: CGFloat = 10
+    /// Minimum hit target for top-bar controls (device menu, quit button).
+    static let topBarControlMinSize: CGFloat = 44
 }
 
 enum AirwaveMotion {
