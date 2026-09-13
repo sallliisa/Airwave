@@ -48,14 +48,24 @@ nonisolated struct OutputDeviceDescriptor: Equatable, Sendable {
     }
 
     /// The single support policy shared by persistence and the audio runtime.
+    /// Layout shape comes from InputLayoutResolver.resolve: unlabeled
+    /// 2/6/8/12 use the standard fallback order, unlabeled 4 uses the generic
+    /// quad fallback (not verified identity), and other widths need a
+    /// complete usable label mapping. Duplicate explicit stereo pairs stay
+    /// unsupported (ambiguous; needs separate pair selection).
     var isSupportedProfileOutput: Bool {
-        !uid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !isVirtual && !isAggregate && outputStreamCount == 1
-            && (2...16).contains(outputChannelCount)
+        guard !uid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !isVirtual, !isAggregate, outputStreamCount == 1,
+              (2...16).contains(outputChannelCount)
+        else { return false }
+        if case .supported = InputLayoutResolver.resolve(
+            channelLabels: channelLabels,
+            channelCount: outputChannelCount
+        ) { return true }
+        return false
     }
 
-    var unsupportedProfileReason: String? {
-        if uid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+    var unsupportedProfileReason: String? {        if uid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return "The output has no stable device identity."
         }
         if isVirtual || isAggregate {
@@ -66,6 +76,12 @@ nonisolated struct OutputDeviceDescriptor: Equatable, Sendable {
         }
         if !(2...16).contains(outputChannelCount) {
             return "Airwave supports 2 to 16 output channels on physical devices."
+        }
+        if case .unsupported(let reason) = InputLayoutResolver.resolve(
+            channelLabels: channelLabels,
+            channelCount: outputChannelCount
+        ) {
+            return reason
         }
         return nil
     }
@@ -194,36 +210,58 @@ typealias AudioIOCallback = (
 
 nonisolated struct CaptureSignalPolicy: Equatable, Sendable {
     static let sampleThreshold: Float = 0.0001
-    static let minimumSustainedFrames = 2_048
+    static let windowFrames = 2_048
+    static let minimumActiveFrames = 1_024
 
-    private var sustainedFrames = 0
+    private var detected = false
+    private var observedFrames = 0
+    private var activeFrames = 0
 
-    /// Observe one channel. Returns whether this call completed a detection;
-    /// the latch itself lives in the caller (see
+    /// Observe one channel. Returns whether a complete window has accepted
+    /// a signal; the result latches, so later calls keep returning true.
+    /// The one-shot event itself lives in the caller (see
     /// `CoreAudioIOVerificationState`).
     mutating func observe(
         channel: UnsafePointer<Float>,
         frameCount: Int
     ) -> Bool {
-        guard frameCount > 0 else { return hasDetectedSignal }
+        guard !detected else { return true }
+        guard frameCount > 0 else { return false }
         for index in 0..<frameCount {
             let sample = channel[index]
-            let active = sample.isFinite && abs(sample) >= Self.sampleThreshold
-            if active {
-                sustainedFrames += 1
-                if sustainedFrames >= Self.minimumSustainedFrames {
-                    return true
-                }
-            } else {
-                sustainedFrames = 0
-            }
+            observeSample(active: sample.isFinite && abs(sample) >= Self.sampleThreshold)
+            if detected { return true }
         }
         return false
     }
 
-    /// True once any observation has completed the sustained-frame threshold.
+    /// Advance this channel through an unobserved gap with inactive frames,
+    /// so a partial window never bridges the gap as if it were continuous.
+    /// A gap can still complete a pending window when earlier frames in
+    /// that same window already qualify it.
+    mutating func observeMissing(frameCount: Int) -> Bool {
+        guard !detected else { return true }
+        guard frameCount > 0 else { return false }
+        for _ in 0..<frameCount {
+            observeSample(active: false)
+            if detected { return true }
+        }
+        return false
+    }
+
+    private mutating func observeSample(active: Bool) {
+        guard !detected else { return }
+        if active { activeFrames += 1 }
+        observedFrames += 1
+        guard observedFrames >= Self.windowFrames else { return }
+        if activeFrames >= Self.minimumActiveFrames { detected = true }
+        observedFrames = 0
+        activeFrames = 0
+    }
+
+    /// True once a complete window has accepted a signal.
     var hasDetectedSignal: Bool {
-        sustainedFrames >= Self.minimumSustainedFrames
+        detected
     }
 }
 
@@ -272,4 +310,16 @@ nonisolated protocol OutputDeviceDiscovering: AnyObject {
     func availableOutputDevices() throws -> [OutputDeviceDescriptor]
     func observeAvailableOutputs(_ handler: @escaping AvailableOutputChangeHandler) throws
     func stopObservingAvailableOutputs()
+}
+
+extension OutputDeviceDescriptor {
+    /// Plan 039 Step 1: processing-relevant format fields for same-device
+    /// change detection. Identity (id/uid/name/transport) is excluded: only
+    /// rate, width, stream count, and layout reprepare audio.
+    func hasProcessingFormatChange(from other: Self) -> Bool {
+        !AudioSampleRateCompatibility.matches(nominalSampleRate, with: other.nominalSampleRate)
+            || outputChannelCount != other.outputChannelCount
+            || outputStreamCount != other.outputStreamCount
+            || channelLabels != other.channelLabels
+    }
 }

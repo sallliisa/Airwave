@@ -18,16 +18,18 @@
 
 ## What Airwave does
 
-Airwave captures audio from your Mac, applies a spatial audio profile, and plays the result through your current stereo output. It uses HRIR convolution to create a wider, more speaker-like listening experience in headphones.
+Airwave captures audio from your Mac, applies a spatial audio profile, and plays the result through your current output. It uses HRIR convolution to create a wider, more speaker-like listening experience in headphones.
 
 Airwave is designed for stereo headphones. The spatial effect may not sound as intended through speakers or other non-headphone outputs.
+
+Airwave accepts stereo and supported multichannel input automatically (no setting): it captures the device stream and writes binaural stereo back to device channels 1–2. A supported output is a physical device with one output stream, 2–16 channels, and a resolvable channel layout (unlabeled 2/6/8/12 use standard order; unlabeled 4-channel uses a generic quad fallback whose channel identity is not verified; other widths need complete usable labels; unknown, mismatched, or duplicate stereo-pair labels are unsupported). Virtual and aggregate outputs stay unsupported. LFE content is omitted from the fold-down. While Airwave runs on a multichannel device, surround speakers go silent; native playback on all channels resumes after teardown (see `docs/multichannel-known-tradeoffs.md`).
 
 Airwave follows your normal macOS output selection and volume. You do not need to manage a second audio route while using the app.
 
 ## Requirements
 
 - macOS 15 Sequoia or later
-- Stereo headphones
+- Headphones (stereo or supported multichannel device, per the rule above)
 - System Audio Capture permission
 
 Airwave does not use microphone access.
@@ -53,7 +55,7 @@ Airwave opens a short setup wizard the first time you run it. It has four pages 
 
 ### 1. Welcome
 
-The welcome page explains the two things Airwave needs: permission to capture system audio and stereo headphones for the spatial effect.
+The welcome page explains the two things Airwave needs: permission to capture system audio and a supported output (stereo headphones or a supported multichannel device) for the spatial effect.
 
 ![Airwave setup welcome page](docs/images/1Onboarding_Welcome.png)
 
@@ -94,7 +96,7 @@ Closing the Settings window does not quit Airwave. To stop audio processing and 
 
 ## Settings
 
-Settings shows the current supported stereo output at the top. Airwave remembers a separate profile for each output it sees, so a pair of headphones can keep its own HRIR and EQ choices when you switch between devices.
+Settings shows the current supported output at the top. Airwave remembers a separate profile for each output it sees, so a pair of headphones can keep its own HRIR and EQ choices when you switch between devices.
 
 ![Airwave Settings](docs/images/5Settings.png)
 
@@ -149,7 +151,7 @@ Open setup from **Settings > Setup & Troubleshooting** and run **Test System Aud
 Check that:
 
 1. Your headphones are the current macOS output.
-2. The output is a supported stereo physical device.
+2. The output is a supported physical device (one stream, resolvable layout, not virtual or aggregate).
 3. An HRIR preset other than `None` is selected.
 4. Airwave's capture test has passed.
 

@@ -77,7 +77,7 @@ struct CaptureFailureGuidance: Equatable {
                 reason: reason,
                 suggestions: [
                     "Enable Airwave under Privacy & Security → System Audio Capture.",
-                    "Use a supported physical stereo output; virtual and aggregate outputs are unsupported."
+                    "Use a supported physical output (one stream, resolvable layout); virtual and aggregate outputs are unsupported."
                 ]
             )
         case .unverified, .checking, .verified:
@@ -163,7 +163,7 @@ final class OnboardingViewModel: ObservableObject {
         if runtime.status == .needsPermission { return .systemAudio }
         if case .failed = runtime.captureAccess { return .systemAudio }
         if let output = runtime.currentOutput,
-           output.outputChannelCount != 2 || output.isVirtual || output.isAggregate {
+           !output.isSupportedProfileOutput {
             return .liveHealth
         }
         if captureAccessPresentation != .verified { return .systemAudio }

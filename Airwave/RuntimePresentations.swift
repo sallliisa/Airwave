@@ -73,8 +73,8 @@ struct RuntimeHealthIssuePresentation: Equatable {
         case .noUsableOutput:
             Self(
                 title: "No usable audio output",
-                detail: "Airwave is waiting for a physical stereo output.",
-                suggestions: ["Connect or select your headphones or another physical stereo output in macOS."],
+                detail: "Airwave is waiting for a supported physical output.",
+                suggestions: ["Connect or select your headphones or another supported physical output in macOS."],
                 actionTitle: "Retry",
                 action: .retry
             )
@@ -82,7 +82,7 @@ struct RuntimeHealthIssuePresentation: Equatable {
             Self(
                 title: "Unsupported audio output",
                 detail: reason,
-                suggestions: ["Select a physical stereo output; virtual, aggregate, and non-stereo outputs are unsupported."],
+                suggestions: ["Select a physical output with one stream and a supported channel layout; virtual, aggregate, and unmapped layouts are unsupported.", "Supported multichannel input engages automatically: Airwave captures the device stream and writes binaural stereo to channels 1–2. LFE content is omitted from the fold-down."],
                 actionTitle: "Retry",
                 action: .retry
             )

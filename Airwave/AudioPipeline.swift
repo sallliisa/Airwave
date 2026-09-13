@@ -26,6 +26,10 @@ nonisolated protocol AudioPipelineControlling: AnyObject {
         verificationHandler: @escaping AudioCaptureVerificationHandler
     ) throws
     func stop() throws
+    /// Takes back a pending passthrough-hold teardown for an immediate
+    /// restart; late-firing hold block becomes a no-op. Default: no hold.
+    /// Returns true when a teardown was pending and reclaimed.
+    @discardableResult func reclaimPendingTeardown() -> Bool
     /// True while a passthrough-hold teardown is scheduled but not yet done;
     /// no replacement pipeline may be created while this is set.
     var isDeferredTeardownPending: Bool { get }
@@ -39,6 +43,9 @@ nonisolated protocol AudioPipelineControlling: AnyObject {
 extension AudioPipelineControlling {
     /// Default for lightweight fakes: no deferred teardown.
     var isDeferredTeardownPending: Bool { false }
+
+    /// Default for lightweight fakes: no hold window, nothing to reclaim.
+    @discardableResult func reclaimPendingTeardown() -> Bool { false }
 
     /// Default for lightweight fakes: no hold window, immediate teardown.
     func stop(
@@ -204,6 +211,13 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
     /// success) and throws only for genuinely unrecoverable statuses; a failed
     /// stage preserves the rest of the chain so a later `stop()` can safely
     /// retry THE SAME pipeline object.
+    ///
+    /// While a passthrough-hold teardown is pending, plain `stop()` throws
+    /// instead of reporting success: destruction is already scheduled, and
+    /// success here would let a replacement pipeline be created while these
+    /// resources are still registered. `reclaimPendingTeardown` is the one
+    /// path that takes the handles back early, for an immediate same-object
+    /// restart.
     func stop() throws {
         guard !isDeferredTeardownPending else {
             // Destruction is already scheduled by a passthrough-hold stop;
@@ -243,10 +257,40 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
     nonisolated(unsafe) static var passthroughHoldInterval: TimeInterval = 0.5
 
     private var isDeferredTeardownPendingStorage = false
+    private var pendingTeardownBox: DeferredTeardownBox?
 
     /// True while a passthrough-hold teardown is scheduled but not yet done;
     /// no replacement pipeline may be created while this is set.
     var isDeferredTeardownPending: Bool { isDeferredTeardownPendingStorage }
+
+    /// Takes the handles back from a pending passthrough-hold teardown so
+    /// the SAME pipeline object can stop synchronously for an immediate
+    /// restart. Marks the deferred box reclaimed: when it fires later it
+    /// destroys nothing and still runs its completion. Returns false when no
+    /// teardown was pending. The I/O loop was already stopped before the
+    /// hold, so reclaiming never resumes program audio. Main queue only.
+    ///
+    /// The reclaimed handles stay registered (native audio stays muted)
+    /// until the synchronous post-reclaim `stop()` destroys them — reclaim
+    /// alone destroys nothing.
+    func reclaimPendingTeardown() -> Bool {
+        guard isDeferredTeardownPendingStorage, let box = pendingTeardownBox else { return false }
+        box.reclaimed = true
+        io = box.io
+        aggregate = box.aggregate
+        tap = box.tap
+        // ALSO claim this box back as the live chain: the synchronous
+        // post-reclaim `stop()` destroys exactly io/aggregate/tap and drops
+        // them; without touching these, `stop()` still throws for "teardown
+        // already scheduled" and the restart parks behind the hold window.
+        box.io = nil
+        box.aggregate = nil
+        box.tap = nil
+        // ioStarted stays false: the loop was stopped before the hold.
+        isDeferredTeardownPendingStorage = false
+        pendingTeardownBox = nil
+        return true
+    }
 
     /// Plan 021 Step 2: never unmute into program audio.
     ///
@@ -261,10 +305,11 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
     /// The claimed handles have a single owner from the moment this returns:
     /// either the deferred teardown block, or — if that destruction fails —
     /// they are handed back to this pipeline so a later `stop()` retry of THE
-    /// SAME object can finish releasing them. While a teardown is pending,
-    /// every further `stop()` throws instead of reporting success, preserving
-    /// exclusive pipeline ownership (no replacement may be created while these
-    /// handles are still registered).
+    /// SAME object can finish releasing them. A plain `stop()` reclaims a
+    /// pending teardown first (same-object synchronous restart); only arming
+    /// a second hold while one is pending throws, preserving exclusive
+    /// pipeline ownership (no replacement may be created while these handles
+    /// are still registered).
     func stop(
         holdingPassthroughFade hold: Bool,
         onTeardownComplete: ((Error?) -> Void)?
@@ -305,6 +350,7 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
         aggregate = nil
         tap = nil
         isDeferredTeardownPendingStorage = true
+        pendingTeardownBox = teardownBox
 
         // The hold timer fires exclusively on the main queue — the same queue
         // on which the controller performs every pipeline mutation.
@@ -319,9 +365,13 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
     private final class DeferredTeardownBox: @unchecked Sendable {
         let pipeline: AudioPipeline
         let platform: AudioPlatformClient
-        let io: AudioIOHandle?
-        let aggregate: PrivateAggregateHandle?
-        let tap: AudioTapHandle?
+        var io: AudioIOHandle?
+        var aggregate: PrivateAggregateHandle?
+        var tap: AudioTapHandle?
+        /// Set by `reclaimPendingTeardown`: the handles were taken back for a
+        /// synchronous restart and already destroyed there, so the late-firing
+        /// box destroys nothing and still runs its completion. Main queue only.
+        var reclaimed = false
 
         init(
             pipeline: AudioPipeline,
@@ -338,10 +388,18 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
         }
 
         func run(onTeardownComplete: ((Error?) -> Void)?) {
-            // Every outcome hands ownership back: fully destroyed, or the
-            // surviving handles returned to this object so a later `stop()`
-            // retry of THE SAME pipeline can finish releasing them.
+            // Reclaimed handles were already destroyed by the synchronous
+            // post-reclaim stop: destroy nothing, hand nothing back, and
+            // still run the completion so the arming caller observes success.
+            // Every other outcome hands ownership back: fully destroyed, or
+            // the surviving handles returned to this object so a later
+            // `stop()` retry of THE SAME pipeline can finish releasing them.
             pipeline.isDeferredTeardownPendingStorage = false
+            if pipeline.pendingTeardownBox === self { pipeline.pendingTeardownBox = nil }
+            guard !reclaimed else {
+                onTeardownComplete?(nil)
+                return
+            }
             // The I/O loop was already stopped synchronously before the hold.
             pipeline.ioStarted = false
             AirwaveLog.audioRuntime.info("Passthrough hold elapsed; destroying IO, aggregate, tap.")

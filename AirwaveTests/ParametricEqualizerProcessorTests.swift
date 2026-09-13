@@ -678,6 +678,152 @@ final class ParametricEqualizerProcessorTests: XCTestCase {
     }
 }
 
+#if DEBUG
+/// Plan 033 ownership proof for EQ filter states and processors. Each filter
+/// state and each processor carries its own DEBUG probe, so probe death runs
+/// on the thread that frees the last owner. A serial audio queue runs every
+/// publish/process call, so a probe death on that queue proves a release.
+final class EqualizerDestructionProofTests: XCTestCase {
+    private let audioKey = DispatchSpecificKey<Void>()
+    private var audioQueue: DispatchQueue!
+    private var recorder: ParametricEqualizerProcessor.DestructionRecorder!
+
+    private func runAudio(_ body: @escaping () -> Void) {
+        let done = expectation(description: "audio phase")
+        audioQueue.async {
+            body()
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 5)
+    }
+
+    private func drive(_ processor: ParametricEqualizerProcessor, frames: Int, size: Int = 256) {
+        var remaining = frames
+        while remaining > 0 {
+            let count = min(size, remaining)
+            remaining -= count
+            let left = [Float](repeating: 0.25, count: count)
+            let right = [Float](repeating: 0.25, count: count)
+            var outLeft = [Float](repeating: 0, count: count)
+            var outRight = [Float](repeating: 0, count: count)
+            left.withUnsafeBufferPointer { leftPtr in
+                right.withUnsafeBufferPointer { rightPtr in
+                    outLeft.withUnsafeMutableBufferPointer { outL in
+                        outRight.withUnsafeMutableBufferPointer { outR in
+                            processor.process(
+                                inputLeft: leftPtr.baseAddress!,
+                                inputRight: rightPtr.baseAddress!,
+                                leftOutput: outL.baseAddress!,
+                                rightOutput: outR.baseAddress!,
+                                frameCount: count
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func drive(_ effect: EqualizerRuntimeEffect, frames: Int, size: Int = 256) {
+        var remaining = frames
+        while remaining > 0 {
+            let count = min(size, remaining)
+            remaining -= count
+            let left = [Float](repeating: 0.25, count: count)
+            let right = [Float](repeating: 0.25, count: count)
+            var outLeft = [Float](repeating: 0, count: count)
+            var outRight = [Float](repeating: 0, count: count)
+            left.withUnsafeBufferPointer { leftPtr in
+                right.withUnsafeBufferPointer { rightPtr in
+                    outLeft.withUnsafeMutableBufferPointer { outL in
+                        outRight.withUnsafeMutableBufferPointer { outR in
+                            effect.process(
+                                inputLeft: leftPtr.baseAddress!,
+                                inputRight: rightPtr.baseAddress!,
+                                outputLeft: outL.baseAddress!,
+                                outputRight: outR.baseAddress!,
+                                frameCount: count
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    override func setUp() {
+        super.setUp()
+        audioQueue = DispatchQueue(label: "test.eq.audio")
+        audioQueue.setSpecific(key: audioKey, value: ())
+        recorder = ParametricEqualizerProcessor.DestructionRecorder()
+        ParametricEqualizerProcessor.configureDestructionProbeForTesting(audioKey: audioKey, recorder: recorder)
+    }
+
+    override func tearDown() {
+        ParametricEqualizerProcessor.configureDestructionProbeForTesting(audioKey: nil, recorder: nil)
+        audioQueue = nil
+        recorder = nil
+        super.tearDown()
+    }
+
+    func testFilterSaturationDefersWithoutAudioDestruction() throws {
+        let processor = try ParametricEqualizerProcessor(sampleRate: 48_000)
+        let length = 960
+        // Saturate the single control retirement slot, then publish newer
+        // targets from control. Older intermediates stay owned; none
+        // destroyed on audio.
+        var states: [ParametricEqualizerState?] = []
+        for db in [6.0, -6.0, 12.0, -12.0, 3.0] {
+            let state = try ParametricEqualizerProcessor.makeProbedStateForTesting(
+                definition: EqualizerDefinition(preampDB: db), sampleRate: 48_000)
+            states.append(state)
+            let published = state
+            try processor.publish(published)
+            runAudio { self.drive(processor, frames: length) }
+        }
+        XCTAssertEqual(recorder.audioThreadDestructionCount, 0)
+        let newest = states.last!
+        let newestID = ObjectIdentifier(newest! as AnyObject).hashValue
+        states.removeAll()
+        var keep: ParametricEqualizerState? = newest
+        for _ in 0..<10 {
+            processor.drainRetiredStates()
+            runAudio { self.drive(processor, frames: length) }
+        }
+        processor.drainRetiredStates()
+        let seen = recorder.snapshot.filter { $0.kind == "filter" }.map(\.id)
+        XCTAssertEqual(seen.filter { $0 == newestID }.count, 0)
+        XCTAssertEqual(recorder.audioThreadDestructionCount, 0)
+        keep = nil
+        processor.cleanupAfterIOStopped()
+    }
+
+    func testProcessorReplacementHoldsOldUntilControlDrain() throws {
+        let effect = EqualizerRuntimeEffect()
+        try effect.prepare(definition: EqualizerDefinition(preampDB: 6), sampleRate: 48_000)
+        runAudio { self.drive(effect, frames: 960) }
+        // Replace the sample-rate processor. Fill the retired-processor slot,
+        // then publish a third processor while the slot is full. The audio
+        // side must hold the old processor and keep the newest for retry.
+        try effect.prepare(definition: EqualizerDefinition(preampDB: -6), sampleRate: 44_100)
+        runAudio { self.drive(effect, frames: 256) }
+        try effect.prepare(definition: EqualizerDefinition(preampDB: 12), sampleRate: 96_000)
+        runAudio { self.drive(effect, frames: 256) }
+        XCTAssertEqual(recorder.audioThreadDestructionCount, 0)
+        effect.cleanupAfterIOStopped()
+        XCTAssertEqual(recorder.audioThreadDestructionCount, 0)
+    }
+
+    func testStopCleanupReleasesEQStorage() throws {
+        let processor = try ParametricEqualizerProcessor(sampleRate: 48_000)
+        try processor.setTarget(definition: EqualizerDefinition(preampDB: 6))
+        runAudio { self.drive(processor, frames: 960) }
+        processor.cleanupAfterIOStopped()
+        XCTAssertEqual(recorder.audioThreadDestructionCount, 0)
+    }
+}
+#endif
+
 private struct Complex {
     let real: Double
     let imaginary: Double

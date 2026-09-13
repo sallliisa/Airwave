@@ -304,6 +304,30 @@ final class AudioEffectGraphTests: XCTestCase {
         )
     }
 
+    func testStopCleanupReleasesRetiredEQProcessor() throws {
+        let effect = EqualizerRuntimeEffect()
+        try effect.prepare(definition: EqualizerDefinition(preampDB: 6), sampleRate: 48_000)
+        let graph = AudioEffectGraph(
+            spatial: SpatialEffectSpy(isReady: false, processResult: false),
+            equalizer: effect,
+            maxFramesPerCallback: 8
+        )
+        _ = graph.prepare(
+            for: deviceOutput(sampleRate: 48_000),
+            equalizerDefinition: EqualizerDefinition(preampDB: 6)
+        )
+        // Drive one callback so the audio side adopts the processor, then
+        // replace the sample-rate processor and drive again so the old one
+        // retires. Stop cleanup must release every audio reference.
+        _ = process(graph, left: [Float](repeating: 0.25, count: 8), right: [Float](repeating: 0.25, count: 8))
+        try effect.prepare(definition: EqualizerDefinition(preampDB: -6), sampleRate: 44_100)
+        _ = process(graph, left: [Float](repeating: 0.25, count: 8), right: [Float](repeating: 0.25, count: 8))
+        graph.cleanupAfterIOStopped()
+        // Post-stop processing with no published EQ must passthrough.
+        let result = process(graph, left: [Float](repeating: 0.25, count: 8), right: [Float](repeating: 0.25, count: 8))
+        XCTAssertEqual(result.left, [Float](repeating: 0.25, count: 8))
+    }
+
     func testNewEqualizerTargetWinsRaceWithBypassCompletion() {
         let equalizer = EqualizerEffectSpy(multiplier: 2)
         let graph = AudioEffectGraph(

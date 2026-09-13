@@ -3,6 +3,22 @@ import Foundation
 
 /// Resolves a device profile into one complete effect pair. Core Audio resource
 /// ownership deliberately remains in AudioRuntimeController.
+/// Liveness surface the coordinator needs from the runtime controller.
+/// Production `AudioRuntimeController` conforms; tests wrap it with a
+/// counting spy. Exists so plan 037 tests observe live-update counts
+/// without subclassing (controller state is private).
+@MainActor
+protocol AudioRuntimeControlling: AnyObject {
+    var canUpdateSpatialLive: Bool { get }
+    var isDeferredTeardownPendingForTesting: Bool { get }
+    @discardableResult
+    func updateSpatialLive(isReady: Bool) -> Bool
+    func updateCurrentEqualizer(_ definition: EqualizerDefinition?)
+    func reprepareCurrentOutput()
+}
+
+extension AudioRuntimeController: AudioRuntimeControlling {}
+
 @MainActor
 final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
     static let shared = DeviceProfileRuntimeCoordinator(
@@ -15,7 +31,10 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
     private let profiles: DeviceProfileManager
     private let hrir: HRIRManager
     private let equalizer: EqualizerManager
-    private let controller: AudioRuntimeController
+    private let controller: any AudioRuntimeControlling
+    /// Owned preparer registration. The protocol hides `setProfilePreparer`,
+    /// so the coordinator keeps the concrete controller only for launch.
+    private let preparerHost: AudioRuntimeController?
     private var cancellables: Set<AnyCancellable> = []
     private var generation = 0
     private var launched = false
@@ -23,40 +42,72 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
     private var pendingPreparation: (output: OutputDeviceDescriptor, completion: (AudioRuntimeEffectReadiness) -> Void)?
     /// Output the live pipeline was prepared for; live HRIR swaps reuse its sample rate.
     private var preparedOutput: OutputDeviceDescriptor?
+    /// Latest arrays emitted by the `$presets` subscriptions. `@Published`
+    /// sends during willSet, so a read of the backing property inside the
+    /// sink can still hold the old value; reconciliation below uses these.
+    private var latestHRIRSnapshot: [HRIRPreset] = []
+    private var latestEqualizerSnapshot: [EqualizerPreset] = []
+    /// Last applied selected content: HRIR revision and EQ definition.
+    /// A snapshot that changes neither must not restart audio.
+    private var lastAppliedHRIRRevision: HRIRContentIdentity?
+    private var lastAppliedEqualizerDefinition: EqualizerDefinition?
 
     init(
         profiles: DeviceProfileManager,
         hrir: HRIRManager,
         equalizer: EqualizerManager,
-        controller: AudioRuntimeController
+        controller: any AudioRuntimeControlling,
+        preparerHost: AudioRuntimeController? = nil
     ) {
         self.profiles = profiles
         self.hrir = hrir
         self.equalizer = equalizer
         self.controller = controller
+        self.preparerHost = preparerHost ?? (controller as? AudioRuntimeController)
+    }
+
+    /// Production convenience: the controller is its own preparer host.
+    convenience init(
+        profiles: DeviceProfileManager,
+        hrir: HRIRManager,
+        equalizer: EqualizerManager,
+        controller: AudioRuntimeController
+    ) {
+        self.init(profiles: profiles, hrir: hrir, equalizer: equalizer, controller: controller as any AudioRuntimeControlling, preparerHost: controller)
     }
 
     func launch() {
         guard !launched else { return }
         launched = true
-        controller.setProfilePreparer(self)
+        preparerHost?.setProfilePreparer(self)
+        // Existing launch contract: the coordinator starts its host with no
+        // effect selected. A relaunch with a preparer present routes through
+        // profile preparation; capture-verified state is preserved by the
+        // controller relaunch path when already verified.
+        preparerHost?.launch(
+            effectReadiness: .init(spatialReady: false, equalizerDefinition: nil)
+        )
 
         profiles.changes.sink { [weak self] change in
             self?.profileChanged(change)
         }.store(in: &cancellables)
 
         hrir.$presets.combineLatest(hrir.$initialLibrarySyncReady)
-            .sink { [weak self] _, ready in
+            .sink { [weak self] presets, ready in
                 guard ready else { return }
-                self?.reconcileLibraries()
+                self?.latestHRIRSnapshot = presets
+                self?.reconcileLibraries(hrirSnapshot: presets)
+                self?.reloadSelectedHRIRIfChanged()
                 self?.resumePendingPreparation()
             }.store(in: &cancellables)
-        equalizer.$presets.sink { [weak self] _ in
+        equalizer.$presets.sink { [weak self] presets in
             guard self?.hrir.initialLibrarySyncReady == true else { return }
-            self?.reconcileLibraries()
+            self?.latestEqualizerSnapshot = presets
+            self?.reconcileLibraries(equalizerSnapshot: presets)
+            self?.reloadSelectedEqualizerIfChanged()
         }.store(in: &cancellables)
 
-        controller.launch(
+        preparerHost?.launch(
             effectReadiness: .init(spatialReady: false, equalizerDefinition: nil)
         )
     }
@@ -103,6 +154,7 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
         }
         guard let hrirID = hrirPresetID,
               let preset = hrir.presets.first(where: { $0.id == hrirID }) else {
+            lastAppliedEqualizerDefinition = definition
             completion(.init(spatialReady: false, equalizerDefinition: definition))
             return
         }
@@ -118,6 +170,8 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
             guard let self, requestedGeneration == self.generation else { return }
             switch result {
             case .success:
+                self.lastAppliedHRIRRevision = self.hrir.contentRevisionForTesting(filename: preset.fileURL.lastPathComponent)
+                self.lastAppliedEqualizerDefinition = definition
                 completion(.init(spatialReady: true, equalizerDefinition: definition))
             case .failure(let message):
                 completion(.init(
@@ -148,6 +202,7 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
             break
         case .equalizer:
             let definition = equalizer.preset(id: profiles.currentProfile?.equalizerPresetID)?.definition
+            lastAppliedEqualizerDefinition = definition
             controller.updateCurrentEqualizer(definition)
         case .hrir, .both:
             spatialProfileChanged(includesEqualizer: change.effect == .both)
@@ -209,7 +264,12 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
             guard let self, requestedGeneration == self.generation else { return }
             switch result {
             case .success:
-                if includesEqualizer { self.controller.updateCurrentEqualizer(definition) }
+                self.lastAppliedHRIRRevision = self.hrir.contentRevisionForTesting(filename: preset.fileURL.lastPathComponent)
+                if includesEqualizer {
+                    let definition = self.equalizer.preset(id: self.profiles.currentProfile?.equalizerPresetID)?.definition
+                    self.lastAppliedEqualizerDefinition = definition
+                    self.controller.updateCurrentEqualizer(definition)
+                }
                 self.controller.updateSpatialLive(isReady: true)
             case .failure:
                 // Full restart is the established recovery path and keeps the
@@ -219,10 +279,17 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
         }
     }
 
-    private func reconcileLibraries() {
+    private func reconcileLibraries(
+        hrirSnapshot: [HRIRPreset]? = nil,
+        equalizerSnapshot: [EqualizerPreset]? = nil
+    ) {
         guard hrir.initialLibrarySyncReady else { return }
-        let hrirIDs = Set(hrir.presets.map(\.id))
-        let eqIDs = Set(equalizer.presets.map(\.id))
+        // Use the emitted snapshot on this event, not the backing property:
+        // willSet timing can leave the property one event behind.
+        let hrirPresets = hrirSnapshot ?? (latestHRIRSnapshot.isEmpty ? hrir.presets : latestHRIRSnapshot)
+        let eqPresets = equalizerSnapshot ?? (latestEqualizerSnapshot.isEmpty ? equalizer.presets : latestEqualizerSnapshot)
+        let hrirIDs = Set(hrirPresets.map(\.id))
+        let eqIDs = Set(eqPresets.map(\.id))
         let missingHRIR = Set(profiles.profiles.compactMap(\.hrirPresetID)).subtracting(hrirIDs)
         let missingEQ = Set(profiles.profiles.compactMap(\.equalizerPresetID)).subtracting(eqIDs)
         let currentHRIRMissing = profiles.currentProfile?.hrirPresetID.map(missingHRIR.contains) == true
@@ -242,5 +309,77 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
         guard let pending = pendingPreparation else { return }
         pendingPreparation = nil
         prepare(output: pending.output, completion: pending.completion)
+    }
+
+    /// 037 step 2/3: the selected HRIR file changed content. Route through
+    /// the existing live-update path; keep pipeline identity and the
+    /// prepared output rate. A removal snapshot clears through
+    /// reconciliation above; this handles the still-selected replacement.
+    private func reloadSelectedHRIRIfChanged() {
+        guard let output = preparedOutput,
+              controller.canUpdateSpatialLive,
+              !controller.isDeferredTeardownPendingForTesting else { return }
+        let selectedID = profiles.currentProfile?.hrirPresetID
+        let layout = InputLayoutResolver.layout(
+            channelLabels: output.channelLabels,
+            channelCount: output.outputChannelCount
+        )
+        // Coordinator-side duplicate gate: this exact revision already
+        // applied through an earlier snapshot or the prepare path.
+        if let selectedID,
+           let row = latestHRIRSnapshot.first(where: { $0.id == selectedID }),
+           let stored = hrir.contentRevisionForTesting(filename: row.fileURL.lastPathComponent),
+           stored == lastAppliedHRIRRevision { return }
+        let started = hrir.reloadSelectedPreset(
+            latestHRIRSnapshot,
+            selectedID: selectedID,
+            targetSampleRate: output.nominalSampleRate,
+            inputLayout: layout
+        ) { [weak self] preset in
+            self?.activateLiveHRIR(preset: preset, output: output, layout: layout)
+        }
+        if started, let selectedID,
+           let row = latestHRIRSnapshot.first(where: { $0.id == selectedID }) {
+            lastAppliedHRIRRevision = hrir.contentRevisionForTesting(filename: row.fileURL.lastPathComponent)
+        }
+    }
+
+    /// 037 step 2/3: the selected EQ definition changed content. Route
+    /// through the existing live-update path. A duplicate snapshot keeps
+    /// the definition and must not touch audio. Falls back to the backing
+    /// property when the sink has not stored this event yet (direct
+    /// `reload()` calls in tests publish synchronously through willSet).
+    private func reloadSelectedEqualizerIfChanged() {
+        guard controller.canUpdateSpatialLive,
+              preparedOutput != nil,
+              !controller.isDeferredTeardownPendingForTesting else { return }
+        guard let selectedID = profiles.currentProfile?.equalizerPresetID else { return }
+        let definition = latestEqualizerSnapshot.first(where: { $0.id == selectedID })?.definition
+            ?? equalizer.preset(id: selectedID)?.definition
+        guard let definition else { return }
+        guard definition != lastAppliedEqualizerDefinition else { return }
+        lastAppliedEqualizerDefinition = definition
+        controller.updateCurrentEqualizer(definition)
+    }
+
+    /// Live HRIR activation shared with the profile-change path. Bumps the
+    /// generation so a stale activation cannot publish, then applies the
+    /// ready state without rebuilding the pipeline.
+    private func activateLiveHRIR(preset: HRIRPreset, output: OutputDeviceDescriptor, layout: InputLayout) {
+        generation += 1
+        let requestedGeneration = generation
+        hrir.activatePreset(
+            preset,
+            targetSampleRate: output.nominalSampleRate,
+            inputLayout: layout
+        ) { [weak self] result in
+            guard let self, requestedGeneration == self.generation else { return }
+            switch result {
+            case .success:
+                self.controller.updateSpatialLive(isReady: true)
+            case .failure:
+                self.controller.reprepareCurrentOutput()
+            }
+        }
     }
 }

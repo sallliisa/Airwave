@@ -81,6 +81,14 @@ nonisolated struct CoreAudioIOVerificationState: Equatable, Sendable {
                 if channelPolicies[index].hasDetectedSignal {
                     detected = true
                 }
+            } else {
+                // A missing channel must not carry partial activity across
+                // an unobserved gap as if it were continuous. Advance its
+                // window with inactive frames for the skipped frames.
+                let _ = channelPolicies[index].observeMissing(frameCount: frameCount)
+                if channelPolicies[index].hasDetectedSignal {
+                    detected = true
+                }
             }
         }
         guard detected else { return nil }
@@ -204,6 +212,309 @@ nonisolated enum DefaultOutputObservationDecision: Equatable {
     }
 }
 
+/// Plan 039 Step 1 record for one installed current-device property
+/// listener. The device ID plus the exact address identifies the
+/// registration. Delivery uses the same serial control queue as
+/// default-output observation (main).
+nonisolated struct CurrentDeviceListenerRecord: Equatable, Sendable {
+    let deviceID: AudioObjectID
+    let selector: AudioObjectPropertySelector
+    let scope: AudioObjectPropertyScope
+    let element: AudioObjectPropertyElement
+    /// False for the optional preferred-layout property. Its absence uses
+    /// plan 038 fallback policy instead of failing observation.
+    let isRequired: Bool
+}
+
+/// Plan 039 Step 1 watched properties: nominal rate, stream configuration,
+/// and preferred layout on the current output device.
+nonisolated enum CurrentDeviceFormatObservation {
+    static func records(for deviceID: AudioObjectID) -> [CurrentDeviceListenerRecord] {
+        [
+            CurrentDeviceListenerRecord(
+                deviceID: deviceID,
+                selector: kAudioDevicePropertyNominalSampleRate,
+                scope: kAudioObjectPropertyScopeGlobal,
+                element: kAudioObjectPropertyElementMain,
+                isRequired: true
+            ),
+            CurrentDeviceListenerRecord(
+                deviceID: deviceID,
+                selector: kAudioDevicePropertyStreamConfiguration,
+                scope: kAudioObjectPropertyScopeOutput,
+                element: kAudioObjectPropertyElementMain,
+                isRequired: true
+            ),
+            CurrentDeviceListenerRecord(
+                deviceID: deviceID,
+                selector: kAudioDevicePropertyPreferredChannelLayout,
+                scope: kAudioObjectPropertyScopeOutput,
+                element: kAudioObjectPropertyElementMain,
+                isRequired: false
+            ),
+        ]
+    }
+
+    static func address(for record: CurrentDeviceListenerRecord) -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(
+            mSelector: record.selector,
+            mScope: record.scope,
+            mElement: record.element
+        )
+    }
+}
+
+/// Plan 039 Step 2 retry boundary. One pending descriptor retry at most,
+/// three attempts after the initial failure. Delays are measured from the
+/// preceding failed attempt. Distinct from the controller pipeline recovery
+/// schedule. Tests advance a fake scheduler; production posts on main.
+nonisolated protocol CurrentDeviceRetryScheduling: AnyObject {
+    func schedule(after delay: TimeInterval, _ action: @escaping () -> Void) -> AudioRuntimeCancellation
+}
+
+nonisolated final class DispatchCurrentDeviceRetryScheduler: CurrentDeviceRetryScheduling {
+    private final class Token: AudioRuntimeCancellation {
+        var item: DispatchWorkItem?
+        func cancel() { item?.cancel(); item = nil }
+    }
+
+    func schedule(after delay: TimeInterval, _ action: @escaping () -> Void) -> AudioRuntimeCancellation {
+        let token = Token()
+        let item = DispatchWorkItem { [weak token] in
+            guard token?.item != nil else { return }
+            token?.item = nil
+            action()
+        }
+        token.item = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+        return token
+    }
+}
+
+nonisolated enum CurrentDeviceDescriptorRetry {
+    static let delays: [TimeInterval] = [0.1, 0.25, 1.0]
+}
+
+/// Plan 039 Step 1 ownership of current-device listeners. Production passes
+/// Core Audio closures; tests pass fakes. Install/remove balance,
+/// partial-failure rollback, generation guard, and unchanged suppression
+/// live here so tests exercise the same path as production.
+/// Step 2 adds bounded descriptor retries on the same seam: one pending
+/// token, generation-guarded attempts, newer-identity/stop cancellation.
+nonisolated final class CurrentDeviceListenerSet {
+    typealias AddListener = (AudioObjectID, AudioObjectPropertyAddress) -> OSStatus
+    typealias RemoveListener = (AudioObjectID, AudioObjectPropertyAddress) -> OSStatus
+    typealias ReadDescriptor = (AudioObjectID) -> Result<OutputDeviceDescriptor, Error>
+
+    private let add: AddListener
+    private let remove: RemoveListener
+    private let read: ReadDescriptor?
+    private let retryScheduler: CurrentDeviceRetryScheduling?
+    private(set) var installed: [CurrentDeviceListenerRecord] = []
+    private(set) var deviceID: AudioObjectID?
+    private(set) var generation: UInt64 = 0
+    private(set) var lastDelivered: OutputDeviceDescriptor?
+    private var pendingRetryToken: AudioRuntimeCancellation?
+    private(set) var pendingRetryAttempt = 0
+    private var pendingRetryDevice: AudioObjectID?
+    private var pendingRetryGeneration: UInt64?
+    private var pendingOnOutput: ((OutputDeviceDescriptor) -> Void)?
+    private var pendingOnMissing: (() -> Void)?
+
+    init(
+        add: @escaping AddListener,
+        remove: @escaping RemoveListener,
+        read: ReadDescriptor? = nil,
+        scheduler: CurrentDeviceRetryScheduling? = nil
+    ) {
+        self.add = add
+        self.remove = remove
+        self.read = read
+        self.retryScheduler = scheduler
+    }
+
+    var installedCount: Int { installed.count }
+
+    var hasPendingRetry: Bool { pendingRetryToken != nil }
+
+    /// Bind a new device: remove old registrations, then install the watched
+    /// properties. A required failure removes this attempt's successes and
+    /// throws. An optional layout failure keeps the required listeners.
+    func bind(deviceID: AudioObjectID, seed: OutputDeviceDescriptor? = nil) throws {
+        unbind()
+        var added: [CurrentDeviceListenerRecord] = []
+        for record in CurrentDeviceFormatObservation.records(for: deviceID) {
+            let address = CurrentDeviceFormatObservation.address(for: record)
+            guard add(deviceID, address) == noErr else {
+                if record.isRequired {
+                    for done in added {
+                        remove(done.deviceID, CurrentDeviceFormatObservation.address(for: done))
+                    }
+                    installed = []
+                    self.deviceID = nil
+                    throw AudioRuntimeError.deviceLost
+                }
+                continue
+            }
+            added.append(record)
+        }
+        installed = added
+        self.deviceID = deviceID
+        generation &+= 1
+        lastDelivered = seed
+    }
+
+    /// Best-effort rebind after a default-device event. False means the set
+    /// was unwound; the caller logs and still delivers the descriptor.
+    /// Step 2: a newer identity also cancels any pending retry (via bind).
+    @discardableResult
+    func rebindIfNeeded(deviceID: AudioObjectID, seed: OutputDeviceDescriptor) -> Bool {
+        guard deviceID != self.deviceID else {
+            // Same device: keep one pending chain; a fresh readable event
+            // routes through `shouldDeliver` and clears it on delivery.
+            coalescePendingRetry(for: deviceID, eventGeneration: generation)
+            return true
+        }
+        do {
+            try bind(deviceID: deviceID, seed: seed)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Remove all current-device registrations. Safe to repeat. Bumps the
+    /// generation so in-flight events from removed listeners are ignored.
+    /// Step 2: also cancels any pending descriptor retry.
+    func unbind() {
+        cancelPendingRetry()
+        for record in installed {
+            remove(record.deviceID, CurrentDeviceFormatObservation.address(for: record))
+        }
+        installed = []
+        deviceID = nil
+        generation &+= 1
+        lastDelivered = nil
+    }
+
+    /// Decide whether a current-device event reaches the descriptor handler.
+    /// Stale generations, empty sets, and unchanged values are ignored. A
+    /// first read after bind (no seed) is delivered.
+    func shouldDeliver(_ fresh: OutputDeviceDescriptor, eventGeneration: UInt64) -> Bool {
+        guard eventGeneration == generation, !installed.isEmpty else { return false }
+        guard let last = lastDelivered else {
+            lastDelivered = fresh
+            return true
+        }
+        guard fresh.hasProcessingFormatChange(from: last) else { return false }
+        lastDelivered = fresh
+        return true
+    }
+
+    // MARK: - Plan 039 Step 2: bounded descriptor retries
+
+    /// Entry for a current-device event whose descriptor read failed with a
+    /// transient error. A `.noOutputDevice` failure publishes missing at
+    /// once (no retry). Any other failure arms at most one retry token:
+    /// first attempt after 0.1s, then 0.25s, then 1.0s. Returns true when
+    /// missing was published or a retry was armed.
+    @discardableResult
+    func noteTransientReadFailure(
+        for device: AudioObjectID,
+        eventGeneration: UInt64,
+        onOutput: @escaping (OutputDeviceDescriptor) -> Void,
+        onMissing: @escaping () -> Void
+    ) -> Bool {
+        guard eventGeneration == generation, device == deviceID, !installed.isEmpty else { return false }
+        guard pendingRetryToken == nil else { return true }
+        guard retryScheduler != nil, read != nil, !CurrentDeviceDescriptorRetry.delays.isEmpty else {
+            pendingOnMissing = nil
+            pendingOnOutput = nil
+            onMissing()
+            return true
+        }
+        pendingOnOutput = onOutput
+        pendingOnMissing = onMissing
+        pendingRetryDevice = device
+        pendingRetryGeneration = eventGeneration
+        pendingRetryAttempt = 0
+        armRetryLocked(delay: CurrentDeviceDescriptorRetry.delays[0])
+        return true
+    }
+
+    private func armRetryLocked(delay: TimeInterval) {
+        guard let scheduler = retryScheduler,
+              let tokenGeneration = pendingRetryGeneration,
+              let tokenDevice = pendingRetryDevice,
+              tokenGeneration == generation,
+              tokenDevice == deviceID else {
+            cancelPendingRetry()
+            return
+        }
+        pendingRetryToken?.cancel()
+        pendingRetryToken = scheduler.schedule(after: delay) { [weak self] in
+            self?.firePendingRetry()
+        }
+    }
+
+    private func firePendingRetry() {
+        guard let runningToken = pendingRetryToken,
+              let tokenDevice = pendingRetryDevice,
+              let tokenGeneration = pendingRetryGeneration,
+              tokenGeneration == generation,
+              tokenDevice == deviceID,
+              let read,
+              let onOutput = pendingOnOutput,
+              let onMissing = pendingOnMissing else {
+            cancelPendingRetry()
+            return
+        }
+        pendingRetryToken = nil
+        runningToken.cancel()
+        switch read(tokenDevice) {
+        case .success(let output):
+            let delivered = shouldDeliver(output, eventGeneration: tokenGeneration)
+            cancelPendingRetry()
+            if delivered { onOutput(output) }
+        case .failure(AudioRuntimeError.noOutputDevice):
+            cancelPendingRetry()
+            onMissing()
+        case .failure:
+            pendingRetryAttempt += 1
+            if pendingRetryAttempt >= CurrentDeviceDescriptorRetry.delays.count {
+                cancelPendingRetry()
+                onMissing()
+                return
+            }
+            armRetryLocked(delay: CurrentDeviceDescriptorRetry.delays[pendingRetryAttempt])
+        }
+    }
+
+    /// A new event for the same pending read must not create a second chain.
+    /// Callers route the fresh readable path first; this keeps the single
+    /// pending token while its device and generation are still current,
+    /// otherwise it cancels the stale chain.
+    func coalescePendingRetry(for device: AudioObjectID, eventGeneration: UInt64) {
+        guard pendingRetryToken != nil else { return }
+        guard eventGeneration == generation, device == deviceID,
+              eventGeneration == pendingRetryGeneration,
+              device == pendingRetryDevice else {
+            cancelPendingRetry()
+            return
+        }
+    }
+
+    private func cancelPendingRetry() {
+        pendingRetryToken?.cancel()
+        pendingRetryToken = nil
+        pendingRetryAttempt = 0
+        pendingRetryDevice = nil
+        pendingRetryGeneration = nil
+        pendingOnOutput = nil
+        pendingOnMissing = nil
+    }
+}
+
 nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDeviceDiscovering {
     fileprivate final class IOContext {
         let unit: AudioUnit
@@ -265,6 +576,15 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
     private var nextIOHandle: UInt64 = 1
     private var defaultOutputHandler: DefaultOutputChangeHandler?
     private var defaultOutputListenerInstalled = false
+    /// Plan 039 Step 1: current-device listeners (nominal rate, stream
+    /// config, preferred layout). Installed on the same serial control
+    /// queue as default-output observation. Nil blocks are the production
+    /// HAL calls; the block slot exists so registration uses one exact
+    /// block object for add and remove.
+    private var currentDeviceListeners: CurrentDeviceListenerSet!
+    private var currentDeviceListenerBlock: AudioObjectPropertyListenerBlock!
+    private var lastObservedOutput: OutputDeviceDescriptor?
+    private var observationGeneration: UInt64 = 0
     private var availableOutputHandler: AvailableOutputChangeHandler?
     private var availableOutputListenerInstalled = false
 
@@ -356,6 +676,7 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
     func observeDefaultOutput(_ handler: @escaping DefaultOutputChangeHandler) throws {
         stopObservingDefaultOutput()
         defaultOutputHandler = handler
+        ensureCurrentDeviceObservation()
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultOutputDevice,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -368,13 +689,37 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
             defaultOutputListener
         )
         guard status == noErr else {
+            currentDeviceListeners?.unbind()
             defaultOutputHandler = nil
             throw AudioRuntimeError.deviceLost
         }
         defaultOutputListenerInstalled = true
+        // Plan 039 Step 1: bind current-device listeners at observation
+        // start, not only after the first default-device event. A required
+        // registration failure unwinds the system listener too.
+        do {
+            try bindCurrentDeviceListeners()
+        } catch {
+            var removeAddress = address
+            AudioObjectRemovePropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject),
+                &removeAddress,
+                .main,
+                defaultOutputListener
+            )
+            defaultOutputListenerInstalled = false
+            defaultOutputHandler = nil
+            throw error
+        }
     }
 
     func stopObservingDefaultOutput() {
+        // Plan 039 Step 1: current-device registrations are always removed,
+        // even when the system listener is already gone. Unbind bumps the
+        // generation so in-flight events are ignored. Safe to repeat.
+        currentDeviceListeners?.unbind()
+        lastObservedOutput = nil
+        observationGeneration &+= 1
         guard defaultOutputListenerInstalled else {
             defaultOutputHandler = nil
             return
@@ -389,13 +734,135 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
         defaultOutputHandler = nil
     }
 
+    /// Production-path entry for a current-device format event. Generation
+    /// guard, unchanged suppression, and delivery bookkeeping live in the
+    /// set; this method routes actual changes through the existing handler.
+    func handleCurrentDeviceDescriptor(_ fresh: OutputDeviceDescriptor, eventGeneration: UInt64) {
+        guard let listeners = currentDeviceListeners,
+              listeners.shouldDeliver(fresh, eventGeneration: eventGeneration) else { return }
+        lastObservedOutput = fresh
+        defaultOutputHandler?(fresh)
+    }
+
+    private func ensureCurrentDeviceObservation() {
+        if currentDeviceListeners == nil {
+            currentDeviceListenerBlock = { [weak self] _, _ in
+                guard let self,
+                      let listeners = self.currentDeviceListeners,
+                      let deviceID = listeners.deviceID else { return }
+                let generation = listeners.generation
+                listeners.coalescePendingRetry(for: deviceID, eventGeneration: generation)
+                let result = Result { try self.descriptor(for: deviceID) }
+                switch DefaultOutputObservationDecision.make(from: result) {
+                case .output(let output):
+                    self.handleCurrentDeviceDescriptor(output, eventGeneration: generation)
+                case .missing:
+                    self.defaultOutputHandler?(nil)
+                case .retainLastValid:
+                    // Plan 039 Step 2: a transient read waits for bounded
+                    // retries (0.1/0.25/1.0s), not for another OS
+                    // notification that may never arrive. A transient read
+                    // is not permission denial; exhaustion publishes
+                    // unavailable through the established handler.
+                    let armed = listeners.noteTransientReadFailure(
+                        for: deviceID,
+                        eventGeneration: generation,
+                        onOutput: { [weak self] output in
+                            guard let self else { return }
+                            self.lastObservedOutput = output
+                            self.defaultOutputHandler?(output)
+                        },
+                        onMissing: { [weak self] in
+                            self?.defaultOutputHandler?(nil)
+                        }
+                    )
+                    if !armed {
+                        Logger.log("[CoreAudio] Current device changed before its descriptor was readable: \(result)")
+                    }
+                }
+            }
+            currentDeviceListeners = CurrentDeviceListenerSet(
+                add: { [weak self] deviceID, address in
+                    guard let self, let block = self.currentDeviceListenerBlock else {
+                        return kAudioHardwareBadObjectError
+                    }
+                    var mutableAddress = address
+                    return AudioObjectAddPropertyListenerBlock(
+                        deviceID,
+                        &mutableAddress,
+                        .main,
+                        block
+                    )
+                },
+                remove: { [weak self] deviceID, address in
+                    // Removal runs on the same serial control queue; the
+                    // block slot is stable for the client's lifetime, so the
+                    // exact registered block is removed. Best effort: the
+                    // return value is intentionally ignored on teardown.
+                    guard let self, let block = self.currentDeviceListenerBlock else { return noErr }
+                    var mutableAddress = address
+                    return AudioObjectRemovePropertyListenerBlock(
+                        deviceID,
+                        &mutableAddress,
+                        .main,
+                        block
+                    )
+                },
+                read: { [weak self] deviceID in
+                    guard let self else { return .failure(AudioRuntimeError.deviceLost) }
+                    return Result { try self.descriptor(for: deviceID) }
+                },
+                scheduler: DispatchCurrentDeviceRetryScheduler()
+            )
+        }
+    }
+
+    /// Plan 039 Step 1: bind the current device when observation starts. No
+    /// device yet (`.noOutputDevice`) leaves the set unbound; the first
+    /// default-device event binds it. A transient read failure also defers
+    /// to the first event so start behavior matches the prior contract.
+    private func bindCurrentDeviceListeners() throws {
+        guard let listeners = currentDeviceListeners else { return }
+        let output: OutputDeviceDescriptor
+        do {
+            output = try defaultOutputDevice()
+        } catch AudioRuntimeError.noOutputDevice {
+            return
+        } catch {
+            Logger.log("[CoreAudio] Deferring current-device listeners until the first output event: \(error)")
+            return
+        }
+        do {
+            try listeners.bind(deviceID: AudioObjectID(output.id.value), seed: output)
+        } catch {
+            Logger.log("[CoreAudio] Current-device listener registration failed; unwound partial registrations.")
+            throw error
+        }
+        lastObservedOutput = output
+        observationGeneration = listeners.generation
+    }
+
     private lazy var defaultOutputListener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
         guard let self else { return }
         let result = Result { try self.defaultOutputDevice() }
         switch DefaultOutputObservationDecision.make(from: result) {
         case .output(let output):
+            // Plan 039 Step 1: on replacement, rebind the new device's
+            // current-device listeners. The set rolls back partial failures
+            // internally; a failed rebind is logged and the descriptor is
+            // still delivered through the existing handler path.
+            if let listeners = self.currentDeviceListeners {
+                let deviceID = AudioObjectID(output.id.value)
+                if !listeners.rebindIfNeeded(deviceID: deviceID, seed: output) {
+                    Logger.log("[CoreAudio] Current-device listener rebind failed for \(output.uid); delivered without format observation.")
+                }
+                self.observationGeneration = listeners.generation
+                self.lastObservedOutput = output
+            }
             self.defaultOutputHandler?(output)
         case .missing:
+            self.currentDeviceListeners?.unbind()
+            self.lastObservedOutput = nil
             self.defaultOutputHandler?(nil)
         case .retainLastValid:
             // A property notification can race the device graph becoming readable.
@@ -758,7 +1225,14 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
 
     /// Best-effort read of the device's output channel labels. Nil means the
     /// property was unreadable or malformed; callers fall back to count-based
-    /// layout detection.
+    /// layout detection. Reads the preferred-layout bytes on control, checks
+    /// the byte count before the fixed header or trailing descriptions, and
+    /// bounds description counts with checked size arithmetic before any read.
+    /// Each native form has its own path: explicit descriptions, layout tag,
+    /// and channel bitmap, all through public AudioFormat conversion. The
+    /// expanded count must equal the output stream width. Missing metadata
+    /// stays nil (count fallback); supplied invalid metadata also stays nil
+    /// so support policy can reject it as unresolved.
     private func outputChannelLabels(_ objectID: AudioObjectID) -> [UInt32]? {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyPreferredChannelLayout,
@@ -773,14 +1247,126 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
         defer { storage.deallocate() }
         guard AudioObjectGetPropertyData(objectID, &address, 0, nil, &size, storage) == noErr else { return nil }
 
-        // Variable-length trailing array: the descriptions begin where the
-        // fixed-size header ends (both types share the same 4-byte alignment).
+        let base = storage.assumingMemoryBound(to: AudioChannelLayout.self).pointee
+        // Variable-length trailing array: descriptions begin where the
+        // fixed-size header ends (both types share 4-byte alignment).
         let headerBytes = minimumSize
-        let descriptions = storage.advanced(by: headerBytes).assumingMemoryBound(to: AudioChannelDescription.self)
-        let count = Int(storage.assumingMemoryBound(to: AudioChannelLayout.self).pointee.mNumberChannelDescriptions)
-        let capacity = (Int(size) - headerBytes) / MemoryLayout<AudioChannelDescription>.stride
-        guard count > 0, count <= capacity else { return nil }
-        return (0..<count).map { descriptions[$0].mChannelLabel }
+        switch base.mChannelLayoutTag {
+        case kAudioChannelLayoutTag_UseChannelDescriptions:
+            return NativeChannelLayoutReader.labelsFromDescriptions(
+                count: Int(base.mNumberChannelDescriptions),
+                descriptions: storage.advanced(by: headerBytes).assumingMemoryBound(to: AudioChannelDescription.self),
+                capacityBytes: Int(size) - headerBytes
+            )
+        case kAudioChannelLayoutTag_UseChannelBitmap:
+            return NativeChannelLayoutReader.labelsFromBitmap(base.mChannelBitmap)
+        case kAudioChannelLayoutTag_Unknown:
+            return nil
+        default:
+            return NativeChannelLayoutReader.labelsFromTag(base.mChannelLayoutTag)
+        }
+    }
+
+    /// Pure native-layout boundary. Tag and bitmap expand through public
+    /// AudioFormat conversion; description buffers need checked size
+    /// arithmetic and a count check before any read. Small injectable seam
+    /// for regression tests: no hardware needed.
+    nonisolated enum NativeChannelLayoutReader {
+        static let maximumDescriptions = 64
+
+        /// Stub override for host-side diagnosis and regression tests.
+        /// Production path leaves this nil and calls AudioFormat. Tests set
+        /// it to replay recorded AudioFormat results without hardware.
+        nonisolated(unsafe) static var convertedLayoutStub: ((_ tag: AudioChannelLayoutTag, _ bitmap: UInt32?) -> [UInt32]?)?
+
+        static func labelsFromDescriptions(
+            count: Int,
+            descriptions: UnsafePointer<AudioChannelDescription>,
+            capacityBytes: Int
+        ) -> [UInt32]? {
+            guard count > 0, count <= maximumDescriptions else { return nil }
+            let (capacity, overflow) = capacityBytes.dividedReportingOverflow(
+                by: MemoryLayout<AudioChannelDescription>.stride
+            )
+            guard !overflow, count <= capacity else { return nil }
+            return (0..<count).map { descriptions[$0].mChannelLabel }
+        }
+
+        static func labelsFromBitmap(_ bitmap: AudioChannelBitmap) -> [UInt32]? {
+            guard bitmap.rawValue != 0 else { return nil }
+            if let stub = convertedLayoutStub {
+                return stub(kAudioChannelLayoutTag_UseChannelBitmap, bitmap.rawValue)
+            }
+            var specifier = bitmap.rawValue
+            var infoSize: UInt32 = 0
+            guard AudioFormatGetPropertyInfo(
+                kAudioFormatProperty_ChannelLayoutForBitmap,
+                UInt32(MemoryLayout<UInt32>.size),
+                &specifier,
+                &infoSize
+            ) == noErr, infoSize > 0 else { return nil }
+            return labelsFromConvertedLayout(
+                property: kAudioFormatProperty_ChannelLayoutForBitmap,
+                specifierSize: UInt32(MemoryLayout<UInt32>.size),
+                specifier: &specifier,
+                size: infoSize
+            )
+        }
+
+        static func labelsFromTag(_ tag: AudioChannelLayoutTag) -> [UInt32]? {
+            if let stub = convertedLayoutStub {
+                return stub(tag, nil)
+            }
+            var specifier = tag
+            var infoSize: UInt32 = 0
+            guard AudioFormatGetPropertyInfo(
+                kAudioFormatProperty_ChannelLayoutForTag,
+                UInt32(MemoryLayout<AudioChannelLayoutTag>.size),
+                &specifier,
+                &infoSize
+            ) == noErr, infoSize > 0 else { return nil }
+            return labelsFromConvertedLayout(
+                property: kAudioFormatProperty_ChannelLayoutForTag,
+                specifierSize: UInt32(MemoryLayout<AudioChannelLayoutTag>.size),
+                specifier: &specifier,
+                size: infoSize
+            )
+        }
+
+        private static func labelsFromConvertedLayout(
+            property: AudioFormatPropertyID,
+            specifierSize: UInt32,
+            specifier: UnsafeRawPointer,
+            size: UInt32
+        ) -> [UInt32]? {
+            let headerBytes = MemoryLayout<AudioChannelLayout>.size - MemoryLayout<AudioChannelDescription>.size
+            guard Int(size) >= headerBytes, Int(size) <= headerBytes + maximumDescriptions * MemoryLayout<AudioChannelDescription>.stride else {
+                return nil
+            }
+            let storage = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioChannelLayout>.alignment)
+            defer { storage.deallocate() }
+            var outputSize = size
+            guard AudioFormatGetProperty(
+                property,
+                specifierSize,
+                specifier,
+                &outputSize,
+                storage
+            ) == noErr, outputSize == size else { return nil }
+            let base = storage.assumingMemoryBound(to: AudioChannelLayout.self).pointee
+            // Standard tags keep their tag on return (e.g. Stereo returns
+            // tag Stereo with 2 inline descriptions); bitmap conversion
+            // returns UseChannelDescriptions. Either form is valid when the
+            // description count matches the returned byte size exactly.
+            let count = Int(base.mNumberChannelDescriptions)
+            guard count > 0, count <= maximumDescriptions else { return nil }
+            guard Int(outputSize) == headerBytes + count * MemoryLayout<AudioChannelDescription>.stride else { return nil }
+            return labelsFromDescriptions(
+                count: Int(base.mNumberChannelDescriptions),
+                descriptions: storage.advanced(by: headerBytes).assumingMemoryBound(to: AudioChannelDescription.self),
+                capacityBytes: Int(outputSize) - headerBytes
+            )
+        }
     }
 
     private func streamFormat(_ asbd: AudioStreamBasicDescription) -> AudioStreamFormat {

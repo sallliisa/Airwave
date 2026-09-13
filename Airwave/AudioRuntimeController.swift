@@ -241,7 +241,38 @@ final class AudioRuntimeController {
     }
 
     func reprepareCurrentOutput() {
-        guard launched, !sleeping, !terminated, stopForInvalidation() else { return }
+        guard launched, !sleeping, !terminated else { return }
+        // A re-select inside the passthrough-hold window ends the hold
+        // early: cancel the in-flight preparation WITHOUT deactivating the
+        // freshly re-selected HRIR state (cancelPreparation nils it), reclaim
+        // the pending teardown, then stop the same object synchronously. The
+        // I/O loop was already stopped before the hold, so reclaiming never
+        // resumes program audio; the teardown's late-firing block becomes a
+        // no-op. Without this the restart refuses its stop behind the fade
+        // window and parks in passthrough until the hold elapses. The
+        // reclaimed handles stay registered (native audio stays muted) until
+        // the synchronous post-reclaim stop below destroys them.
+        if let pipeline, pipeline.isDeferredTeardownPending {
+            Logger.log("[AudioRuntime] Reclaiming pending passthrough-hold teardown for restart (\(ObjectIdentifier(pipeline)))")
+            AirwaveLog.audioRuntime.info("Reclaiming pending passthrough-hold teardown for restart.")
+            generation += 1
+            hasPreparedDesiredOutput = false
+            retryToken?.cancel(); retryToken = nil
+            stabilityToken?.cancel(); stabilityToken = nil
+            pipeline.reclaimPendingTeardown()
+            do {
+                try pipeline.stop()
+                self.pipeline = nil
+                state.setHealthIssue(nil, for: .recovery)
+            } catch {
+                scheduleCleanupRetry(error)
+                return
+            }
+            captureProbeRequested = explicitCaptureTest || (effectReadiness.hasSelectedEffect && !captureVerified)
+            reconcile()
+            return
+        }
+        guard stopForInvalidation() else { return }
         hasPreparedDesiredOutput = false
         // Rebuilding the effect graph does not revoke capture capability. Keep
         // verified state so HRIR swaps restart processing directly instead of
@@ -344,6 +375,15 @@ final class AudioRuntimeController {
         guard launched, !sleeping, !terminated else { return }
         outputLossToken?.cancel()
         outputLossToken = nil
+        // Plan 039 Step 1: same-identity events still reprepare when the
+        // processing format changed (rate, width, stream count, layout).
+        // Pure identity duplicates with an unchanged format and a live
+        // processing pipeline return early; everything else flows through
+        // the existing invalidation path so a changed format cannot leave
+        // old filters attached to a new rate.
+        if let output, let current = state.currentOutput, output.id == current.id,
+           !output.hasProcessingFormatChange(from: current),
+           pipeline != nil, state.status == .processing { return }
         if let output, output == state.currentOutput, pipeline != nil, state.status == .processing { return }
         desiredOutput = output
         hasPreparedDesiredOutput = false

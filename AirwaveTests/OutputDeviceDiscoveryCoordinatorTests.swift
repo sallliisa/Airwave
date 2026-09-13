@@ -55,6 +55,21 @@ final class OutputDeviceDiscoveryCoordinatorTests: XCTestCase {
         XCTAssertEqual(context.profiles.profiles, [])
     }
 
+    func testDiscoveryBoundarySharesSupportPolicyForAmbiguousLayouts() throws {
+        let context = try DiscoveryContext()
+        context.client.outputs = [
+            discoveryDevice(id: 11, uid: "dual-stereo", name: "Dual Stereo", channels: 4, channelLabels: [1, 2, 1, 2]),
+            discoveryDevice(id: 12, uid: "unknown-3", name: "Unknown 3", channels: 3, channelLabels: [1, 2, 999]),
+            discoveryDevice(id: 13, uid: "mapped-3", name: "Mapped 3", channels: 3, channelLabels: [1, 2, 3]),
+            discoveryDevice(id: 14, uid: "quad", name: "Quad", channels: 4)
+        ]
+
+        context.coordinator.launch()
+
+        // Ambiguous labels never reach the manager; valid and fallback do.
+        XCTAssertEqual(Set(context.profiles.availableOutputs.map(\.uid)), ["mapped-3", "quad"])
+    }
+
     func testInitialFailureRecoversThroughLaterCallback() throws {
         let context = try DiscoveryContext()
         context.client.failInitialRead = true
@@ -148,11 +163,12 @@ private func discoveryDevice(
     transport: String = "USB",
     virtual: Bool = false,
     aggregate: Bool = false,
-    channels: Int = 2
+    channels: Int = 2,
+    channelLabels: [UInt32]? = nil
 ) -> OutputDeviceDescriptor {
     OutputDeviceDescriptor(
         id: .init(id), uid: uid, name: name, transport: transport,
-        channelLabels: nil,
+        channelLabels: channelLabels,
         outputChannelCount: channels, nominalSampleRate: 48_000,
         isVirtual: virtual, isAggregate: aggregate
     )

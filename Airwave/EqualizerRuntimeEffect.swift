@@ -7,6 +7,10 @@ nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
     private let retiredProcessorLock = OSAllocatedUnfairLock<ParametricEqualizerProcessor?>(initialState: nil)
     private var controlProcessor: ParametricEqualizerProcessor?
     private var audioThreadProcessor: ParametricEqualizerProcessor?
+    #if DEBUG
+    // No owned probe array. Each ParametricEqualizerProcessor carries its
+    // own DEBUG probe (see destructionProbe). Never touch probes here.
+    #endif
 
     var isBypassed: Bool { audioThreadProcessor?.isBypassed ?? true }
 
@@ -27,6 +31,14 @@ nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
             processor = controlProcessor
         } else {
             processor = try ParametricEqualizerProcessor(sampleRate: sampleRate)
+            #if DEBUG
+            processor.destructionProbe = ParametricEqualizerProcessor.DestructionProbe(
+                id: ObjectIdentifier(processor as AnyObject).hashValue,
+                kind: "processor",
+                recorder: ParametricEqualizerProcessor.destructionRecorder,
+                audioKey: ParametricEqualizerProcessor.destructionAudioKey
+            )
+            #endif
             controlProcessor = processor
             processorLock.withLock { published in
                 published = processor
@@ -65,13 +77,20 @@ nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
         var processor = audioThreadProcessor
         if let published = processorLock.withLockIfAvailable({ $0 }) {
             if published !== audioThreadProcessor {
-                if let old = audioThreadProcessor,
-                   retiredProcessorLock.withLockIfAvailable({ retired in
-                       guard retired == nil else { return false }
-                       retired = old
-                       return true
-                   }) != true {
-                    // Keep the old processor until the control thread drains it.
+                if let old = audioThreadProcessor {
+                    let retired: Bool? = retiredProcessorLock.withLockIfAvailable { retired in
+                        guard retired == nil else { return false }
+                        retired = old
+                        return true
+                    }
+                    if retired != true {
+                        // Slot full: hold the old processor on audio and keep the
+                        // newest published processor for retry on a later
+                        // callback. Never release the last reference here.
+                    } else {
+                        processor = published
+                        audioThreadProcessor = published
+                    }
                 } else {
                     processor = published
                     audioThreadProcessor = published
@@ -95,6 +114,21 @@ nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
             frameCount: frameCount
         )
     }
+
+    #if DEBUG
+    /// DEBUG-only control helper. Tag a fresh processor with its identity
+    /// probe. Call only from test or control code, never from the callback.
+    /// Production `prepare` tags its own processors; tests use this for
+    /// processors built directly.
+    func tagProcessorForDestructionTest(_ processor: ParametricEqualizerProcessor) {
+        processor.destructionProbe = ParametricEqualizerProcessor.DestructionProbe(
+            id: ObjectIdentifier(processor as AnyObject).hashValue,
+            kind: "processor",
+            recorder: ParametricEqualizerProcessor.destructionRecorder,
+            audioKey: ParametricEqualizerProcessor.destructionAudioKey
+        )
+    }
+    #endif
 
     private func map(
         _ error: ParametricEqualizerPreparationError,

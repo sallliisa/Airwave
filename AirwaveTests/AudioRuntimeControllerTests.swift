@@ -681,6 +681,128 @@ final class AudioRuntimeControllerTests: XCTestCase {
         XCTAssertEqual(createdPipelineIDs.count, 2, "exactly one replacement pipeline after the retry")
         XCTAssertEqual(state.status, .processing)
     }
+    func testPlan039SameIDRateChangeRepreparesWhileIdenticalDuplicateDoesNot() {
+        let h = Harness(effect: true)
+        h.pipelines.automaticEvent = nil
+        h.controller.launch(presetReady: true)
+        h.pipelines.emit(.signalDetected)
+        XCTAssertEqual(h.state.status, .processing)
+        let startCount = h.pipelines.purposes.count
+        XCTAssertEqual(startCount, 2)
+
+        // Identical duplicate (same ID, same format): no restart.
+        h.platform.emit(output(id: 1, name: "Built-in"))
+        XCTAssertEqual(h.pipelines.purposes.count, startCount, "unchanged same-ID event must not restart audio")
+
+        // Same ID with a changed nominal rate: one teardown and preparation.
+        // Reprepare resets capture verification, so the new run starts as
+        // verification; the probe signal then promotes it to processing.
+        h.platform.emit(output(id: 1, name: "Built-in", rate: 44_100))
+        XCTAssertEqual(h.pipelines.purposes.count, startCount + 1, "same-ID rate change must reprepare once")
+        h.pipelines.emit(.signalDetected)
+        XCTAssertEqual(h.pipelines.purposes.count, startCount + 2)
+        XCTAssertEqual(h.state.status, .processing)
+
+        // Same ID with a changed width: one more reprepare.
+        h.platform.emit(output(id: 1, name: "Built-in", rate: 44_100, channels: 6))
+        XCTAssertEqual(h.pipelines.purposes.count, startCount + 3, "same-ID width change must reprepare once")
+        h.pipelines.emit(.signalDetected)
+        XCTAssertEqual(h.pipelines.purposes.count, startCount + 4)
+        XCTAssertEqual(h.state.status, .processing)
+    }
+
+    func testPlan039SameIDLayoutChangeReprepares() {
+        let h = Harness(effect: true)
+        h.pipelines.automaticEvent = nil
+        h.controller.launch(presetReady: true)
+        h.pipelines.emit(.signalDetected)
+        let startCount = h.pipelines.purposes.count
+
+        h.platform.emit(output(id: 1, name: "Built-in", channels: 2, labels: [1, 2]))
+        XCTAssertEqual(h.pipelines.purposes.count, startCount + 1, "same-ID layout change must reprepare once")
+    }
+
+    // MARK: - Plan 039 Step 3: listener and pipeline lifetime
+
+    func testPlan039StopBeforePrepareStaysInactiveWithOnePipeline() {
+        let h = Harness(effect: true)
+        h.pipelines.automaticEvent = nil
+        h.controller.launch(presetReady: false)
+        // No effect selected and no preparer: no pipeline starts.
+        XCTAssertEqual(h.pipelines.purposes.count, 0)
+        XCTAssertEqual(h.state.status, .inactive)
+        h.controller.terminate()
+        XCTAssertEqual(h.pipelines.purposes.count, 0, "stop-before-prepare creates no pipeline")
+        XCTAssertEqual(h.pipelines.liveCount, 0)
+    }
+
+    func testPlan039FailedStopRetainsSamePipelineForRetry() {
+        let platform = CreationCountingPlatformFake()
+        let scheduler = SchedulerFake()
+        let state = AudioRuntimeState()
+        var createdPipelineIDs: [ObjectIdentifier] = []
+        let controller = AudioRuntimeController(
+            state: state,
+            platform: platform,
+            pipelineFactory: {
+                let pipeline = AudioPipeline(platform: platform, processor: SilentProcessor())
+                createdPipelineIDs.append(ObjectIdentifier(pipeline))
+                return pipeline
+            },
+            scheduler: scheduler
+        )
+        controller.launch(
+            effectReadiness: AudioRuntimeEffectReadiness(spatialReady: true, equalizerDefinition: nil),
+            captureVerified: true
+        )
+        XCTAssertEqual(createdPipelineIDs.count, 1)
+        XCTAssertEqual(state.status, .processing)
+
+        // A same-ID format change needs generation-based stop and prepare,
+        // but the forced stop failure retains the same pipeline for retry:
+        // old stop completes before any new preparation starts.
+        platform.stopIOFailuresRemaining = 1
+        platform.emit(output(id: 1, name: "Built-in", rate: 44_100))
+        XCTAssertEqual(createdPipelineIDs.count, 1, "failed stop retains the same pipeline")
+        XCTAssertEqual(platform.tapCreationCount, 1, "no replacement tap while the old pipeline holds resources")
+        guard case .recovering = state.status else {
+            return XCTFail("expected the recovery state after a failed stop")
+        }
+        scheduler.runAll()
+        XCTAssertEqual(createdPipelineIDs.count, 2, "exactly one replacement after the cleanup retry")
+        XCTAssertEqual(state.status, .processing)
+        XCTAssertEqual(platform.tapCreationCount, 2)
+    }
+
+    func testPlan039SameIDChangeKeepsLivePipelineCountAtOne() {
+        let h = Harness(effect: true)
+        h.pipelines.automaticEvent = nil
+        h.controller.launch(presetReady: true)
+        h.pipelines.emit(.signalDetected)
+        XCTAssertEqual(h.pipelines.liveCount, 1)
+        XCTAssertEqual(h.state.status, .processing)
+
+        // One coalesced final format change: one teardown and preparation.
+        h.platform.emit(output(id: 1, name: "Built-in", rate: 44_100))
+        XCTAssertEqual(h.pipelines.liveCount, 1, "old stop completes before new preparation")
+        XCTAssertEqual(h.state.currentOutput?.nominalSampleRate, 44_100, "the new descriptor supplies the preparation rate")
+        h.pipelines.emit(.signalDetected)
+        XCTAssertEqual(h.pipelines.liveCount, 1, "live pipeline count never exceeds one")
+        XCTAssertEqual(h.state.status, .processing)
+    }
+
+    func testPlan039RepeatedStopIsSafe() {
+        let h = Harness(effect: true)
+        h.pipelines.automaticEvent = nil
+        h.controller.launch(presetReady: true)
+        h.pipelines.emit(.signalDetected)
+        XCTAssertEqual(h.state.status, .processing)
+        h.controller.terminate()
+        let purposesAfterTerminate = h.pipelines.purposes.count
+        h.controller.terminate()
+        XCTAssertEqual(h.pipelines.purposes.count, purposesAfterTerminate, "repeated stop starts nothing further")
+        XCTAssertEqual(h.pipelines.liveCount, 0)
+    }
 }
 
 @MainActor
@@ -833,8 +955,8 @@ private final class ProfilePreparerFake: OutputEffectProfilePreparing {
     func outputBecameUnsupportedOrUnavailable() {}
 }
 
-private func output(id: UInt64 = 1, name: String = "Built-in", isVirtual: Bool = false) -> OutputDeviceDescriptor {
-    OutputDeviceDescriptor(id: .init(id), uid: "output-\(id)", name: name, transport: "built-in", channelLabels: nil, outputChannelCount: 2, nominalSampleRate: 48_000, isVirtual: isVirtual, isAggregate: false)
+private func output(id: UInt64 = 1, name: String = "Built-in", isVirtual: Bool = false, rate: Double = 48_000, channels: Int = 2, labels: [UInt32]? = nil) -> OutputDeviceDescriptor {
+    OutputDeviceDescriptor(id: .init(id), uid: "output-\(id)", name: name, transport: "built-in", channelLabels: labels, outputChannelCount: channels, nominalSampleRate: rate, isVirtual: isVirtual, isAggregate: false)
 }
 
 /// Inert DSP for pipelines driven against the creation-counting platform fake.
@@ -892,8 +1014,8 @@ private final class CreationCountingPlatformFake: AudioPlatformClient {
         destroyAggregateCount += 1
     }
 
-    func streamFormat(for tap: AudioTapHandle) throws -> AudioStreamFormat { .stereo(sampleRate: 48_000) }
-    func streamFormat(for aggregate: PrivateAggregateHandle) throws -> AudioStreamFormat { .stereo(sampleRate: 48_000) }
+    func streamFormat(for tap: AudioTapHandle) throws -> AudioStreamFormat { .stereo(sampleRate: current.nominalSampleRate) }
+    func streamFormat(for aggregate: PrivateAggregateHandle) throws -> AudioStreamFormat { .stereo(sampleRate: current.nominalSampleRate) }
 
     func createIO(
         aggregate: PrivateAggregateHandle,

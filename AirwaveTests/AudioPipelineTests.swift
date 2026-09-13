@@ -311,11 +311,21 @@ final class AudioPipelineTests: XCTestCase {
     }
 
     func testStopFailurePreservesFullChainForRetry() throws {
-        try assertRetryableTeardownFailure(
-            "stopIO",
-            liveAfterFailure: [.tap, .aggregate, .io],
-            retryEvents: ["stopIO", "destroyIO", "destroyAggregate", "destroyTap"]
-        )
+        let platform = RecordingAudioPlatformClient()
+        let processor = PassthroughProcessor()
+        let pipeline = AudioPipeline(platform: platform, processor: processor)
+        try pipeline.start()
+        platform.teardownFailuresRemaining["stopIO"] = 1
+
+        XCTAssertThrowsError(try pipeline.stop())
+        XCTAssertEqual(platform.liveResources, [.tap, .aggregate, .io])
+        XCTAssertEqual(processor.cleanupCount, 0)
+        let retryStart = platform.events.count
+
+        XCTAssertNoThrow(try pipeline.stop())
+        XCTAssertEqual(Array(platform.events[retryStart...]), ["stopIO", "destroyIO", "destroyAggregate", "destroyTap"])
+        XCTAssertEqual(processor.cleanupCount, 1)
+        XCTAssertTrue(platform.hasNoLiveResources)
     }
 
     func testIODestroyFailurePreservesIOAndDependenciesForRetry() throws {
@@ -431,6 +441,19 @@ final class AudioPipelineTests: XCTestCase {
         // of reporting success (which would allow a replacement pipeline).
         XCTAssertThrowsError(try pipeline.stop())
         XCTAssertEqual(platform.events.last, "stopIO")
+    }
+
+    func testStopSuccessRunsDSPCleanupOnceAndReleasesStorage() throws {
+        let platform = RecordingAudioPlatformClient()
+        let processor = PassthroughProcessor()
+        let pipeline = AudioPipeline(platform: platform, processor: processor)
+        try pipeline.start()
+        try pipeline.stop()
+        XCTAssertEqual(processor.cleanupCount, 1)
+        XCTAssertTrue(platform.hasNoLiveResources)
+        // Repeated cleanup stays harmless.
+        try pipeline.stop()
+        XCTAssertEqual(processor.cleanupCount, 1)
     }
 
     func testFailedDeferredTeardownPreservesChainForSameObjectRetry() throws {

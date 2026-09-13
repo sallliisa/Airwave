@@ -5,6 +5,15 @@ drafted. The maintainer chose **automatic engagement** (no settings toggle)
 for multichannel devices, accepting these consequences for now. Revisit after
 the first hardware validation session.
 
+Supported multichannel input follows the shared plan-038 rule: a physical
+device with one output stream, nonempty UID, 2–16 channels, and a resolvable
+layout. Unlabeled 2/6/8/12 use standard order; unlabeled 4-channel uses a
+generic quad fallback whose channel identity is not verified (not a per-device
+or BOOM routing fix); other widths need complete usable labels. Unknown,
+mismatched, or duplicate stereo-pair labels are unsupported. Capture writes
+binaural stereo to device channels 1–2. No channel-identity claim is made for
+untested hardware; hardware identity stays a plan-043 check.
+
 ## 1. Surround speakers go silent while Airwave runs on a multichannel device
 
 Airwave's replacement-output architecture mutes native playback and writes
@@ -40,9 +49,12 @@ content.
 ## 3. Count-based layout fallback can misorder exotic devices
 
 When `kAudioDevicePropertyChannelLayout` labels are missing/unrecognized, the
-layout comes from `InputLayout.detect(channelCount:)`, which assumes standard
+layout comes from the plan-038 fallback (`InputLayout.detect(channelCount:)`
+for unlabeled 2/6/8/12; generic quad fallback for unlabeled 4), which assumes
+standard
 WAV/Media order. Devices whose stream order differs produce mirrored/reordered
-spatialization (front/back swap, side/rear swap).
+spatialization (front/back swap, side/rear swap). The 4-channel fallback is not
+verified channel identity.
 
 - Mitigations already in plan: prefer channel labels when present; manual
   checklist step 2 captures logged labels on misorder.

@@ -50,17 +50,66 @@ enum HRIRActivationResult: Equatable {
     case failure(String)
 }
 
+struct HRIRContentIdentity: Hashable, Sendable {
+    /// FNV-1a 64-bit digest over the raw managed bytes, computed off the
+    /// audio thread with one bounded read. Size and mtime are hints only;
+    /// a same-size/same-time replacement still changes this digest.
+    let digest: UInt64
+    let byteCount: Int
+
+    static func digest(bytes: UnsafeRawBufferPointer) -> UInt64 {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in bytes {
+            hash ^= UInt64(byte)
+            hash &*= 0x100000001b3
+        }
+        return hash
+    }
+
+    static func ofFile(at url: URL, maximumBytes: Int = WAVLoader.maximumFileSize) throws -> HRIRContentIdentity {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hash: UInt64 = 0xcbf29ce484222325
+        var total = 0
+        while true {
+            guard let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty else { break }
+            total += chunk.count
+            guard total <= maximumBytes else { throw WAVError.fileTooLarge }
+            chunk.withUnsafeBytes { raw in
+                for byte in raw {
+                    hash ^= UInt64(byte)
+                    hash &*= 0x100000001b3
+                }
+            }
+        }
+        return HRIRContentIdentity(digest: hash, byteCount: total)
+    }
+}
+
 struct PresetActivationKey: Hashable {
     let presetID: UUID
     let fileURL: URL
     let sampleRate: Double
     let inputChannels: [VirtualSpeaker]
+    /// Content identity of the managed bytes. Nil only for ad-hoc keys
+    /// (custom hrirMap path and legacy callers); activation of a managed
+    /// preset always carries a value, so a same-ID replacement rebuilds.
+    let contentRevision: HRIRContentIdentity?
 
     init(preset: HRIRPreset, targetSampleRate: Double, inputLayout: InputLayout) {
         self.presetID = preset.id
         self.fileURL = preset.fileURL.standardizedFileURL
         self.sampleRate = targetSampleRate
         self.inputChannels = inputLayout.channels
+        self.contentRevision = nil
+    }
+
+    init(preset: HRIRPreset, targetSampleRate: Double, inputLayout: InputLayout, contentRevision: HRIRContentIdentity?) {
+        self.presetID = preset.id
+        self.fileURL = preset.fileURL.standardizedFileURL
+        self.sampleRate = targetSampleRate
+        self.inputChannels = inputLayout.channels
+        self.contentRevision = contentRevision
     }
 }
 
@@ -176,11 +225,21 @@ nonisolated final class SpatialRendererCrossfader {
     private var fadeFrom: RendererState?
     private var fadeTo: RendererState?
     private var pendingTarget: RendererState?
+    #if DEBUG
+    // No owned probe array. Each RendererState carries its own DEBUG probe
+    // (see RendererState.destructionProbe), so probe death runs on the same
+    // thread that frees the last state owner. Never touch probes here.
+    #endif
     private var hasPendingTarget = false
     private var isFading = false
     private var fadeFrame = 0
     private var primeFrames = 0
     private var pendingRetirement = SpatialRetirementSlots()
+    // Bounded single-slot hold for a fade outgoing that found both retirement
+    // tiers full. flushPendingRetirement() retries it after the next
+    // successful control drain; cleanupAfterIOStopped() clears it. Never more
+    // than one state; never dropped on audio.
+    private var failedRetirementHold: RendererState?
 
     init(primeLength: Int, fadeLength: Int = 1_024, maxFramesPerCallback: Int = 4_096) {
         precondition(primeLength >= 0)
@@ -217,6 +276,50 @@ nonisolated final class SpatialRendererCrossfader {
     var retiredStateCountForTesting: Int { retirementLock.withLock { $0.count } }
     var isFadingForTesting: Bool { isFading }
     var activeStateForTesting: RendererState? { activeState }
+    /// DEBUG-only probe owned BY a RendererState, not by the crossfader. The
+    /// probe frees on the thread that drops the last state owner, so its
+    /// recorder sees audio-thread releases. The probe never captures its
+    /// state. The probe ID is the state identity.
+    final class DestructionRecorder: @unchecked Sendable {
+        struct Event: Sendable { let id: Int; let isAudioThread: Bool }
+        private let lock = NSLock()
+        private var events: [Event] = []
+        func record(id: Int, isAudioThread: Bool) {
+            lock.lock(); defer { lock.unlock() }
+            events.append(Event(id: id, isAudioThread: isAudioThread))
+        }
+        var snapshot: [Event] { lock.lock(); defer { lock.unlock() }; return events }
+        var audioThreadDestructionCount: Int { snapshot.filter(\.isAudioThread).count }
+    }
+    nonisolated final class DestructionProbe: @unchecked Sendable {
+        let id: Int
+        let recorder: DestructionRecorder?
+        let audioKey: DispatchSpecificKey<Void>?
+        init(id: Int, recorder: DestructionRecorder?, audioKey: DispatchSpecificKey<Void>?) {
+            self.id = id; self.recorder = recorder; self.audioKey = audioKey
+        }
+        deinit {
+            if let recorder, let audioKey {
+                recorder.record(id: id, isAudioThread: DispatchQueue.getSpecific(key: audioKey) != nil)
+            }
+        }
+    }
+    nonisolated static var destructionAudioKey: DispatchSpecificKey<Void>?
+    nonisolated static var destructionRecorder: DestructionRecorder?
+    nonisolated static func configureDestructionProbeForTesting(
+        audioKey: DispatchSpecificKey<Void>?,
+        recorder: DestructionRecorder?
+    ) {
+        destructionAudioKey = audioKey
+        destructionRecorder = recorder
+    }
+    #if DEBUG
+    /// DEBUG-only saturation hook. When set, retire() reports failure without
+    /// taking ownership, so tests can fill the bounded local tier without a
+    /// lock jam. The audio callback still never blocks. Call only from test
+    /// or control code, never from the callback body itself.
+    var forceRetireFailureForTesting = false
+    #endif
     #endif
 
     /// Releases states retired by the render thread. Call from the control thread.
@@ -230,6 +333,7 @@ nonisolated final class SpatialRendererCrossfader {
     func cleanupAfterIOStopped() {
         retirementLock.withLock { $0.clear() }
         pendingRetirement.clear()
+        failedRetirementHold = nil
         activeState = nil
         observedState = nil
         fadeFrom = nil
@@ -254,6 +358,17 @@ nonisolated final class SpatialRendererCrossfader {
         guard published !== observedState else { return }
         if isFading, let pendingTarget, pendingTarget !== published {
             guard retire(pendingTarget) else { return }
+            self.pendingTarget = nil
+        }
+        if !isFading, !pendingRetirement.isEmpty,
+           let old = pendingTarget, old !== published {
+            // Same rule as the fading preamble: retire the held pending
+            // before overwrite. retire() adds a slot owner, so one retire
+            // covers the aliased observedState field too (both fields point
+            // at old here). On failure keep the old pending and keep
+            // observedState on the old value; the newest stays alive in the
+            // control publisher for retry on a later callback.
+            guard retire(old) else { return }
             self.pendingTarget = nil
         }
         observedState = published
@@ -422,12 +537,21 @@ nonisolated final class SpatialRendererCrossfader {
         fadeFrame = 0
         primeFrames = 0
         isFading = false
-        if let outgoing, !retire(outgoing) { return }
+        if let outgoing, !retire(outgoing) {
+            // Both retirement tiers are full. Hold the outgoing state in the
+            // bounded single failedRetirementHold slot (never fadeFrom, which
+            // must stay free for the next fade). flushPendingRetirement()
+            // retries the hold after the next successful control drain; the
+            // hold clears at the next successful flush or stop. Do not start
+            // a pending fade while retirement is full.
+            failedRetirementHold = outgoing
+            return
+        }
         startPendingFadeIfNeeded()
     }
 
     private func startPendingFadeIfNeeded() {
-        guard hasPendingTarget, pendingRetirement.isEmpty else { return }
+        guard hasPendingTarget, pendingRetirement.isEmpty, failedRetirementHold == nil else { return }
         let pending = pendingTarget
         pendingTarget = nil
         hasPendingTarget = false
@@ -442,22 +566,92 @@ nonisolated final class SpatialRendererCrossfader {
         }), requested else {
             return
         }
-        if let state = activeState { _ = retire(state) }
-        if let state = fadeTo, state !== activeState { _ = retire(state) }
-        if let state = pendingTarget, state !== activeState, state !== fadeTo { _ = retire(state) }
-        activeState = nil
-        observedState = nil
-        fadeFrom = nil
-        fadeTo = nil
-        pendingTarget = nil
-        hasPendingTarget = false
+        // Retire each field only when slots accept it. A field whose retire
+        // fails stays set for retry; hasPendingTarget stays true exactly
+        // while pendingTarget is non-nil, so a held pending still starts
+        // once retirement drains. Never clear the flag while keeping the
+        // field: that combination stalls the pending fade forever.
         isFading = false
         fadeFrame = 0
         primeFrames = 0
+        let origActive = activeState
+        let origFadeTo = fadeTo
+        let origPending = pendingTarget
+        let origObserved = observedState
+        var failed = false
+        if let state = activeState {
+            if retire(state) { activeState = nil } else { failed = true }
+        }
+        if let state = fadeTo {
+            if state === origActive { fadeTo = nil } else if retire(state) { fadeTo = nil } else { failed = true }
+        }
+        if let state = pendingTarget {
+            if state === origActive || state === origFadeTo { pendingTarget = nil; hasPendingTarget = false } else if retire(state) {
+                pendingTarget = nil
+                hasPendingTarget = false
+            } else {
+                // Keep both set: the pending fade must still start after the
+                // next successful drain. Clearing the flag here stalls it.
+                hasPendingTarget = true
+                failed = true
+            }
+        } else {
+            hasPendingTarget = false
+        }
+        if let state = observedState {
+            if state === origActive || state === origFadeTo || state === origPending { observedState = nil } else if retire(state) {
+                observedState = nil
+            } else {
+                failed = true
+            }
+        }
+        if let state = fadeFrom {
+            if state === origActive || state === origFadeTo || state === origPending || state === origObserved {
+                fadeFrom = nil
+            } else if retire(state) {
+                fadeFrom = nil
+            } else {
+                failed = true
+            }
+        }
+        if failed {
+            // Ask for one more run on the next callback to retry held fields.
+            _ = resetLock.withLockIfAvailable { requested in requested = true }
+        }
     }
+
+    #if DEBUG
+    /// DEBUG-only control helper. Tag a fresh state with its identity probe
+    /// before first publication (and before any audio observe). Call only
+    /// from test or control code, never from the realtime callback. Create
+    /// each state with this helper so every release path is observed.
+    nonisolated static func makeProbedStateForTesting(
+        renderers: [VirtualSpeakerRenderer],
+        inputChannelCount: Int,
+        fallbackSpeakers: [VirtualSpeaker],
+        blockSize: Int
+    ) -> RendererState {
+        let state = RendererState(
+            renderers: renderers,
+            inputChannelCount: inputChannelCount,
+            fallbackSpeakers: fallbackSpeakers,
+            blockSize: blockSize
+        )
+        let key = ObjectIdentifier(state as AnyObject)
+        state.destructionProbe = DestructionProbe(
+            id: key.hashValue,
+            recorder: destructionRecorder,
+            audioKey: destructionAudioKey
+        )
+        return state
+    }
+    #endif
 
     @discardableResult
     private func retire(_ state: RendererState) -> Bool {
+        #if DEBUG
+        if forceRetireFailureForTesting { return false }
+        #endif
         if pendingRetirement.isEmpty,
            retirementLock.withLockIfAvailable({ slots in slots.insert(state) }) == true {
             return true
@@ -466,12 +660,27 @@ nonisolated final class SpatialRendererCrossfader {
     }
 
     private func flushPendingRetirement() {
-        guard !pendingRetirement.isEmpty else { return }
+        if let held = failedRetirementHold {
+            // Retry the bounded failed-retire hold first, through the normal
+            // retire path. On success the hold clears and the pending fade may
+            // start; on failure the hold stays for the next callback.
+            if retire(held) {
+                failedRetirementHold = nil
+            } else {
+                return
+            }
+        }
+        guard !pendingRetirement.isEmpty else {
+            if failedRetirementHold == nil { startPendingFadeIfNeeded() }
+            return
+        }
         guard retirementLock.withLockIfAvailable({ slots in
             pendingRetirement.moveAll(into: &slots)
         }) == true else {
             return
         }
+        // A fully drained local tier also clears a stale hold marker: the
+        // hold above already retired through this same path.
         startPendingFadeIfNeeded()
     }
 }
@@ -508,6 +717,13 @@ class HRIRManager: ObservableObject {
         let renderers: [VirtualSpeakerRenderer]
         let processor: RealtimeAudioProcessor
         let fallbackSpeakers: [VirtualSpeaker]
+        #if DEBUG
+        // DEBUG-only destruction sentinel. Assigned from control with the
+        // state identity before publication; frees on the thread that drops
+        // the last state owner, so its recorder sees audio-thread releases.
+        // Never read or written inside the realtime callback.
+        var destructionProbe: SpatialRendererCrossfader.DestructionProbe?
+        #endif
 
         init(renderers: [VirtualSpeakerRenderer], inputChannelCount: Int, fallbackSpeakers: [VirtualSpeaker], blockSize: Int) {
             self.renderers = renderers
@@ -552,8 +768,34 @@ class HRIRManager: ObservableObject {
     private let presetsDirectory: URL
     private let fileManager: FileManager
     private let bundledPresetCatalog: BundledPresetCatalog
+    /// Content identity of each managed file, keyed by filename. Updated only
+    /// after full validation and a current-generation commit (managed import)
+    /// or a validated stable scan (external write). A new process seeds its
+    /// initial value from the current file, so no manifest migration is used.
+    /// Stable IDs, user names, and presets.json stay unchanged by this map.
+    private var contentRevisions: [String: HRIRContentIdentity] = [:]
     private var eventStream: FSEventStreamRef?
     private var directoryDebounceTask: DispatchWorkItem?
+    /// Watcher lifetime. Every start and stop mints a new value. Event or
+    /// debounce work that carries an older value never publishes. All
+    /// watcher state lives on the main actor; the stream delivers on the
+    /// main queue, so no synchronous hop is needed.
+    private var watcherGeneration = 0
+    /// Owned callback context. The FSEvent stream keeps the box, never the
+    /// manager. The stream stops, invalidates, then releases, so the box
+    /// frees after shutdown. The manager keeps a strong hold too, so a live
+    /// manager can prove a balanced release at teardown.
+    private var watcherContext: WatcherContext?
+    /// Small owned callback context: weak manager plus watcher lifetime.
+    /// A plain class keeps retain/release balanced by hand.
+    private final class WatcherContext {
+        weak var manager: HRIRManager?
+        let generation: Int
+        init(manager: HRIRManager, generation: Int) {
+            self.manager = manager
+            self.generation = generation
+        }
+    }
 
     // MARK: - Initialization
 
@@ -710,6 +952,10 @@ class HRIRManager: ObservableObject {
         // Full finite-sample validation before the managed copy.
         let wav = try WAVLoader.load(from: input.source)
         guard wav.channelCount >= 2 else { throw HRIRError.invalidChannelCount(wav.channelCount) }
+        // Content identity of the validated source bytes. Off the audio
+        // thread, one bounded read; size and mtime are never used as the
+        // revision, only as scan hints elsewhere.
+        let contentRevision = try HRIRContentIdentity.ofFile(at: input.source)
         let temporary = presetsDirectory.appendingPathComponent(".\(UUID().uuidString).wav")
         try fileManager.copyItem(at: input.source, to: temporary)
         return CommittedHRIRFile(
@@ -717,7 +963,8 @@ class HRIRManager: ObservableObject {
             filename: input.filename,
             destination: input.destination,
             channelCount: wav.channelCount,
-            sampleRate: wav.sampleRate
+            sampleRate: wav.sampleRate,
+            contentRevision: contentRevision
         )
     }
 
@@ -727,6 +974,9 @@ class HRIRManager: ObservableObject {
         let destination: URL
         let channelCount: Int
         let sampleRate: Double
+        /// Digest of the validated source bytes, recorded by the worker
+        /// before the managed copy. The commit stores it only on success.
+        let contentRevision: HRIRContentIdentity
     }
 
     private enum CommittedHRIRImport: Sendable {
@@ -759,6 +1009,10 @@ class HRIRManager: ObservableObject {
         )
         if let index = presets.firstIndex(where: { $0.id == preset.id }) { presets[index] = preset }
         else { presets.append(preset) }
+        // Advance the DSP revision only after full validation and a
+        // successful current-generation commit. A failed or stale commit
+        // never reaches this line, so its bytes cannot change the live key.
+        contentRevisions[file.destination.lastPathComponent] = file.contentRevision
         if activePreset?.id == preset.id { activePreset = preset }
         return .committed(file)
     }
@@ -1098,8 +1352,17 @@ class HRIRManager: ObservableObject {
         hrirMap: HRIRChannelMap? = nil,
         completion: ((HRIRActivationResult) -> Void)? = nil
     ) {
+        // The live key carries the managed content revision. A same-ID file
+        // replacement changes the digest, so the key differs and activation
+        // rebuilds; unchanged bytes keep the key and return cached success.
+        // A missing revision (legacy path) behaves as before: ID match hits.
         let activationKey = hrirMap == nil
-            ? PresetActivationKey(preset: preset, targetSampleRate: targetSampleRate, inputLayout: inputLayout)
+            ? PresetActivationKey(
+                preset: preset,
+                targetSampleRate: targetSampleRate,
+                inputLayout: inputLayout,
+                contentRevision: contentRevisions[preset.fileURL.lastPathComponent]
+            )
             : nil
 
         if let activationKey,
@@ -1249,7 +1512,12 @@ class HRIRManager: ObservableObject {
     /// Reuse matching renderer state; rebuild only when device configuration changed.
     func ensurePresetConfiguration(targetSampleRate: Double, inputLayout: InputLayout) {
         guard let preset = activePreset else { return }
-        let key = PresetActivationKey(preset: preset, targetSampleRate: targetSampleRate, inputLayout: inputLayout)
+        let key = PresetActivationKey(
+            preset: preset,
+            targetSampleRate: targetSampleRate,
+            inputLayout: inputLayout,
+            contentRevision: contentRevisions[preset.fileURL.lastPathComponent]
+        )
         if key != currentActivationKey {
             // Device configuration changed; the old convolvers no longer match.
             crossfader.requestReset()
@@ -1373,15 +1641,34 @@ class HRIRManager: ObservableObject {
     // MARK: - Private Methods
 
     private func startDirectoryWatcher() {
+        // One serialized owner: main-queue delivery, debounce replacement,
+        // and stop/invalidate/release all run on the main actor. The FSEvent
+        // callback never dereferences the manager directly: it reads a small
+        // owned context box (weak manager plus watcher lifetime) and re-enters
+        // through a weak async hop, so teardown of one lifetime cannot publish
+        // through the next. The box keeps the stream from retaining the
+        // manager: no manager/stream retain cycle. No re-entrant start: the
+        // manager never calls start from inside its own watcher callback or
+        // debounce work.
+        watcherGeneration &+= 1
+        let box = WatcherContext(manager: self, generation: watcherGeneration)
+        watcherContext = box
+        // Transfer one hold to the stream: retain stays nil, so the stream
+        // never adds its own hold; release below balances this passRetained
+        // exactly once at invalidate. Creation failure releases by hand.
+        let info = Unmanaged.passRetained(box).toOpaque()
         let pathsToWatch = [presetsDirectory.path] as CFArray
         var context = FSEventStreamContext(
             version: 0,
-            info: Unmanaged.passUnretained(self).toOpaque(),
+            info: info,
             retain: nil,
-            release: nil,
+            release: { raw in
+                guard let raw else { return }
+                Unmanaged<WatcherContext>.fromOpaque(raw).release()
+            },
             copyDescription: nil
         )
-        
+
         let callback: FSEventStreamCallback = { (
             streamRef,
             clientCallBackInfo,
@@ -1391,19 +1678,17 @@ class HRIRManager: ObservableObject {
             eventIds
         ) in
             guard let info = clientCallBackInfo else { return }
-            let manager = Unmanaged<HRIRManager>.fromOpaque(info).takeUnretainedValue()
-            
-            // Cancel any pending reload
-            manager.directoryDebounceTask?.cancel()
-            
-            // Schedule new reload with debouncing (reduced to 0.2s for faster updates)
-            let task = DispatchWorkItem { [weak manager] in
-                manager?.loadAndSyncPresets()
+            let box = Unmanaged<WatcherContext>.fromOpaque(info).takeUnretainedValue()
+
+            // Serialized delivery: the stream runs on the main queue, so
+            // this hop lands on the manager actor with no blocking call.
+            // The weak load is safe even after manager teardown.
+            let generation = box.generation
+            DispatchQueue.main.async { [weak manager = box.manager] in
+                manager?.handleDirectoryEvents(generation: generation)
             }
-            manager.directoryDebounceTask = task
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: task)
         }
-        
+
         let stream = FSEventStreamCreate(
             kCFAllocatorDefault,
             callback,
@@ -1413,22 +1698,153 @@ class HRIRManager: ObservableObject {
             0.1, // Latency in seconds
             UInt32(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagUseCFTypes)
         )
-        
-        if let stream = stream {
-            FSEventStreamSetDispatchQueue(stream, DispatchQueue.global(qos: .utility))
-            FSEventStreamStart(stream)
-            self.eventStream = stream
+        guard let stream else {
+            // Creation failed: balance the held box by hand and retire the
+            // claim. No re-entrant start can replace this lifetime: start
+            // never runs from inside the watcher callback or debounce work.
+            eventStream = nil
+            watcherContext = nil
+            directoryDebounceTask?.cancel()
+            directoryDebounceTask = nil
+            watcherGeneration &+= 1
+            Unmanaged<WatcherContext>.fromOpaque(info).release()
+            return
         }
+        // Replace any older lifetime before start, then keep the claimed
+        // generation only when this stream is the stored one.
+        if let old = eventStream {
+            FSEventStreamStop(old)
+            FSEventStreamInvalidate(old)
+            FSEventStreamRelease(old)
+            eventStream = nil
+            watcherContext = nil
+        }
+        FSEventStreamSetDispatchQueue(stream, DispatchQueue.main)
+        guard FSEventStreamStart(stream) else {
+            // Start failed after creation: release the created stream and
+            // retire the claimed lifetime.
+            FSEventStreamInvalidate(stream)
+            FSEventStreamRelease(stream)
+            eventStream = nil
+            watcherContext = nil
+            directoryDebounceTask?.cancel()
+            directoryDebounceTask = nil
+            watcherGeneration &+= 1
+            return
+        }
+        eventStream = stream
     }
-    
+
+    /// Serialized debounce step. Runs on the main actor. A cancelled or
+    /// stale call never publishes.
+    private func handleDirectoryEvents(generation: Int) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard generation == watcherGeneration, eventStream != nil else { return }
+        // Cancel any pending reload
+        directoryDebounceTask?.cancel()
+
+        // Schedule new reload with debouncing (reduced to 0.2s for faster updates)
+        let captured = watcherGeneration
+        let task = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            dispatchPrecondition(condition: .onQueue(.main))
+            guard captured == self.watcherGeneration else { return }
+            self.loadAndSyncPresets()
+        }
+        directoryDebounceTask = task
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: task)
+    }
+
     private func stopDirectoryWatcher() {
+        // Serialized teardown shares the manager queue with delivery and
+        // debounce: cancel and clear debounce first, retire the lifetime so
+        // queued event or debounce work turns stale, then stop and release
+        // the stream. Repeated stop is harmless.
+        directoryDebounceTask?.cancel()
+        directoryDebounceTask = nil
+        watcherGeneration &+= 1
         if let stream = eventStream {
             FSEventStreamStop(stream)
             FSEventStreamInvalidate(stream)
             FSEventStreamRelease(stream)
             eventStream = nil
         }
+        watcherContext = nil
     }
+
+    /// 037 test hook. Reads the stored content revision for a managed file.
+    /// Nil means no validated revision is recorded yet.
+    func contentRevisionForTesting(filename: String) -> HRIRContentIdentity? {
+        dispatchPrecondition(condition: .onQueue(.main))
+        return contentRevisions[filename]
+    }
+
+    /// 037 step 2 entry: re-check the selected preset against the supplied
+    /// library snapshot and live-update when its validated content changed.
+    /// The snapshot is the array the `$presets` subscription emitted, not a
+    /// fresh read of the backing property (willSet timing: the property can
+    /// still hold the old value when this runs). Returns true when a live
+    /// activation started. The caller keeps pipeline identity: this never
+    /// creates a pipeline, only routes through `activatePreset`.
+    @discardableResult
+    func reloadSelectedPreset(
+        _ snapshot: [HRIRPreset],
+        selectedID: UUID?,
+        targetSampleRate: Double,
+        inputLayout: InputLayout,
+        activate: (HRIRPreset) -> Void
+    ) -> Bool {
+        guard let selectedID,
+              let selected = snapshot.first(where: { $0.id == selectedID }),
+              presets.contains(where: { $0.id == selectedID }) else { return false }
+        // The selected row still exists; compare revisions. A rename-only or
+        // duplicate snapshot keeps the revision and must not restart audio.
+        guard let stored = contentRevisions[selected.fileURL.lastPathComponent],
+              let live = currentActivationKey?.contentRevision,
+              currentActivationKey?.presetID == selectedID,
+              stored != live else { return false }
+        activate(selected)
+        return true
+    }
+
+#if DEBUG
+    /// 036 test hook. Must run on the main actor. Carries the current
+    /// watcher lifetime, so it proves the same invalidation rule that guards
+    /// real events: a stop between schedule and fire drops the reload.
+    /// Pre-fix FAIL proof: run this test against the old global-queue
+    /// callback, where the main-queue hop carries no lifetime and stop
+    /// cannot invalidate queued work. Post-fix, the same test passes.
+    func scheduleWatcherReloadForTesting() {
+        dispatchPrecondition(condition: .onQueue(.main))
+        handleDirectoryEvents(generation: watcherGeneration)
+    }
+
+    /// 036 test hook. Must run on the main actor. A call that carries a
+    /// stale lifetime returns without side effects, like a late FSEvent
+    /// delivery after stop.
+    func deliverStaleWatcherEventsForTesting() {
+        dispatchPrecondition(condition: .onQueue(.main))
+        handleDirectoryEvents(generation: watcherGeneration &- 1)
+    }
+
+    /// 036 test hook. Reports whether a watcher lifetime is active.
+    var isWatcherActiveForTesting: Bool {
+        dispatchPrecondition(condition: .onQueue(.main))
+        return eventStream != nil
+    }
+
+    /// 036 test hook. Runs the real serialized teardown on a live manager.
+    func stopWatcherForTesting() {
+        dispatchPrecondition(condition: .onQueue(.main))
+        stopDirectoryWatcher()
+    }
+
+    /// 036 test hook. Counts strong box owners held by this manager.
+    var watcherContextRetainCountForTesting: Int {
+        dispatchPrecondition(condition: .onQueue(.main))
+        return watcherContext == nil ? 0 : 1
+    }
+#endif
 
     func waitForLibrarySync() async {
         // Drain pending import work, then publish the directory scan on main.
@@ -1474,7 +1890,8 @@ class HRIRManager: ObservableObject {
             // Check if we already have this file
             if let existing = knownPresets.first(where: { $0.fileURL.lastPathComponent == fileURL.lastPathComponent }) {
                 // Update path in case it moved (though unlikely if filename matches)
-                // But mostly just keep it
+                // But mostly just keep it. Stable ID and user name stay put;
+                // only the content revision can advance below.
                 let updated = HRIRPreset(
                     id: existing.id,
                     name: existing.name,
@@ -1483,10 +1900,34 @@ class HRIRManager: ObservableObject {
                     sampleRate: existing.sampleRate
                 )
                 updatedPresets.append(updated)
+                // External replacement path: detect real content changes by
+                // digest, not by size or mtime. Seed a missing revision from
+                // the current file (a new process has no in-memory value).
+                // Metadata-only edits (same bytes, renamed display name kept
+                // in the struct) never advance the revision; renames that
+                // change the filename follow the existing identity rule and
+                // appear as removal plus addition.
+                if contentRevisions[fileURL.lastPathComponent] == nil {
+                    if let seeded = try? HRIRContentIdentity.ofFile(at: fileURL),
+                       (try? WAVLoader.headerInfo(from: fileURL)) != nil {
+                        contentRevisions[fileURL.lastPathComponent] = seeded
+                    }
+                } else if let candidate = try? HRIRContentIdentity.ofFile(at: fileURL),
+                          candidate != contentRevisions[fileURL.lastPathComponent],
+                          (try? WAVLoader.load(from: fileURL)) != nil {
+                    // Stable candidate: bounded header plus full finite-sample
+                    // decode pass. Invalid bytes keep the old revision and
+                    // the working renderer; the error surfaces at activation.
+                    contentRevisions[fileURL.lastPathComponent] = candidate
+                    hasChanges = true
+                }
             } else {
                 // New file found!
                 if let newPreset = try? createPresetHeaderOnly(from: fileURL) {
                     updatedPresets.append(newPreset)
+                    if let seeded = try? HRIRContentIdentity.ofFile(at: fileURL) {
+                        contentRevisions[fileURL.lastPathComponent] = seeded
+                    }
                     hasChanges = true
                 }
             }
@@ -1500,6 +1941,9 @@ class HRIRManager: ObservableObject {
 
         if !orphanedPresets.isEmpty {
             Logger.log("[HRIRManager] Removing \(orphanedPresets.count) orphaned presets")
+            for orphan in orphanedPresets {
+                contentRevisions.removeValue(forKey: orphan.fileURL.lastPathComponent)
+            }
             hasChanges = true
         }
 
