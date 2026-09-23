@@ -774,6 +774,53 @@ final class AudioRuntimeControllerTests: XCTestCase {
         XCTAssertEqual(platform.tapCreationCount, 2)
     }
 
+    func testRestartStopsPipelineBeforePreparingEffectGraph() {
+        let eventLog = RuntimeEventLog()
+        let graph = OrderedEffectGraph(eventLog: eventLog)
+        let h = Harness(effectGraph: graph, eventLog: eventLog)
+        let readiness = AudioRuntimeEffectReadiness(spatialReady: true, equalizerDefinition: nil)
+
+        h.controller.launch(effectReadiness: readiness, captureVerified: true)
+        XCTAssertEqual(eventLog.events, ["prepare", "start"])
+
+        eventLog.events.removeAll()
+        h.controller.launch(effectReadiness: readiness, captureVerified: true)
+
+        XCTAssertEqual(eventLog.events, ["stop", "prepare", "start"])
+        XCTAssertEqual(graph.prepareCount, 2)
+        XCTAssertEqual(h.pipelines.liveCount, 1)
+
+        eventLog.events.removeAll()
+        graph.nextResult = AudioEffectPreparationResult(runnableEffects: [], equalizerWarning: nil)
+        h.controller.launch(effectReadiness: readiness, captureVerified: true)
+
+        XCTAssertEqual(eventLog.events, ["stop", "prepare"])
+        XCTAssertEqual(h.pipelines.liveCount, 0)
+        guard case .nativePassthrough = h.state.status else {
+            return XCTFail("an empty effect graph should leave native passthrough active")
+        }
+    }
+
+    func testFailedRestartStopKeepsPipelineAndDoesNotPrepareGraph() {
+        let eventLog = RuntimeEventLog()
+        let graph = OrderedEffectGraph(eventLog: eventLog)
+        let h = Harness(effectGraph: graph, eventLog: eventLog)
+        let readiness = AudioRuntimeEffectReadiness(spatialReady: true, equalizerDefinition: nil)
+
+        h.controller.launch(effectReadiness: readiness, captureVerified: true)
+        eventLog.events.removeAll()
+        h.pipelines.stopError = .cleanupFailed("busy")
+
+        h.controller.launch(effectReadiness: readiness, captureVerified: true)
+
+        XCTAssertEqual(eventLog.events, ["stop"])
+        XCTAssertEqual(graph.prepareCount, 1)
+        XCTAssertEqual(h.pipelines.liveCount, 1)
+        guard case .recovering = h.state.status else {
+            return XCTFail("a failed stop should preserve the old pipeline for cleanup retry")
+        }
+    }
+
     func testPlan039SameIDChangeKeepsLivePipelineCountAtOne() {
         let h = Harness(effect: true)
         h.pipelines.automaticEvent = nil
@@ -809,7 +856,7 @@ final class AudioRuntimeControllerTests: XCTestCase {
 private final class Harness {
     let state = AudioRuntimeState()
     let platform = PlatformFake()
-    let pipelines = PipelineFactoryFake()
+    let pipelines: PipelineFactoryFake
     let scheduler = SchedulerFake()
     let player = PlayerFake()
     private let effectGraph: AudioEffectGraphControlling?
@@ -822,9 +869,43 @@ private final class Harness {
         stimulusPlayer: player
     )
 
-    init(effect: Bool = false, effectGraph: AudioEffectGraphControlling? = nil) {
+    init(
+        effect: Bool = false,
+        effectGraph: AudioEffectGraphControlling? = nil,
+        eventLog: RuntimeEventLog? = nil
+    ) {
         self.effectGraph = effectGraph
+        self.pipelines = PipelineFactoryFake(eventLog: eventLog ?? RuntimeEventLog())
         pipelines.automaticEvent = effect ? .signalDetected : nil
+    }
+}
+
+private final class RuntimeEventLog {
+    var events: [String] = []
+}
+
+private final class OrderedEffectGraph: AudioEffectGraphControlling {
+    private let eventLog: RuntimeEventLog
+    private(set) var prepareCount = 0
+    var nextResult: AudioEffectPreparationResult?
+
+    init(eventLog: RuntimeEventLog) {
+        self.eventLog = eventLog
+    }
+
+    func prepare(
+        for output: OutputDeviceDescriptor,
+        equalizerDefinition: EqualizerDefinition?
+    ) -> AudioEffectPreparationResult {
+        eventLog.events.append("prepare")
+        prepareCount += 1
+        let result = nextResult ?? AudioEffectPreparationResult(runnableEffects: [.spatial], equalizerWarning: nil)
+        nextResult = nil
+        return result
+    }
+
+    func updateEqualizer(definition: EqualizerDefinition?) -> AudioEffectPreparationResult {
+        AudioEffectPreparationResult(runnableEffects: [.spatial], equalizerWarning: nil)
     }
 }
 
@@ -840,6 +921,7 @@ private final class EmptyOnNilEffectGraph: AudioEffectGraphControlling {
 }
 
 private final class PipelineFactoryFake {
+    let eventLog: RuntimeEventLog
     var automaticEvent: AudioCaptureVerificationEvent?
     var startError: AudioRuntimeError?
     var stopError: AudioRuntimeError?
@@ -847,6 +929,10 @@ private final class PipelineFactoryFake {
     var muteBehaviors: [AudioTapMuteBehavior] = []
     var handlers: [AudioCaptureVerificationHandler] = []
     var liveCount = 0
+
+    init(eventLog: RuntimeEventLog = RuntimeEventLog()) {
+        self.eventLog = eventLog
+    }
 
     func make() -> PipelineFake {
         PipelineFake(owner: self)
@@ -868,6 +954,7 @@ private final class PipelineFake: AudioPipelineControlling {
     func start(on output: OutputDeviceDescriptor, purpose: AudioPipelinePurpose, verificationHandler: @escaping AudioCaptureVerificationHandler) throws {
         guard let owner else { return }
         if let error = owner.startError { owner.startError = nil; throw error }
+        owner.eventLog.events.append("start")
         owner.purposes.append(purpose)
         owner.muteBehaviors.append(purpose == .processing ? .mutedWhenTapped : .unmuted)
         owner.handlers.append(verificationHandler)
@@ -877,6 +964,7 @@ private final class PipelineFake: AudioPipelineControlling {
 
     func stop() throws {
         guard let owner else { return }
+        owner.eventLog.events.append("stop")
         if let error = owner.stopError {
             owner.stopError = nil
             throw error

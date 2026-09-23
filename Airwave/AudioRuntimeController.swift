@@ -473,6 +473,11 @@ final class AudioRuntimeController {
         let purpose: AudioPipelinePurpose = captureProbeRequested && !captureVerified
             ? .verification(includeOwnProcess: explicitCaptureTest)
             : .processing
+        // The effect graph is shared by the live and replacement pipelines.
+        // Stop and clean up the old IO before prepare mutates graph state; if
+        // stopping fails, retain the old pipeline and leave its graph untouched.
+        guard stopLivePipeline() else { return }
+
         let preparation: AudioEffectPreparationResult?
         if let effectGraph {
             let result = effectGraph.prepare(for: output, equalizerDefinition: effectReadiness.equalizerDefinition)
@@ -485,11 +490,6 @@ final class AudioRuntimeController {
         } else { preparation = nil }
 
         let currentGeneration = generation
-        // Pipeline ownership is exclusive: a previous pipeline that still holds
-        // tap/aggregate/IO resources must never be overwritten by a candidate.
-        // A failed stop is fatal-in-order — keep the reference and let the
-        // cleanup retry release it before anything else starts.
-        guard stopLivePipeline() else { return }
         let candidate = pipelineFactory()
         let candidateIdentity = ObjectIdentifier(candidate)
         pipeline = candidate
