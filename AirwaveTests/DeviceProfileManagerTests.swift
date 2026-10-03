@@ -134,12 +134,12 @@ final class DeviceProfileManagerTests: XCTestCase {
             profileDevice(id: 5, uid: "multi-stream", name: "Multi-stream", streamCount: 2)
         ])
 
-        XCTAssertTrue(manager.targets.isEmpty)
+        XCTAssertEqual(manager.targets.map(\.deviceUID), ["multi-stream"])
         manager.setHRIRPresetID(UUID(), for: "virtual")
         XCTAssertTrue(manager.profiles.isEmpty)
     }
 
-    func testAmbiguousLayoutInventoryNeverBecomesTargetOrProfile() throws {
+    func testAmbiguousAndUnresolvedLayoutsRemainConfigurationTargets() throws {
         let context = try Context()
         let manager = DeviceProfileManager(defaults: context.defaults, now: { context.date })
         manager.updateAvailableOutputs([
@@ -148,14 +148,11 @@ final class DeviceProfileManagerTests: XCTestCase {
             profileDevice(id: 13, uid: "wrong-length", name: "Wrong Length", channels: 8, channelLabels: [1, 2])
         ])
 
-        XCTAssertTrue(manager.targets.isEmpty)
+        XCTAssertEqual(Set(manager.targets.map(\.deviceUID)), ["dual-stereo", "unknown-3", "wrong-length"])
+        XCTAssertTrue(manager.targets.allSatisfy(\.isAvailable))
+
         manager.setHRIRPresetID(UUID(), for: "dual-stereo")
-        XCTAssertTrue(manager.profiles.isEmpty)
-        // Same decision at persistence: the valid sibling stays available.
-        manager.updateAvailableOutputs([
-            profileDevice(id: 14, uid: "mapped-3", name: "Mapped 3", channels: 3, channelLabels: [1, 2, 3])
-        ])
-        XCTAssertEqual(manager.targets.map(\.deviceUID), ["mapped-3"])
+        XCTAssertNotNil(manager.profile(for: "dual-stereo"))
     }
 
     func testUnlabeledQuadFallbackStaysAvailable() throws {
@@ -317,12 +314,13 @@ final class DeviceProfileManagerTests: XCTestCase {
         XCTAssertEqual(changes.last?.effect, .hrir)
     }
 
-    func testResetClearsBothEffectsWithOneWriteAndOneBothChange() throws {
+    func testResetClearsEffectsAndOutputPairWithOneWriteAndOneChange() throws {
         let context = try Context()
         let manager = DeviceProfileManager(defaults: context.defaults, now: { context.date })
         seedProfile(manager, profileDevice(id: 1, uid: "stable", name: "Output"))
         manager.setHRIRPresetID(UUID())
         manager.setEqualizerPresetID(UUID())
+        XCTAssertTrue(manager.setOutputChannels(.init(left: 1, right: 2), for: "stable"))
         let writesBeforeReset = context.defaults.profileStoreWrites
         var changes: [DeviceProfileChange] = []
         let cancellable = manager.changes.sink { changes.append($0) }
@@ -332,8 +330,9 @@ final class DeviceProfileManagerTests: XCTestCase {
 
         XCTAssertNil(manager.currentProfile?.hrirPresetID)
         XCTAssertNil(manager.currentProfile?.equalizerPresetID)
+        XCTAssertNil(manager.currentProfile?.outputChannels)
         XCTAssertEqual(context.defaults.profileStoreWrites, writesBeforeReset + 1)
-        XCTAssertEqual(changes, [.init(revision: manager.revision, deviceUID: "stable", effect: .both)])
+        XCTAssertEqual(changes, [.init(revision: manager.revision, deviceUID: "stable", effect: .reset)])
     }
 
     func testResetMissingAndAlreadyEmptyAreFalseWithoutWritesOrChanges() throws {
@@ -426,6 +425,134 @@ final class DeviceProfileManagerTests: XCTestCase {
         XCTAssertNil(manager.currentProfile)
         XCTAssertEqual(manager.editingTarget?.deviceUID, "forgotten")
         XCTAssertTrue(manager.editingTarget?.isAvailable == true)
+    }
+
+    func testRouteOnlySaveCreatesBlankProfileOnceForCapturedUID() throws {
+        let context = try Context()
+        let manager = DeviceProfileManager(defaults: context.defaults, now: { context.date })
+        let current = profileDevice(id: 1, uid: "current", name: "Current")
+        let inactive = profileDevice(
+            id: 2, uid: "inactive", name: "Dual Stereo", channels: 4,
+            channelLabels: [1, 2, 1, 2]
+        )
+        manager.observeCurrentOutput(current)
+        manager.updateAvailableOutputs([current, inactive])
+        manager.selectEditingDevice(uid: "current")
+        let writes = context.defaults.profileStoreWrites
+        var changes: [DeviceProfileChange] = []
+        let cancellable = manager.changes.sink { changes.append($0) }
+        defer { cancellable.cancel() }
+
+        XCTAssertTrue(manager.setOutputChannels(.init(left: 4, right: 2), for: "inactive"))
+
+        XCTAssertEqual(manager.currentDeviceUID, "current")
+        XCTAssertEqual(manager.editingDeviceUID, "current")
+        XCTAssertEqual(context.defaults.profileStoreWrites, writes + 1)
+        XCTAssertEqual(changes, [.init(revision: 1, deviceUID: "inactive", effect: .routing)])
+        XCTAssertEqual(manager.profile(for: "inactive")?.outputChannels, .init(left: 4, right: 2))
+        XCTAssertNil(manager.profile(for: "inactive")?.hrirPresetID)
+        XCTAssertNil(manager.profile(for: "inactive")?.equalizerPresetID)
+    }
+
+    func testObservingSameActiveOutputKeepsInactiveEditorTarget() throws {
+        let context = try Context()
+        let manager = DeviceProfileManager(defaults: context.defaults, now: { context.date })
+        let current = profileDevice(id: 1, uid: "current", name: "Current")
+        let inactive = profileDevice(id: 2, uid: "inactive", name: "Inactive", channels: 4)
+        manager.observeCurrentOutput(current)
+        manager.updateAvailableOutputs([current, inactive])
+        manager.selectEditingDevice(uid: inactive.uid)
+
+        manager.observeCurrentOutput(current)
+
+        XCTAssertEqual(manager.currentDeviceUID, current.uid)
+        XCTAssertEqual(manager.editingDeviceUID, inactive.uid)
+    }
+
+    func testRouteSaveRejectsInvalidPairAndRepeatedWriteIsNoOp() throws {
+        let context = try Context()
+        let manager = DeviceProfileManager(defaults: context.defaults, now: { context.date })
+        manager.updateAvailableOutputs([
+            profileDevice(id: 1, uid: "physical", name: "Physical", channels: 4, channelLabels: [1, 2, 1, 2])
+        ])
+        let pair = StereoOutputChannels(left: 3, right: 4)
+        let writes = context.defaults.profileStoreWrites
+        var changeCount = 0
+        let cancellable = manager.changes.sink { _ in changeCount += 1 }
+        defer { cancellable.cancel() }
+
+        XCTAssertFalse(manager.setOutputChannels(.init(left: 2, right: 2), for: "physical"))
+        XCTAssertFalse(manager.setOutputChannels(.init(left: 1, right: 5), for: "physical"))
+        XCTAssertTrue(manager.setOutputChannels(pair, for: "physical"))
+        XCTAssertFalse(manager.setOutputChannels(pair, for: "physical"))
+
+        XCTAssertEqual(context.defaults.profileStoreWrites, writes + 1)
+        XCTAssertEqual(changeCount, 1)
+    }
+
+    func testUnavailableSavedPairSurvivesNarrowerInventoryWithoutRewrite() throws {
+        let context = try Context()
+        let manager = DeviceProfileManager(defaults: context.defaults, now: { context.date })
+        let original = DeviceAudioProfile(
+            deviceUID: "stable", deviceName: "Stable", transport: "USB",
+            hrirPresetID: nil, equalizerPresetID: nil,
+            outputChannels: .init(left: 3, right: 4), lastSeenAt: context.date
+        )
+        let data = try JSONEncoder().encode(DeviceProfileEnvelope(schemaVersion: 1, profiles: [original]))
+        context.defaults.set(data, forKey: DeviceProfileManager.storageKey)
+        let reloaded = DeviceProfileManager(defaults: context.defaults, now: { context.date })
+        let writes = context.defaults.profileStoreWrites
+
+        reloaded.updateAvailableOutputs([profileDevice(id: 2, uid: "stable", name: "Stable", channels: 2)])
+
+        XCTAssertEqual(reloaded.profile(for: "stable")?.outputChannels, .init(left: 3, right: 4))
+        XCTAssertEqual(context.defaults.profileStoreWrites, writes)
+    }
+
+    func testStaleSavedPairKeepsCurrentUIDAndPreferenceForRepair() throws {
+        let context = try Context()
+        let manager = DeviceProfileManager(defaults: context.defaults, now: { context.date })
+        let original = profileDevice(
+            id: 1, uid: "interface", name: "Interface", channels: 4,
+            channelLabels: [1, 2, 1, 2]
+        )
+        manager.observeCurrentOutput(original)
+        let pair = StereoOutputChannels(left: 4, right: 2)
+        XCTAssertTrue(manager.setOutputChannels(pair, for: original.uid))
+
+        manager.observeCurrentOutput(profileDevice(
+            id: 2, uid: original.uid, name: "Interface", channels: 2
+        ))
+
+        XCTAssertEqual(manager.currentDeviceUID, original.uid)
+        XCTAssertEqual(manager.editingDeviceUID, original.uid)
+        XCTAssertEqual(manager.profile(for: original.uid)?.outputChannels, pair)
+        XCTAssertTrue(manager.availableOutputs.contains(where: { $0.uid == original.uid }))
+    }
+
+    func testV1StoreWithoutOutputChannelsKeepsBothPresetIDs() throws {
+        let context = try Context()
+        let hrirID = UUID()
+        let equalizerID = UUID()
+        let storedProfile: [String: Any] = [
+            "deviceUID": "legacy",
+            "deviceName": "Legacy",
+            "transport": "USB",
+            "hrirPresetID": hrirID.uuidString,
+            "equalizerPresetID": equalizerID.uuidString,
+            "lastSeenAt": context.date.timeIntervalSinceReferenceDate,
+        ]
+        let data = try JSONSerialization.data(withJSONObject: [
+            "schemaVersion": 1,
+            "profiles": [storedProfile],
+        ])
+        context.defaults.set(data, forKey: DeviceProfileManager.storageKey)
+
+        let manager = DeviceProfileManager(defaults: context.defaults, now: { context.date })
+
+        XCTAssertEqual(manager.profile(for: "legacy")?.hrirPresetID, hrirID)
+        XCTAssertEqual(manager.profile(for: "legacy")?.equalizerPresetID, equalizerID)
+        XCTAssertNil(manager.profile(for: "legacy")?.outputChannels)
     }
 }
 

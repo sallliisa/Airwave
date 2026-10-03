@@ -128,6 +128,135 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertNil(SystemAppleEventSenderResolver().bundleIdentifier(for: applicationEvent(id: kAEOpenApplication)))
     }
 
+    func testSpaceReturnRestoresTheExactTrackedWindowThatLeft() {
+        let settingsWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: true
+        )
+        settingsWindow.identifier = SettingsWindowPresenter.windowIdentifier
+        let secondaryWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: true
+        )
+
+        let settingsID = ObjectIdentifier(settingsWindow)
+        let secondaryID = ObjectIdentifier(secondaryWindow)
+        let visible = ApplicationLifecycleCoordinator.FocusWindowState(
+            isKeyWindow: false,
+            isMiniaturized: false,
+            isOnActiveSpace: true
+        )
+        var states = [
+            settingsID: ApplicationLifecycleCoordinator.FocusWindowState(
+                isKeyWindow: true,
+                isMiniaturized: false,
+                isOnActiveSpace: true
+            ),
+            secondaryID: ApplicationLifecycleCoordinator.FocusWindowState(
+                isKeyWindow: true,
+                isMiniaturized: false,
+                isOnActiveSpace: true
+            )
+        ]
+        let application = ApplicationLifecycleApplicationFake()
+        application.windows = [secondaryWindow, settingsWindow]
+        var restoredWindows: [NSWindow] = []
+        var activationCount = 0
+        let coordinator = ApplicationLifecycleCoordinator(
+            application: application,
+            observeWindows: false,
+            focusWindowState: { states[ObjectIdentifier($0)] ?? visible },
+            activateApplication: { activationCount += 1 },
+            restoreWindow: { restoredWindows.append($0) }
+        )
+
+        coordinator.applicationWillResignActive()
+        states[settingsID] = .init(
+            isKeyWindow: false,
+            isMiniaturized: false,
+            isOnActiveSpace: false
+        )
+        states[secondaryID] = .init(
+            isKeyWindow: true,
+            isMiniaturized: false,
+            isOnActiveSpace: true
+        )
+        coordinator.handleActiveSpaceDidChange()
+
+        states[settingsID] = .init(
+            isKeyWindow: false,
+            isMiniaturized: false,
+            isOnActiveSpace: true
+        )
+        coordinator.handleActiveSpaceDidChange()
+
+        XCTAssertEqual(restoredWindows.map(ObjectIdentifier.init), [settingsID])
+        XCTAssertEqual(activationCount, 1)
+    }
+
+    func testSpaceReturnDoesNotRestoreAnotherWindowAfterDepartingWindowCloses() {
+        let settingsWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: true
+        )
+        settingsWindow.identifier = SettingsWindowPresenter.windowIdentifier
+        let secondaryWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: true
+        )
+
+        let settingsID = ObjectIdentifier(settingsWindow)
+        let secondaryID = ObjectIdentifier(secondaryWindow)
+        var states = [
+            settingsID: ApplicationLifecycleCoordinator.FocusWindowState(
+                isKeyWindow: true,
+                isMiniaturized: false,
+                isOnActiveSpace: true
+            ),
+            secondaryID: ApplicationLifecycleCoordinator.FocusWindowState(
+                isKeyWindow: true,
+                isMiniaturized: false,
+                isOnActiveSpace: true
+            )
+        ]
+        let application = ApplicationLifecycleApplicationFake()
+        application.windows = [secondaryWindow, settingsWindow]
+        var restoredWindows: [NSWindow] = []
+        let coordinator = ApplicationLifecycleCoordinator(
+            application: application,
+            observeWindows: false,
+            focusWindowState: { states[ObjectIdentifier($0)]! },
+            activateApplication: {},
+            restoreWindow: { restoredWindows.append($0) }
+        )
+
+        coordinator.applicationWillResignActive()
+        states[settingsID] = .init(
+            isKeyWindow: false,
+            isMiniaturized: false,
+            isOnActiveSpace: false
+        )
+        coordinator.handleActiveSpaceDidChange()
+        coordinator.handleTrackedWindowInvalidation(settingsWindow)
+
+        states[secondaryID] = .init(
+            isKeyWindow: true,
+            isMiniaturized: false,
+            isOnActiveSpace: true
+        )
+        coordinator.handleActiveSpaceDidChange()
+
+        XCTAssertTrue(restoredWindows.isEmpty)
+    }
+
     func testUnpreparedTerminationIsCancelled() {
         let application = ApplicationLifecycleApplicationFake()
         let coordinator = ApplicationLifecycleCoordinator(application: application, observeWindows: false)
@@ -350,6 +479,40 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertEqual(AirwaveResourceLinks.equalizer.absoluteString, "https://autoeq.app/")
     }
 
+    func testConfigureOutputSurfaceHasOnlyTheTwoChannelPickersAndActions() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let view = try String(
+            contentsOf: root.appendingPathComponent("Airwave/ConfigureOutputView.swift"),
+            encoding: .utf8
+        )
+        let management = try String(
+            contentsOf: root.appendingPathComponent("Airwave/DeviceManagementView.swift"),
+            encoding: .utf8
+        )
+        let presentation = try String(
+            contentsOf: root.appendingPathComponent("Airwave/ConfigureOutputPopoverCoordinator.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertEqual(view.components(separatedBy: "Picker(title, selection:").count - 1, 1)
+        XCTAssertEqual(view.components(separatedBy: "title: \"Left output\"").count - 1, 1)
+        XCTAssertEqual(view.components(separatedBy: "title: \"Right output\"").count - 1, 1)
+        XCTAssertTrue(view.contains("Left output"))
+        XCTAssertTrue(view.contains("Right output"))
+        XCTAssertTrue(view.contains("Button(\"Cancel\")"))
+        XCTAssertTrue(view.contains("Button(\"Save\")"))
+        XCTAssertTrue(view.contains("for \\(coordinator.deviceName)"))
+        XCTAssertTrue(management.contains("Configure output…"))
+        XCTAssertTrue(management.contains(".popover(isPresented:"))
+        XCTAssertTrue(management.contains("ConfigureOutputPopoverCoordinator"))
+        XCTAssertTrue(presentation.contains("savePresentedDraft"))
+        XCTAssertTrue(presentation.contains("dismissTransiently"))
+        XCTAssertFalse(management.contains("ConfigureOutputWindow"))
+        XCTAssertFalse(view.contains("Advanced"))
+        XCTAssertFalse(view.contains("Automatic"))
+        XCTAssertFalse(view.localizedCaseInsensitiveContains("test tone"))
+    }
+
     // MARK: Deliberate layout-regression pins
     // These assert source structure because the guarded bugs were visual
     // regressions (truncated text) with no behavioral seam to test.
@@ -424,7 +587,7 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertEqual(failureGuidance?.reason, "Capture test timed out.")
         XCTAssertEqual(failureGuidance?.suggestions.count, 2)
         XCTAssertTrue(failureGuidance?.suggestions.contains("Enable Airwave under Privacy & Security → System Audio Capture.") == true)
-        XCTAssertTrue(failureGuidance?.suggestions.contains("Use a supported physical output (one stream, resolvable layout); virtual and aggregate outputs are unsupported.") == true)
+        XCTAssertTrue(failureGuidance?.suggestions.contains("Use a physical output with a resolvable source feed; virtual and aggregate outputs are unsupported.") == true)
     }
 
     func testCompletedSetupDoesNotRequireFreshCaptureWhenInactiveWithoutEffect() {
@@ -653,6 +816,7 @@ final class ProductSurfaceTests: XCTestCase {
             (.captureTestFailed(reason: "timeout"), .reviewCapture),
             (.noUsableOutput, .retry),
             (.unsupportedOutput(reason: "virtual"), .retry),
+            (.invalidOutputRouting(reason: "channels unavailable"), .retry),
             (.audioPipelineFailed(reason: "format"), .retry),
             (.resourceRecovery(reason: "cleanup"), .retry),
             (.spatialPresetFailed(reason: "HRIR"), .chooseHRIR),
@@ -736,8 +900,7 @@ final class ProductSurfaceTests: XCTestCase {
         XCTAssertEqual(viewModel.recommendedVoluntaryEntryStep, .systemAudio)
     }
 
-    func testVoluntaryEntryRoutesUnresolvedLayoutToHealth() {
-        // Duplicate explicit stereo pair [L,R,L,R] is ambiguous under the shared rule.
+    func testVoluntaryEntryAcceptsDuplicateStereoInterfaceAsRoutable() {
         let persistence = PersistenceFake()
         let runtime = AudioRuntimeState(
             status: .inactive,
@@ -747,8 +910,8 @@ final class ProductSurfaceTests: XCTestCase {
         let viewModel = OnboardingViewModel(runtime: runtime, actions: ActionsFake(), persistence: persistence)
 
         XCTAssertFalse(runtime.currentOutput?.isSupportedProfileOutput == true)
-        XCTAssertNotNil(runtime.currentOutput?.unsupportedProfileReason)
-        XCTAssertEqual(viewModel.recommendedVoluntaryEntryStep, .liveHealth)
+        XCTAssertTrue(runtime.isCurrentOutputRoutable)
+        XCTAssertEqual(viewModel.recommendedVoluntaryEntryStep, .systemAudio)
     }
 
     func testVoluntaryEntryRoutesMultiStreamVirtualAggregateAndNarrowToHealth() {
@@ -819,20 +982,33 @@ final class ProductSurfaceTests: XCTestCase {
         )
     }
 
-    func testUnsupportedOutputPresentationDescribesCaptureVersusBinauralOutput() {
+    func testUnsupportedOutputPresentationDescribesSourceResolution() {
         let presentation = RuntimeHealthIssuePresentation.make(for: .unsupportedOutput(reason: "custom reason"))
 
         XCTAssertEqual(presentation.detail, "custom reason")
         XCTAssertEqual(presentation.action, .retry)
         XCTAssertTrue(presentation.suggestions.contains(where: {
-            $0.contains("one stream") && $0.contains("supported channel layout")
+            $0.contains("physical output") && $0.contains("resolvable stereo or surround source feed")
         }))
-        XCTAssertTrue(presentation.suggestions.contains(where: {
-            $0.contains("channels 1–2") && $0.contains("binaural")
-        }))
-        XCTAssertFalse(presentation.suggestions.contains(where: {
-            $0.contains("non-stereo outputs are unsupported")
-        }))
+    }
+
+    func testRoutingOnlyStatusIsPresentedAsActiveAudio() {
+        let presentation = RuntimeMenuPresentation.make(from: .routing)
+
+        XCTAssertEqual(presentation.healthTitle, "Routing audio")
+        XCTAssertEqual(presentation.statusIconName, "waveform.circle.fill")
+        XCTAssertTrue(presentation.healthDetail.contains("selected output channels"))
+        XCTAssertFalse(presentation.canRetry)
+    }
+
+    func testInvalidSavedOutputRouteHasRepairGuidance() {
+        let presentation = RuntimeHealthIssuePresentation.make(
+            for: .invalidOutputRouting(reason: "Choose two distinct output channels available on this device.")
+        )
+
+        XCTAssertEqual(presentation.title, "Output routing needs repair")
+        XCTAssertTrue(presentation.detail.contains("distinct output channels"))
+        XCTAssertEqual(presentation.action, .retry)
     }
 
     func testNoUsableOutputPresentationAvoidsStereoOnlyWording() {
@@ -902,7 +1078,7 @@ private final class AppleEventRouterFake: ApplicationAppleEventRouting {
 
 @MainActor
 private final class ApplicationLifecycleApplicationFake: ApplicationLifecycleApplication {
-    let windows: [NSWindow] = []
+    var windows: [NSWindow] = []
     private(set) var terminateCallCount = 0
 
     @discardableResult

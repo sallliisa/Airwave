@@ -26,13 +26,127 @@ final class DeviceProfileRuntimeCoordinatorTests: XCTestCase {
             isVirtual: false, isAggregate: false
         )
         var result: AudioRuntimeEffectReadiness?
+        let channels = coordinator.savedOutputChannels(for: output)
+        guard case .resolved(let routing) = OutputRoutingResolver.resolve(output: output, channels: channels) else {
+            return XCTFail("expected the new stereo output to resolve")
+        }
 
-        coordinator.prepare(output: output) { result = $0 }
+        coordinator.prepare(routing: routing) { result = $0 }
 
         XCTAssertEqual(result, .init(spatialReady: false, equalizerDefinition: nil))
         XCTAssertEqual(profiles.currentDeviceUID, "headphones")
         XCTAssertNil(profiles.currentProfile?.hrirPresetID)
         XCTAssertNil(profiles.currentProfile?.equalizerPresetID)
+    }
+
+    func testSavedPairRepreparesOnceUsesAutomaticSourceAndResetReturnsNative() async throws {
+        let interface = OutputDeviceDescriptor(
+            id: .init(18), uid: "interface", name: "Interface", transport: "USB",
+            channelLabels: [1, 2, 1, 2], outputChannelCount: 4, nominalSampleRate: 48_000,
+            isVirtual: false, isAggregate: false,
+            preferredStereoChannels: .init(left: 1, right: 2)
+        )
+        let context = try await SpatialContext(output: interface)
+        let pair = StereoOutputChannels(left: 4, right: 2)
+        let previousRouteCount = context.pipelines.routings.count
+
+        XCTAssertTrue(context.profiles.setOutputChannels(pair, for: interface.uid))
+        try await context.wait {
+            context.pipelines.routings.count == previousRouteCount + 1
+                && context.pipelines.routings.last?.outputChannels == pair
+        }
+
+        XCTAssertEqual(context.pipelines.routings.count, previousRouteCount + 1)
+        XCTAssertEqual(context.pipelines.routings.last?.isExplicitAssignment, true)
+        XCTAssertEqual(context.hrir.currentInputLayout, .stereo)
+        XCTAssertEqual(context.state.currentRouting?.outputChannels, pair)
+        XCTAssertEqual(context.state.status, .processing)
+
+        let startsBeforeReset = context.pipelines.routings.count
+        XCTAssertTrue(context.profiles.resetProfile(deviceUID: interface.uid))
+        try await context.wait { context.state.status == .inactive && context.pipelines.liveCount == 0 }
+
+        XCTAssertNil(context.profiles.profile(for: interface.uid)?.outputChannels)
+        XCTAssertEqual(context.pipelines.routings.count, startsBeforeReset)
+        XCTAssertEqual(context.state.currentRouting?.isExplicitAssignment, false)
+    }
+
+    func testClearingLastHRIRFromProfileEventKeepsExplicitRouteActive() async throws {
+        let interface = OutputDeviceDescriptor(
+            id: .init(181), uid: "interface-clear-hrir", name: "Interface", transport: "USB",
+            channelLabels: [1, 2, 1, 2], outputChannelCount: 4, nominalSampleRate: 48_000,
+            isVirtual: false, isAggregate: false, preferredStereoChannels: .init(left: 1, right: 2)
+        )
+        let context = try await SpatialContext(output: interface, withEffectGraph: true)
+        let pair = StereoOutputChannels(left: 4, right: 2)
+        XCTAssertTrue(context.profiles.setOutputChannels(pair, for: interface.uid))
+        try await context.wait {
+            context.state.status == .processing
+                && context.state.currentRouting?.outputChannels == pair
+        }
+        let preparedCount = context.pipelines.routings.count
+
+        context.profiles.setCurrentHRIRPresetID(nil)
+        try await context.wait { context.state.status == .routing && context.hrir.activePreset == nil }
+
+        XCTAssertEqual(context.pipelines.routings.count, preparedCount, "clearing HRIR must keep the current pipeline")
+        XCTAssertEqual(context.pipelines.liveCount, 1)
+        XCTAssertEqual(context.state.currentRouting?.outputChannels, pair)
+        XCTAssertEqual(context.state.captureAccess, .verified)
+        XCTAssertEqual(context.state.status, .routing)
+    }
+
+    func testFailedLiveHRIRActivationKeepsExplicitRouteDryAndReportsError() async throws {
+        let interface = OutputDeviceDescriptor(
+            id: .init(182), uid: "interface-failed-hrir", name: "Interface", transport: "USB",
+            channelLabels: [1, 2, 1, 2], outputChannelCount: 4, nominalSampleRate: 48_000,
+            isVirtual: false, isAggregate: false, preferredStereoChannels: .init(left: 1, right: 2)
+        )
+        let context = try await SpatialContext(output: interface, withEffectGraph: true)
+        let pair = StereoOutputChannels(left: 4, right: 2)
+        XCTAssertTrue(context.profiles.setOutputChannels(pair, for: interface.uid))
+        try await context.wait {
+            context.state.status == .processing
+                && context.state.currentRouting?.outputChannels == pair
+        }
+        let routeStartCount = context.pipelines.routings.count
+        let unavailablePreset = try XCTUnwrap(context.hrir.presets.last)
+        try FileManager.default.removeItem(at: unavailablePreset.fileURL)
+
+        context.profiles.setCurrentHRIRPresetID(unavailablePreset.id)
+        try await context.wait {
+            context.state.status == .routing
+                && context.state.healthIssues.contains {
+                    if case .spatialPresetFailed = $0 { true } else { false }
+                }
+        }
+
+        XCTAssertNil(context.hrir.activePreset)
+        XCTAssertFalse(context.hrir.hasPublishedRendererForControl())
+        XCTAssertEqual(context.pipelines.routings.count, routeStartCount, "failed HRIR activation must not replace the live route")
+        XCTAssertEqual(context.pipelines.liveCount, 1)
+        XCTAssertEqual(context.state.currentRouting?.outputChannels, pair)
+        XCTAssertEqual(context.state.captureAccess, .verified)
+        XCTAssertEqual(context.state.status, .routing)
+    }
+
+    func testSavingRoutingForInactiveUIDDoesNotRebuildActivePipeline() async throws {
+        let context = try await SpatialContext()
+        let inactive = OutputDeviceDescriptor(
+            id: .init(8), uid: "inactive", name: "Inactive", transport: "USB",
+            channelLabels: nil, outputChannelCount: 2, nominalSampleRate: 48_000,
+            isVirtual: false, isAggregate: false
+        )
+        context.profiles.updateAvailableOutputs([context.output, inactive])
+        let before = context.pipelines.routings
+
+        XCTAssertTrue(context.profiles.setOutputChannels(.init(left: 2, right: 1), for: inactive.uid))
+        try await context.settle()
+
+        XCTAssertEqual(context.pipelines.routings, before)
+        XCTAssertEqual(context.pipelines.liveCount, 1)
+        XCTAssertEqual(context.state.currentOutput?.uid, context.output.uid)
+        XCTAssertEqual(context.profiles.profile(for: inactive.uid)?.outputChannels, .init(left: 2, right: 1))
     }
 
     func testHRIRChangeWhileProcessingSwapsPresetWithoutRestartingThePipeline() async throws {
@@ -66,11 +180,18 @@ final class DeviceProfileRuntimeCoordinatorTests: XCTestCase {
         try FileManager.default.removeItem(at: second.fileURL)
 
         context.profiles.setCurrentHRIRPresetID(second.id)
-        try await context.wait { context.hrir.errorMessage != nil }
+        try await context.wait {
+            context.state.healthIssues.contains {
+                if case .spatialPresetFailed = $0 { true } else { false }
+            }
+        }
         try await context.wait { context.pipelines.liveCount == 0 }
 
         XCTAssertNil(context.hrir.activePreset)
         XCTAssertEqual(context.pipelines.liveCount, 0)
+        XCTAssertTrue(context.state.healthIssues.contains {
+            if case .spatialPresetFailed = $0 { true } else { false }
+        })
         guard case .nativePassthrough = context.state.status else {
             return XCTFail("expected passthrough after a failed activation")
         }
@@ -654,6 +775,10 @@ private final class ReplacementControllerSpy: AudioRuntimeControlling {
         wrapped.updateCurrentEqualizer(definition)
     }
 
+    func presetActivationFailed(_ message: String) {
+        wrapped.presetActivationFailed(message)
+    }
+
     func reprepareCurrentOutput() {
         wrapped.reprepareCurrentOutput()
     }
@@ -684,22 +809,28 @@ private final class SpatialContext {
     let pipelines = CoordinatorPipelineFactoryFake()
     let controller: AudioRuntimeController
     let coordinator: DeviceProfileRuntimeCoordinator
+    let output: OutputDeviceDescriptor
     static let output = OutputDeviceDescriptor(
         id: .init(7), uid: "headphones", name: "Headphones", transport: "USB",
         channelLabels: nil, outputChannelCount: 2, nominalSampleRate: 48_000,
         isVirtual: false, isAggregate: false
     )
 
-    init() async throws {
+    init(output: OutputDeviceDescriptor = SpatialContext.output, withEffectGraph: Bool = false) async throws {
+        self.output = output
         let defaults = try XCTUnwrap(UserDefaults(suiteName: "Coordinator.\(UUID().uuidString)"))
         profiles = DeviceProfileManager(defaults: defaults)
         hrir = HRIRManager(presetsDirectory: root.appendingPathComponent("hrir"), startWatcher: false)
         equalizer = EqualizerManager(managedDirectory: root.appendingPathComponent("eq"))
+        let effectGraph = withEffectGraph
+            ? AudioEffectGraph(spatial: hrir, equalizer: equalizer.runtimeEffect)
+            : nil
         controller = AudioRuntimeController(
             state: state,
-            platform: CoordinatorPlatformFake(output: Self.output),
+            platform: CoordinatorPlatformFake(output: output),
             pipelineFactory: { [pipelines] in pipelines.make() },
-            scheduler: CoordinatorSchedulerFake()
+            scheduler: CoordinatorSchedulerFake(),
+            effectGraph: effectGraph
         )
         coordinator = DeviceProfileRuntimeCoordinator(
             profiles: profiles, hrir: hrir, equalizer: equalizer, controller: controller
@@ -720,8 +851,8 @@ private final class SpatialContext {
         )
         XCTAssertEqual(imported.imported.count, 2)
 
-        profiles.observeCurrentOutput(Self.output)
-        profiles.setCurrentHRIRPresetID(try XCTUnwrap(hrir.presets.first).id)
+        profiles.observeCurrentOutput(output)
+        profiles.setHRIRPresetID(try XCTUnwrap(hrir.presets.first).id, for: output.uid)
         controller.launch(
             effectReadiness: .init(spatialReady: false, equalizerDefinition: nil),
             captureVerified: true
@@ -774,6 +905,7 @@ private final class SpatialContext {
 
 @MainActor
 private final class CoordinatorPipelineFactoryFake {
+    var routings: [ResolvedOutputRouting] = []
     var purposes: [AudioPipelinePurpose] = []
     var liveCount = 0
 
@@ -786,23 +918,12 @@ private final class CoordinatorLivePipelineFake: AudioPipelineControlling {
     init(owner: CoordinatorPipelineFactoryFake) { self.owner = owner }
 
     func start(
-        on output: OutputDeviceDescriptor,
-        muteBehavior: AudioTapMuteBehavior,
-        verificationHandler: @escaping AudioCaptureVerificationHandler
-    ) throws {
-        try start(
-            on: output,
-            purpose: muteBehavior == .unmuted ? .verification(includeOwnProcess: true) : .processing,
-            verificationHandler: verificationHandler
-        )
-    }
-
-    func start(
-        on output: OutputDeviceDescriptor,
+        on routing: ResolvedOutputRouting,
         purpose: AudioPipelinePurpose,
         verificationHandler: @escaping AudioCaptureVerificationHandler
     ) throws {
         MainActor.assumeIsolated {
+            owner?.routings.append(routing)
             owner?.purposes.append(purpose)
             owner?.liveCount += 1
         }
@@ -840,7 +961,7 @@ private final class CreationCountingHoldPlatform: AudioPlatformClient {
         return .init(value: UInt64(taps))
     }
     func destroyTap(_ tap: AudioTapHandle) throws {}
-    func createPrivateAggregate(tap: AudioTapHandle, output: OutputDeviceDescriptor) throws -> PrivateAggregateHandle {
+    func createPrivateAggregate(tap: AudioTapHandle, routing: ResolvedOutputRouting) throws -> PrivateAggregateHandle {
         aggregates += 1
         return .init(value: UInt64(aggregates))
     }
@@ -849,6 +970,7 @@ private final class CreationCountingHoldPlatform: AudioPlatformClient {
     func streamFormat(for aggregate: PrivateAggregateHandle) throws -> AudioStreamFormat { .stereo(sampleRate: 48_000) }
     func createIO(
         aggregate: PrivateAggregateHandle,
+        routing: ResolvedOutputRouting,
         callback: @escaping AudioIOCallback,
         verificationHandler: @escaping AudioCaptureVerificationHandler
     ) throws -> AudioIOHandle {
@@ -869,11 +991,18 @@ private final class SilentHoldProcessor: StereoAudioProcessing {
     ) {}
 }
 private final class CoordinatorPipelineFake: AudioPipelineControlling {
+    private(set) var routings: [ResolvedOutputRouting] = []
+    private(set) var purposes: [AudioPipelinePurpose] = []
+
     func start(
-        on output: OutputDeviceDescriptor,
-        muteBehavior: AudioTapMuteBehavior,
+        on routing: ResolvedOutputRouting,
+        purpose: AudioPipelinePurpose,
         verificationHandler: @escaping AudioCaptureVerificationHandler
-    ) throws { verificationHandler(.tapReady) }
+    ) throws {
+        routings.append(routing)
+        purposes.append(purpose)
+        verificationHandler(.tapReady)
+    }
     func stop() throws {}
 }
 
@@ -891,12 +1020,13 @@ private final class CoordinatorPlatformFake: AudioPlatformClient {
     func resolveOwnProcess() throws -> AudioProcessHandle { .init(value: 1) }
     func createGlobalStereoTap(_ request: GlobalStereoTapRequest) throws -> AudioTapHandle { .init(value: 1) }
     func destroyTap(_ tap: AudioTapHandle) throws {}
-    func createPrivateAggregate(tap: AudioTapHandle, output: OutputDeviceDescriptor) throws -> PrivateAggregateHandle { .init(value: 1) }
+    func createPrivateAggregate(tap: AudioTapHandle, routing: ResolvedOutputRouting) throws -> PrivateAggregateHandle { .init(value: 1) }
     func destroyPrivateAggregate(_ aggregate: PrivateAggregateHandle) throws {}
     func streamFormat(for tap: AudioTapHandle) throws -> AudioStreamFormat { .stereo(sampleRate: 48_000) }
     func streamFormat(for aggregate: PrivateAggregateHandle) throws -> AudioStreamFormat { .stereo(sampleRate: 48_000) }
     func createIO(
         aggregate: PrivateAggregateHandle,
+        routing: ResolvedOutputRouting,
         callback: @escaping AudioIOCallback,
         verificationHandler: @escaping AudioCaptureVerificationHandler
     ) throws -> AudioIOHandle { .init(value: 1) }

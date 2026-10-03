@@ -80,10 +80,23 @@ extension AudioEqualizerEffect {
 
 nonisolated protocol AudioEffectGraphControlling: AnyObject {
     func prepare(
-        for output: OutputDeviceDescriptor,
+        for routing: ResolvedOutputRouting,
         equalizerDefinition: EqualizerDefinition?
     ) -> AudioEffectPreparationResult
     func updateEqualizer(definition: EqualizerDefinition?) -> AudioEffectPreparationResult
+}
+
+extension AudioEffectGraphControlling {
+    /// Convenience for callers that use the device's automatic default route.
+    func prepare(
+        for output: OutputDeviceDescriptor,
+        equalizerDefinition: EqualizerDefinition?
+    ) -> AudioEffectPreparationResult {
+        guard case .resolved(let routing) = OutputRoutingResolver.resolve(output: output) else {
+            return AudioEffectPreparationResult(runnableEffects: [], equalizerWarning: nil)
+        }
+        return prepare(for: routing, equalizerDefinition: equalizerDefinition)
+    }
 }
 
 /// Composes spatial processing and EQ while keeping resource ownership in AudioPipeline.
@@ -126,21 +139,18 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
     }
 
     func prepare(
-        for output: OutputDeviceDescriptor,
+        for routing: ResolvedOutputRouting,
         equalizerDefinition: EqualizerDefinition?
     ) -> AudioEffectPreparationResult {
-        outputHeadroom.prepare(sampleRate: output.nominalSampleRate)
-        inputSpeakers = InputLayoutResolver.layout(
-            channelLabels: output.channelLabels,
-            channelCount: output.outputChannelCount
-        ).channels
+        outputHeadroom.prepare(sampleRate: routing.sampleRate)
+        inputSpeakers = routing.inputLayout.channels
         var runnableEffects = Set<AudioEffectKind>()
         if spatial.isReady {
             runnableEffects.insert(.spatial)
         }
 
         do {
-            try equalizer.prepare(definition: equalizerDefinition, sampleRate: output.nominalSampleRate)
+            try equalizer.prepare(definition: equalizerDefinition, sampleRate: routing.sampleRate)
             equalizerActiveLock.withLock { state in
                 state.generation &+= 1
                 state.active = equalizerDefinition != nil

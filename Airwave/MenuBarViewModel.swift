@@ -54,6 +54,11 @@ final class MenuBarViewModel: ObservableObject {
         profileManager.setEqualizerPresetID(presetID)
     }
 
+    @discardableResult
+    func setOutputChannels(_ channels: StereoOutputChannels, for deviceUID: String) -> Bool {
+        profileManager.setOutputChannels(channels, for: deviceUID)
+    }
+
     var currentHRIRPreset: HRIRPreset? {
         hrirManager.presets.first { $0.id == profileManager.currentProfile?.hrirPresetID }
     }

@@ -55,7 +55,7 @@ final class OutputDeviceDiscoveryCoordinatorTests: XCTestCase {
         XCTAssertEqual(context.profiles.profiles, [])
     }
 
-    func testDiscoveryBoundarySharesSupportPolicyForAmbiguousLayouts() throws {
+    func testDiscoveryBoundaryIncludesPhysicalDevicesWithAmbiguousLayouts() throws {
         let context = try DiscoveryContext()
         context.client.outputs = [
             discoveryDevice(id: 11, uid: "dual-stereo", name: "Dual Stereo", channels: 4, channelLabels: [1, 2, 1, 2]),
@@ -66,8 +66,10 @@ final class OutputDeviceDiscoveryCoordinatorTests: XCTestCase {
 
         context.coordinator.launch()
 
-        // Ambiguous labels never reach the manager; valid and fallback do.
-        XCTAssertEqual(Set(context.profiles.availableOutputs.map(\.uid)), ["mapped-3", "quad"])
+        XCTAssertEqual(
+            Set(context.profiles.availableOutputs.map(\.uid)),
+            ["dual-stereo", "unknown-3", "mapped-3", "quad"]
+        )
     }
 
     func testInitialFailureRecoversThroughLaterCallback() throws {

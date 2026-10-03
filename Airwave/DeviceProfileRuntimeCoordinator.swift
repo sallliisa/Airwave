@@ -14,6 +14,7 @@ protocol AudioRuntimeControlling: AnyObject {
     @discardableResult
     func updateSpatialLive(isReady: Bool) -> Bool
     func updateCurrentEqualizer(_ definition: EqualizerDefinition?)
+    func presetActivationFailed(_ message: String)
     func reprepareCurrentOutput()
 }
 
@@ -39,9 +40,9 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
     private var generation = 0
     private var launched = false
     private var isSanitizing = false
-    private var pendingPreparation: (output: OutputDeviceDescriptor, completion: (AudioRuntimeEffectReadiness) -> Void)?
-    /// Output the live pipeline was prepared for; live HRIR swaps reuse its sample rate.
-    private var preparedOutput: OutputDeviceDescriptor?
+    private var pendingPreparation: (routing: ResolvedOutputRouting, completion: (AudioRuntimeEffectReadiness) -> Void)?
+    /// Route the live pipeline was prepared for; HRIR swaps reuse its source layout and rate.
+    private var preparedRouting: ResolvedOutputRouting?
     /// Latest arrays emitted by the `$presets` subscriptions. `@Published`
     /// sends during willSet, so a read of the backing property inside the
     /// sink can still hold the old value; reconciliation below uses these.
@@ -80,13 +81,6 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
         guard !launched else { return }
         launched = true
         preparerHost?.setProfilePreparer(self)
-        // Existing launch contract: the coordinator starts its host with no
-        // effect selected. A relaunch with a preparer present routes through
-        // profile preparation; capture-verified state is preserved by the
-        // controller relaunch path when already verified.
-        preparerHost?.launch(
-            effectReadiness: .init(spatialReady: false, equalizerDefinition: nil)
-        )
 
         profiles.changes.sink { [weak self] change in
             self?.profileChanged(change)
@@ -112,22 +106,24 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
         )
     }
 
+    func savedOutputChannels(for output: OutputDeviceDescriptor) -> StereoOutputChannels? {
+        // Keep the active UID visible even when a saved pair no longer matches
+        // the device geometry, so the configuration editor can repair it.
+        profiles.observeCurrentOutput(output)
+        return profiles.profile(for: output.uid)?.outputChannels
+    }
+
     func prepare(
-        output: OutputDeviceDescriptor,
+        routing: ResolvedOutputRouting,
         completion: @escaping (AudioRuntimeEffectReadiness) -> Void
     ) {
         generation += 1
         let requestedGeneration = generation
+        let output = routing.device
         // Full preparation always follows a pipeline teardown; drop render state
         // instead of fading, so a rebuilt pipeline never resumes a stale preset.
         hrir.deactivatePreset(immediate: true)
-        preparedOutput = output
-        guard output.isSupportedProfileOutput else {
-            preparedOutput = nil
-            profiles.observeCurrentOutput(nil)
-            completion(.init(spatialReady: false, equalizerDefinition: nil))
-            return
-        }
+        preparedRouting = routing
         profiles.observeCurrentOutput(output)
 
         var hrirPresetID = profiles.currentProfile?.hrirPresetID
@@ -149,7 +145,7 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
 
         let definition = equalizer.preset(id: equalizerPresetID)?.definition
         if hrirPresetID != nil && !hrir.initialLibrarySyncReady {
-            pendingPreparation = (output, completion)
+            pendingPreparation = (routing, completion)
             return
         }
         guard let hrirID = hrirPresetID,
@@ -161,11 +157,8 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
 
         hrir.activatePreset(
             preset,
-            targetSampleRate: output.nominalSampleRate,
-            inputLayout: InputLayoutResolver.layout(
-                channelLabels: output.channelLabels,
-                channelCount: output.outputChannelCount
-            )
+            targetSampleRate: routing.sampleRate,
+            inputLayout: routing.inputLayout
         ) { [weak self] result in
             guard let self, requestedGeneration == self.generation else { return }
             switch result {
@@ -186,7 +179,7 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
     func cancelPreparation() {
         generation += 1
         pendingPreparation = nil
-        preparedOutput = nil
+        preparedRouting = nil
         hrir.deactivatePreset(immediate: true)
     }
 
@@ -200,6 +193,10 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
         switch change.effect {
         case .metadata:
             break
+        case .routing, .reset:
+            // Resolve and rebuild once for the active UID. Inactive profile
+            // edits return above and leave the live route untouched.
+            controller.reprepareCurrentOutput()
         case .equalizer:
             let definition = equalizer.preset(id: profiles.currentProfile?.equalizerPresetID)?.definition
             lastAppliedEqualizerDefinition = definition
@@ -224,7 +221,7 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
             guard definition == nil else {
                 // An equalizer remains: existing behavior — keep the pipeline
                 // alive, push the EQ live, and fade the renderer out.
-                guard controller.canUpdateSpatialLive, preparedOutput != nil,
+                guard controller.canUpdateSpatialLive, preparedRouting != nil,
                       !controller.isDeferredTeardownPendingForTesting else {
                     controller.reprepareCurrentOutput()
                     return
@@ -240,7 +237,7 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
             _ = controller.updateSpatialLive(isReady: false)
             return
         }
-        guard controller.canUpdateSpatialLive, let output = preparedOutput else {
+        guard controller.canUpdateSpatialLive, let routing = preparedRouting else {
             controller.reprepareCurrentOutput()
             return
         }
@@ -255,11 +252,8 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
         let requestedGeneration = generation
         hrir.activatePreset(
             preset,
-            targetSampleRate: output.nominalSampleRate,
-            inputLayout: InputLayoutResolver.layout(
-                channelLabels: output.channelLabels,
-                channelCount: output.outputChannelCount
-            )
+            targetSampleRate: routing.sampleRate,
+            inputLayout: routing.inputLayout
         ) { [weak self] result in
             guard let self, requestedGeneration == self.generation else { return }
             switch result {
@@ -271,10 +265,10 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
                     self.controller.updateCurrentEqualizer(definition)
                 }
                 self.controller.updateSpatialLive(isReady: true)
-            case .failure:
-                // Full restart is the established recovery path and keeps the
-                // presetActivationFailed error surface.
-                self.controller.reprepareCurrentOutput()
+            case .failure(let message):
+                self.hrir.deactivatePreset(immediate: true)
+                self.lastAppliedHRIRRevision = nil
+                self.controller.presetActivationFailed(message)
             }
         }
     }
@@ -308,7 +302,7 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
     private func resumePendingPreparation() {
         guard let pending = pendingPreparation else { return }
         pendingPreparation = nil
-        prepare(output: pending.output, completion: pending.completion)
+        prepare(routing: pending.routing, completion: pending.completion)
     }
 
     /// 037 step 2/3: the selected HRIR file changed content. Route through
@@ -316,14 +310,10 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
     /// prepared output rate. A removal snapshot clears through
     /// reconciliation above; this handles the still-selected replacement.
     private func reloadSelectedHRIRIfChanged() {
-        guard let output = preparedOutput,
+        guard let routing = preparedRouting,
               controller.canUpdateSpatialLive,
               !controller.isDeferredTeardownPendingForTesting else { return }
         let selectedID = profiles.currentProfile?.hrirPresetID
-        let layout = InputLayoutResolver.layout(
-            channelLabels: output.channelLabels,
-            channelCount: output.outputChannelCount
-        )
         // Coordinator-side duplicate gate: this exact revision already
         // applied through an earlier snapshot or the prepare path.
         if let selectedID,
@@ -333,10 +323,10 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
         let started = hrir.reloadSelectedPreset(
             latestHRIRSnapshot,
             selectedID: selectedID,
-            targetSampleRate: output.nominalSampleRate,
-            inputLayout: layout
+            targetSampleRate: routing.sampleRate,
+            inputLayout: routing.inputLayout
         ) { [weak self] preset in
-            self?.activateLiveHRIR(preset: preset, output: output, layout: layout)
+            self?.activateLiveHRIR(preset: preset, routing: routing)
         }
         if started, let selectedID,
            let row = latestHRIRSnapshot.first(where: { $0.id == selectedID }) {
@@ -351,7 +341,7 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
     /// `reload()` calls in tests publish synchronously through willSet).
     private func reloadSelectedEqualizerIfChanged() {
         guard controller.canUpdateSpatialLive,
-              preparedOutput != nil,
+              preparedRouting != nil,
               !controller.isDeferredTeardownPendingForTesting else { return }
         guard let selectedID = profiles.currentProfile?.equalizerPresetID else { return }
         let definition = latestEqualizerSnapshot.first(where: { $0.id == selectedID })?.definition
@@ -365,20 +355,22 @@ final class DeviceProfileRuntimeCoordinator: OutputEffectProfilePreparing {
     /// Live HRIR activation shared with the profile-change path. Bumps the
     /// generation so a stale activation cannot publish, then applies the
     /// ready state without rebuilding the pipeline.
-    private func activateLiveHRIR(preset: HRIRPreset, output: OutputDeviceDescriptor, layout: InputLayout) {
+    private func activateLiveHRIR(preset: HRIRPreset, routing: ResolvedOutputRouting) {
         generation += 1
         let requestedGeneration = generation
         hrir.activatePreset(
             preset,
-            targetSampleRate: output.nominalSampleRate,
-            inputLayout: layout
+            targetSampleRate: routing.sampleRate,
+            inputLayout: routing.inputLayout
         ) { [weak self] result in
             guard let self, requestedGeneration == self.generation else { return }
             switch result {
             case .success:
                 self.controller.updateSpatialLive(isReady: true)
-            case .failure:
-                self.controller.reprepareCurrentOutput()
+            case .failure(let message):
+                self.hrir.deactivatePreset(immediate: true)
+                self.lastAppliedHRIRRevision = nil
+                self.controller.presetActivationFailed(message)
             }
         }
     }

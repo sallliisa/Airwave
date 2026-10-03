@@ -129,6 +129,25 @@ nonisolated enum CoreAudioIOCleanup {
     }
 }
 
+nonisolated enum AUHALChannelMapInstallationError: Error, Equatable {
+    case input(OSStatus)
+    case output(OSStatus)
+}
+
+/// Installs the maps on the private AUHAL instance. The setter seam keeps
+/// ordering and failure behavior unit-testable; production passes a closure
+/// that synchronously calls AudioUnitSetProperty with each map's storage.
+nonisolated enum AUHALChannelMapInstaller {
+    typealias Setter = (AudioUnitScope, AudioUnitElement, [Int32]) -> OSStatus
+
+    static func install(_ maps: AUHALChannelMaps, setProperty: Setter) throws {
+        let inputStatus = setProperty(kAudioUnitScope_Output, 1, maps.input)
+        guard inputStatus == noErr else { throw AUHALChannelMapInstallationError.input(inputStatus) }
+        let outputStatus = setProperty(kAudioUnitScope_Input, 0, maps.output)
+        guard outputStatus == noErr else { throw AUHALChannelMapInstallationError.output(outputStatus) }
+    }
+}
+
 nonisolated struct StereoCallbackOutput {
     let left: UnsafeMutablePointer<Float>
     let right: UnsafeMutablePointer<Float>
@@ -226,8 +245,9 @@ nonisolated struct CurrentDeviceListenerRecord: Equatable, Sendable {
     let isRequired: Bool
 }
 
-/// Plan 039 Step 1 watched properties: nominal rate, stream configuration,
-/// and preferred layout on the current output device.
+/// Watched properties that can change the output descriptor or route. Stream
+/// inventory and preferred stereo are optional metadata, so a temporarily
+/// unavailable selector does not invalidate the last readable device shape.
 nonisolated enum CurrentDeviceFormatObservation {
     static func records(for deviceID: AudioObjectID) -> [CurrentDeviceListenerRecord] {
         [
@@ -248,6 +268,20 @@ nonisolated enum CurrentDeviceFormatObservation {
             CurrentDeviceListenerRecord(
                 deviceID: deviceID,
                 selector: kAudioDevicePropertyPreferredChannelLayout,
+                scope: kAudioObjectPropertyScopeOutput,
+                element: kAudioObjectPropertyElementMain,
+                isRequired: false
+            ),
+            CurrentDeviceListenerRecord(
+                deviceID: deviceID,
+                selector: kAudioDevicePropertyStreams,
+                scope: kAudioObjectPropertyScopeOutput,
+                element: kAudioObjectPropertyElementMain,
+                isRequired: false
+            ),
+            CurrentDeviceListenerRecord(
+                deviceID: deviceID,
+                selector: kAudioDevicePropertyPreferredChannelsForStereo,
                 scope: kAudioObjectPropertyScopeOutput,
                 element: kAudioObjectPropertyElementMain,
                 isRequired: false
@@ -406,8 +440,9 @@ nonisolated final class CurrentDeviceListenerSet {
             lastDelivered = fresh
             return true
         }
-        guard fresh.hasProcessingFormatChange(from: last) else { return false }
-        lastDelivered = fresh
+        let retained = fresh.retainingMissingRoutingMetadata(from: last)
+        guard retained.hasProcessingFormatChange(from: last) else { return false }
+        lastDelivered = retained
         return true
     }
 
@@ -520,6 +555,9 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
         let unit: AudioUnit
         let callback: AudioIOCallback
         let verificationHandler: AudioCaptureVerificationHandler
+        /// Keeps the exact resolved route with this callback's preallocated
+        /// input width so a later route cannot reuse stale source geometry.
+        let routing: ResolvedOutputRouting
         let inputChannelCount: Int
         let inputStorage: [UnsafeMutablePointer<Float>]
         // Preallocated once; refreshed in place on every render callback.
@@ -531,12 +569,14 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
             unit: AudioUnit,
             callback: @escaping AudioIOCallback,
             verificationHandler: @escaping AudioCaptureVerificationHandler,
-            inputChannelCount: Int
+            routing: ResolvedOutputRouting
         ) {
+            let inputChannelCount = routing.sourceChannelIndices.count
             precondition((1...16).contains(inputChannelCount))
             self.unit = unit
             self.callback = callback
             self.verificationHandler = verificationHandler
+            self.routing = routing
             self.inputChannelCount = inputChannelCount
             inputPointers = .allocate(capacity: inputChannelCount)
             var storage: [UnsafeMutablePointer<Float>] = []
@@ -572,6 +612,9 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
     private let instanceUUID = UUID()
     private var tapUIDs: [AudioObjectID: String] = [:]
     private var aggregateIDs: Set<AudioObjectID> = []
+    /// Route metadata shares the aggregate's ownership lifetime. A failed
+    /// aggregate teardown keeps both the handle and its routing record.
+    private var aggregateRoutings: [AudioObjectID: ResolvedOutputRouting] = [:]
     private var ioContexts: [UInt64: IOContext] = [:]
     private var nextIOHandle: UInt64 = 1
     private var defaultOutputHandler: DefaultOutputChangeHandler?
@@ -612,7 +655,10 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
     }
 
     func defaultOutputDevice() throws -> OutputDeviceDescriptor {
-        let deviceID: AudioObjectID = try getSystemObjectValue(selector: kAudioHardwarePropertyDefaultOutputDevice)
+        let deviceID: AudioObjectID = try getSystemObjectValue(
+            selector: kAudioHardwarePropertyDefaultOutputDevice,
+            as: AudioObjectID.self
+        )
         guard deviceID != kAudioObjectUnknown else { throw AudioRuntimeError.noOutputDevice }
         return try descriptor(for: deviceID)
     }
@@ -623,7 +669,7 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
         for deviceID in deviceIDs {
             do {
                 let descriptor = try descriptor(for: deviceID)
-                guard descriptor.isSupportedProfileOutput else { continue }
+                guard descriptor.isConfigurationEligible else { continue }
                 descriptorsByUID[descriptor.uid] = descriptor
             } catch {
                 Logger.log("[CoreAudio] Skipping unavailable device \(deviceID): \(error)")
@@ -846,7 +892,10 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
         guard let self else { return }
         let result = Result { try self.defaultOutputDevice() }
         switch DefaultOutputObservationDecision.make(from: result) {
-        case .output(let output):
+        case .output(let fresh):
+            let output = self.lastObservedOutput.map {
+                fresh.retainingMissingRoutingMetadata(from: $0)
+            } ?? fresh
             // Plan 039 Step 1: on replacement, rebind the new device's
             // current-device listeners. The set rolls back partial failures
             // internally; a failed rebind is logged and the descriptor is
@@ -948,8 +997,12 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
         tapUIDs.removeValue(forKey: tapID)
     }
 
-    func createPrivateAggregate(tap: AudioTapHandle, output: OutputDeviceDescriptor) throws -> PrivateAggregateHandle {
-        guard (2...16).contains(output.outputChannelCount), !output.isVirtual, !output.isAggregate else {
+    func createPrivateAggregate(tap: AudioTapHandle, routing: ResolvedOutputRouting) throws -> PrivateAggregateHandle {
+        let output = routing.device
+        guard OutputRoutingResolver.isValid(routing),
+              (2...16).contains(output.outputChannelCount), !output.isVirtual, !output.isAggregate,
+              (1...16).contains(routing.nativeWidth),
+              routing.sourceChannelIndices.count == routing.inputLayout.channels.count else {
             throw AudioRuntimeError.unsupportedOutput(output.name)
         }
         let tapID = AudioObjectID(tap.value)
@@ -985,6 +1038,7 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
             throw CoreAudioErrorMapping.aggregateCreation(status)
         }
         aggregateIDs.insert(aggregateID)
+        aggregateRoutings[aggregateID] = routing
         return PrivateAggregateHandle(value: UInt64(aggregateID))
     }
 
@@ -995,11 +1049,13 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
             throw AudioRuntimeError.cleanupFailed(CoreAudioStatus.creationError(status, operation: "Destroy private aggregate"))
         }
         aggregateIDs.remove(aggregateID)
+        aggregateRoutings.removeValue(forKey: aggregateID)
     }
 
     func streamFormat(for tap: AudioTapHandle) throws -> AudioStreamFormat {
         let asbd: AudioStreamBasicDescription = try getObjectValue(
             AudioObjectID(tap.value),
+            as: AudioStreamBasicDescription.self,
             selector: kAudioTapPropertyFormat
         )
         return streamFormat(asbd)
@@ -1007,7 +1063,11 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
 
     func streamFormat(for aggregate: PrivateAggregateHandle) throws -> AudioStreamFormat {
         let id = AudioObjectID(aggregate.value)
-        let sampleRate: Float64 = try getObjectValue(id, selector: kAudioDevicePropertyNominalSampleRate)
+        let sampleRate: Float64 = try getObjectValue(
+            id,
+            as: Float64.self,
+            selector: kAudioDevicePropertyNominalSampleRate
+        )
         return AudioStreamFormat(
             sampleRate: sampleRate,
             channelCount: try streamChannelCounts(id, scope: kAudioObjectPropertyScopeOutput).reduce(0, +),
@@ -1018,11 +1078,16 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
 
     func createIO(
         aggregate: PrivateAggregateHandle,
+        routing: ResolvedOutputRouting,
         callback: @escaping AudioIOCallback,
         verificationHandler: @escaping AudioCaptureVerificationHandler
     ) throws -> AudioIOHandle {
         let aggregateID = AudioObjectID(aggregate.value)
-        guard aggregateIDs.contains(aggregateID) else { throw AudioRuntimeError.ioCreationFailed("Unknown aggregate") }
+        guard aggregateIDs.contains(aggregateID),
+              let ownedRouting = aggregateRoutings[aggregateID],
+              ownedRouting == routing else {
+            throw AudioRuntimeError.ioCreationFailed("Unknown aggregate routing")
+        }
         var description = AudioComponentDescription(
             componentType: kAudioUnitType_Output,
             componentSubType: kAudioUnitSubType_HALOutput,
@@ -1045,18 +1110,55 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
             var currentDevice = aggregateID
             try setUnit(unit, property: kAudioOutputUnitProperty_CurrentDevice, scope: kAudioUnitScope_Global, element: 0, value: &currentDevice)
 
-            let rate: Float64 = try getObjectValue(aggregateID, selector: kAudioDevicePropertyNominalSampleRate)
             let aggregateFormat = try streamFormat(for: aggregate)
-            // Capture width follows the tapped device; the binaural output
-            // bus stays stereo. AUHAL maps the wide input side; the render
-            // callback writes only the first two output channels.
-            let captureWidth = min(max(aggregateFormat.channelCount, 1), 16)
+            let expectedOutput = AudioStreamFormat.capturing(
+                channels: routing.device.outputChannelCount,
+                sampleRate: routing.sampleRate
+            )
+            guard aggregateFormat.matchesChannelCountAndSampleRate(of: expectedOutput) else {
+                throw AudioRuntimeError.ioCreationFailed("Aggregate output format changed before AUHAL setup")
+            }
+            let rate = aggregateFormat.sampleRate
+            let inputChannelMap = try AUHALChannelMapBuilder.make(
+                routing: routing,
+                physicalInputStreamChannelCounts: streamChannelCounts(
+                    AudioObjectID(routing.device.id.value),
+                    scope: kAudioObjectPropertyScopeInput
+                ),
+                aggregateInputStreamChannelCounts: streamChannelCounts(
+                    aggregateID,
+                    scope: kAudioObjectPropertyScopeInput
+                )
+            )
+            let captureWidth = inputChannelMap.input.count
             var inputFormat = canonicalWideFormat(sampleRate: rate, channelCount: captureWidth)
             try setUnit(unit, property: kAudioUnitProperty_StreamFormat, scope: kAudioUnitScope_Output, element: 1, value: &inputFormat)
             var format = canonicalStereoFormat(sampleRate: rate)
             try setUnit(unit, property: kAudioUnitProperty_StreamFormat, scope: kAudioUnitScope_Input, element: 0, value: &format)
+
+            do {
+                try AUHALChannelMapInstaller.install(inputChannelMap) { scope, element, channels in
+                    channels.withUnsafeBufferPointer { buffer in
+                        guard let baseAddress = buffer.baseAddress else { return kAudio_ParamError }
+                        return AudioUnitSetProperty(
+                            unit,
+                            kAudioOutputUnitProperty_ChannelMap,
+                            scope,
+                            element,
+                            UnsafeRawPointer(baseAddress),
+                            UInt32(buffer.count * MemoryLayout<Int32>.size)
+                        )
+                    }
+                }
+            } catch AUHALChannelMapInstallationError.input(let mapStatus) {
+                throw CoreAudioErrorMapping.ioCreation(mapStatus, operation: "Set AUHAL input channel map")
+            } catch AUHALChannelMapInstallationError.output(let mapStatus) {
+                throw CoreAudioErrorMapping.ioCreation(mapStatus, operation: "Set AUHAL output channel map")
+            } catch {
+                throw error
+            }
             AirwaveLog.audio.info(
-                "IO formats: wide input bus (\(captureWidth) ch) / stereo output bus @ \(rate) Hz"
+                "IO formats: selected input bus (\(captureWidth) ch) / stereo output bus @ \(rate) Hz"
             )
             var maximumFrames = UInt32(StereoCallbackBridge.maximumFrames)
             try setUnit(unit, property: kAudioUnitProperty_MaximumFramesPerSlice, scope: kAudioUnitScope_Global, element: 0, value: &maximumFrames)
@@ -1065,7 +1167,7 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
                 unit: unit,
                 callback: callback,
                 verificationHandler: verificationHandler,
-                inputChannelCount: captureWidth
+                routing: routing
             )
             var render = AURenderCallbackStruct(
                 inputProc: coreAudioRenderCallback,
@@ -1121,8 +1223,8 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
         NSWorkspace.shared.open(url)
     }
 
-    private func getSystemObjectValue<T>(selector: AudioObjectPropertySelector) throws -> T {
-        try getObjectValue(AudioObjectID(kAudioObjectSystemObject), selector: selector)
+    private func getSystemObjectValue<T>(selector: AudioObjectPropertySelector, as type: T.Type) throws -> T {
+        try getObjectValue(AudioObjectID(kAudioObjectSystemObject), as: type, selector: selector)
     }
 
     private func availableDeviceIDs() throws -> [AudioObjectID] {
@@ -1152,9 +1254,18 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
     private func descriptor(for deviceID: AudioObjectID) throws -> OutputDeviceDescriptor {
         let uid: String = try getObjectCFString(deviceID, selector: kAudioDevicePropertyDeviceUID)
         let name: String = try getObjectCFString(deviceID, selector: kAudioObjectPropertyName)
-        let transport: UInt32 = try getObjectValue(deviceID, selector: kAudioDevicePropertyTransportType)
-        let sampleRate: Float64 = try getObjectValue(deviceID, selector: kAudioDevicePropertyNominalSampleRate)
+        let transport: UInt32 = try getObjectValue(
+            deviceID,
+            as: UInt32.self,
+            selector: kAudioDevicePropertyTransportType
+        )
+        let sampleRate: Float64 = try getObjectValue(
+            deviceID,
+            as: Float64.self,
+            selector: kAudioDevicePropertyNominalSampleRate
+        )
         let streamChannels = try streamChannelCounts(deviceID, scope: kAudioObjectPropertyScopeOutput)
+        let outputStreams = outputStreamDescriptors(deviceID)
         let isAggregate = transport == kAudioDeviceTransportTypeAggregate
         let isVirtual = transport == kAudioDeviceTransportTypeVirtual || isAggregate
         return OutputDeviceDescriptor(
@@ -1167,7 +1278,12 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
             nominalSampleRate: sampleRate,
             isVirtual: isVirtual,
             isAggregate: isAggregate,
-            outputStreamCount: streamChannels.count
+            outputStreamCount: OutputStreamInventory.count(
+                actualStreams: outputStreams,
+                fallbackBufferCount: streamChannels.count
+            ),
+            outputStreams: outputStreams ?? [],
+            preferredStereoChannels: preferredStereoChannels(deviceID)
         )
     }
 
@@ -1176,17 +1292,23 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
         return comparison == .orderedSame ? lhs.uid < rhs.uid : comparison == .orderedAscending
     }
 
-    private func getObjectValue<T>(_ objectID: AudioObjectID, selector: AudioObjectPropertySelector) throws -> T {
+    private func getObjectValue<T>(
+        _ objectID: AudioObjectID,
+        as _: T.Type,
+        selector: AudioObjectPropertySelector,
+        scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal
+    ) throws -> T {
         var address = AudioObjectPropertyAddress(
             mSelector: selector,
-            mScope: kAudioObjectPropertyScopeGlobal,
+            mScope: scope,
             mElement: kAudioObjectPropertyElementMain
         )
-        let storage = UnsafeMutableRawPointer.allocate(byteCount: MemoryLayout<T>.size, alignment: MemoryLayout<T>.alignment)
+        let expectedSize = MemoryLayout<T>.size
+        let storage = UnsafeMutableRawPointer.allocate(byteCount: expectedSize, alignment: MemoryLayout<T>.alignment)
         defer { storage.deallocate() }
-        var size = UInt32(MemoryLayout<T>.size)
+        var size = UInt32(expectedSize)
         let status = AudioObjectGetPropertyData(objectID, &address, 0, nil, &size, storage)
-        guard status == noErr else { throw AudioRuntimeError.deviceLost }
+        guard status == noErr, Int(size) == expectedSize else { throw AudioRuntimeError.deviceLost }
         return storage.load(as: T.self)
     }
 
@@ -1221,6 +1343,86 @@ nonisolated final class CoreAudioPlatformClient: AudioPlatformClient, OutputDevi
         }
         let list = UnsafeMutableAudioBufferListPointer(storage.assumingMemoryBound(to: AudioBufferList.self))
         return list.map { Int($0.mNumberChannels) }
+    }
+
+    /// Reads actual AudioStream objects, which are distinct from the buffers
+    /// reported by kAudioDevicePropertyStreamConfiguration. A malformed or
+    /// temporarily unreadable optional property yields no ranges; callers keep
+    /// the physical device visible but the pure resolver will refuse to guess.
+    private func outputStreamDescriptors(_ objectID: AudioObjectID) -> [OutputStreamDescriptor]? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreams,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(objectID, &address, 0, nil, &size) == noErr else { return nil }
+        let stride = MemoryLayout<AudioStreamID>.stride
+        guard size > 0,
+              Int(size) % stride == 0,
+              Int(size) / stride <= 64 else { return nil }
+        let byteCount = Int(size)
+        let storage = UnsafeMutableRawPointer.allocate(
+            byteCount: byteCount,
+            alignment: MemoryLayout<AudioStreamID>.alignment
+        )
+        defer { storage.deallocate() }
+        guard AudioObjectGetPropertyData(objectID, &address, 0, nil, &size, storage) == noErr,
+              Int(size) <= byteCount,
+              Int(size) % stride == 0 else { return nil }
+
+        let streamCount = Int(size) / stride
+        let streamIDs = storage.assumingMemoryBound(to: AudioStreamID.self)
+        var descriptors: [OutputStreamDescriptor] = []
+        descriptors.reserveCapacity(streamCount)
+        for index in 0..<streamCount {
+            let streamID = streamIDs[index]
+            // Constrain T before try? lifts the result to an optional. A type
+            // annotation on the optional binding alone can infer Optional<T>,
+            // which changes the raw property size and rejects valid CoreAudio data.
+            guard let startingChannel = try? getObjectValue(
+                streamID,
+                as: UInt32.self,
+                selector: kAudioStreamPropertyStartingChannel
+            ),
+                  let format = try? getObjectValue(
+                    streamID,
+                    as: AudioStreamBasicDescription.self,
+                    selector: kAudioStreamPropertyVirtualFormat
+                  ),
+                  startingChannel > 0,
+                  format.mChannelsPerFrame > 0 else { return nil }
+            descriptors.append(OutputStreamDescriptor(
+                streamIndex: index,
+                startingChannel: Int(startingChannel),
+                channelCount: Int(format.mChannelsPerFrame)
+            ))
+        }
+        return descriptors.isEmpty ? nil : descriptors
+    }
+
+    /// The preferred pair is optional, read-only, and exactly two UInt32
+    /// device channel numbers. Invalid sizes or transient property failures
+    /// are ignored and route resolution falls back to channels 1–2.
+    private func preferredStereoChannels(_ objectID: AudioObjectID) -> StereoOutputChannels? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyPreferredChannelsForStereo,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let expectedSize = MemoryLayout<UInt32>.stride * 2
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(objectID, &address, 0, nil, &size) == noErr,
+              Int(size) == expectedSize else { return nil }
+        let storage = UnsafeMutableRawPointer.allocate(
+            byteCount: expectedSize,
+            alignment: MemoryLayout<UInt32>.alignment
+        )
+        defer { storage.deallocate() }
+        guard AudioObjectGetPropertyData(objectID, &address, 0, nil, &size, storage) == noErr,
+              Int(size) == expectedSize else { return nil }
+        let channels = storage.assumingMemoryBound(to: UInt32.self)
+        return StereoOutputChannels(left: Int(channels[0]), right: Int(channels[1]))
     }
 
     /// Best-effort read of the device's output channel labels. Nil means the

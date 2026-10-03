@@ -13,6 +13,9 @@ struct RuntimeMenuPresentation: Equatable {
         case .processing:
             statusIcon = "waveform.circle.fill"
             detail = "Airwave is active."
+        case .routing:
+            statusIcon = "waveform.circle.fill"
+            detail = "Airwave is routing stereo audio to the selected output channels."
         case .starting:
             statusIcon = "waveform.badge.plus"
             detail = "Airwave is getting ready."
@@ -82,7 +85,15 @@ struct RuntimeHealthIssuePresentation: Equatable {
             Self(
                 title: "Unsupported audio output",
                 detail: reason,
-                suggestions: ["Select a physical output with one stream and a supported channel layout; virtual, aggregate, and unmapped layouts are unsupported.", "Supported multichannel input engages automatically: Airwave captures the device stream and writes binaural stereo to channels 1–2. LFE content is omitted from the fold-down."],
+                suggestions: ["Select a physical output with a resolvable stereo or surround source feed and available output streams. Virtual and aggregate outputs are unsupported."],
+                actionTitle: "Retry",
+                action: .retry
+            )
+        case .invalidOutputRouting(let reason):
+            Self(
+                title: "Output routing needs repair",
+                detail: reason,
+                suggestions: ["Choose two distinct output channels that are available on this device."],
                 actionTitle: "Retry",
                 action: .retry
             )

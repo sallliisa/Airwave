@@ -18,17 +18,55 @@ final class ApplicationLifecycleCoordinator: NSObject {
     private var pendingFocusedSpaceDeparture = false
     private var restoreFocusOnSpaceReturn = false
     private var focusDepartureGeneration = 0
+    private weak var departingFocusWindow: NSWindow?
+    private let focusWindowState: (NSWindow) -> FocusWindowState
+    private let activateApplication: () -> Void
+    private let restoreWindow: (NSWindow) -> Void
+
+    struct FocusWindowState {
+        let isKeyWindow: Bool
+        let isMiniaturized: Bool
+        let isOnActiveSpace: Bool
+    }
 
     init(
         application: ApplicationLifecycleApplication,
-        observeWindows: Bool = true
+        observeWindows: Bool = true,
+        focusWindowState: @escaping (NSWindow) -> FocusWindowState = { window in
+            FocusWindowState(
+                isKeyWindow: window.isKeyWindow,
+                isMiniaturized: window.isMiniaturized,
+                isOnActiveSpace: window.isOnActiveSpace
+            )
+        },
+        activateApplication: @escaping () -> Void = {
+            NSApp.activate(ignoringOtherApps: true)
+        },
+        restoreWindow: @escaping (NSWindow) -> Void = { window in
+            window.orderFrontRegardless()
+            window.makeKeyAndOrderFront(nil)
+        }
     ) {
         self.application = application
+        self.focusWindowState = focusWindowState
+        self.activateApplication = activateApplication
+        self.restoreWindow = restoreWindow
         super.init()
         guard observeWindows else { return }
         observesWindows = true
         let center = NotificationCenter.default
-        center.addObserver(self, selector: #selector(windowStateChanged), name: NSWindow.willCloseNotification, object: nil)
+        center.addObserver(
+            self,
+            selector: #selector(trackedWindowWillClose(_:)),
+            name: NSWindow.willCloseNotification,
+            object: nil
+        )
+        center.addObserver(
+            self,
+            selector: #selector(trackedWindowDidMiniaturize(_:)),
+            name: NSWindow.didMiniaturizeNotification,
+            object: nil
+        )
         NSWorkspace.shared.notificationCenter.addObserver(
             self,
             selector: #selector(activeSpaceDidChange),
@@ -82,10 +120,14 @@ final class ApplicationLifecycleCoordinator: NSObject {
     }
 
     func applicationWillResignActive() {
-        guard let window = settingsWindow, window.isKeyWindow, !window.isMiniaturized else {
-            pendingFocusedSpaceDeparture = false
+        guard let window = focusTrackedWindow else {
+            if !restoreFocusOnSpaceReturn {
+                clearFocusDeparture()
+            }
             return
         }
+        restoreFocusOnSpaceReturn = false
+        departingFocusWindow = window
         pendingFocusedSpaceDeparture = true
         focusDepartureGeneration += 1
         let generation = focusDepartureGeneration
@@ -93,7 +135,40 @@ final class ApplicationLifecycleCoordinator: NSObject {
             try? await Task.sleep(for: .milliseconds(500))
             guard generation == focusDepartureGeneration, !restoreFocusOnSpaceReturn else { return }
             pendingFocusedSpaceDeparture = false
+            departingFocusWindow = nil
         }
+    }
+
+    /// Handles active-space notifications using the window that was key when
+    /// Airwave lost focus. The seam lets tests model Spaces without activating
+    /// or ordering real application windows.
+    func handleActiveSpaceDidChange() {
+        guard let window = departingFocusWindow else {
+            clearFocusDeparture()
+            return
+        }
+        let state = focusWindowState(window)
+        guard !state.isMiniaturized else {
+            clearFocusDeparture()
+            return
+        }
+
+        if pendingFocusedSpaceDeparture, !state.isOnActiveSpace {
+            pendingFocusedSpaceDeparture = false
+            restoreFocusOnSpaceReturn = true
+            return
+        }
+
+        guard restoreFocusOnSpaceReturn, state.isOnActiveSpace else { return }
+        clearFocusDeparture()
+        prepareToPresentUserWindow()
+        activateApplication()
+        restoreWindow(window)
+    }
+
+    func handleTrackedWindowInvalidation(_ window: NSWindow) {
+        guard departingFocusWindow === window else { return }
+        clearFocusDeparture()
     }
 
     func terminationReply() -> NSApplication.TerminateReply {
@@ -134,36 +209,43 @@ final class ApplicationLifecycleCoordinator: NSObject {
         return className.contains("menubar") || className.contains("popover")
     }
 
-    private var settingsWindow: NSWindow? {
-        application.windows.first { $0.identifier == SettingsWindowPresenter.windowIdentifier }
+    private var focusTrackedWindow: NSWindow? {
+        application.windows.first { window in
+            let isTracked = window.identifier == SettingsWindowPresenter.windowIdentifier
+            let state = focusWindowState(window)
+            return isTracked && state.isKeyWindow && !state.isMiniaturized
+        }
     }
 
     @objc private func activeSpaceDidChange() {
-        guard let window = settingsWindow, !window.isMiniaturized else {
-            pendingFocusedSpaceDeparture = false
-            restoreFocusOnSpaceReturn = false
-            return
-        }
-
-        if pendingFocusedSpaceDeparture, !window.isOnActiveSpace {
-            pendingFocusedSpaceDeparture = false
-            restoreFocusOnSpaceReturn = true
-            return
-        }
-
-        guard restoreFocusOnSpaceReturn, window.isOnActiveSpace else { return }
-        restoreFocusOnSpaceReturn = false
-        prepareToPresentUserWindow()
-        NSApp.activate(ignoringOtherApps: true)
-        window.orderFrontRegardless()
-        window.makeKeyAndOrderFront(nil)
+        handleActiveSpaceDidChange()
     }
 
-    @objc private func windowStateChanged() {
+    @objc private func trackedWindowWillClose(_ notification: Notification) {
+        if let window = notification.object as? NSWindow {
+            handleTrackedWindowInvalidation(window)
+        }
+        updateActivationPolicyAfterWindowChange()
+    }
+
+    @objc private func trackedWindowDidMiniaturize(_ notification: Notification) {
+        if let window = notification.object as? NSWindow {
+            handleTrackedWindowInvalidation(window)
+        }
+    }
+
+    private func updateActivationPolicyAfterWindowChange() {
         Task { @MainActor in
             await Task.yield()
             updateActivationPolicy()
         }
+    }
+
+    private func clearFocusDeparture() {
+        focusDepartureGeneration += 1
+        pendingFocusedSpaceDeparture = false
+        restoreFocusOnSpaceReturn = false
+        departingFocusWindow = nil
     }
 }
 

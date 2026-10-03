@@ -15,13 +15,10 @@ nonisolated protocol StereoAudioProcessing: AnyObject {
 extension StereoAudioProcessing { nonisolated func cleanupAfterIOStopped() {} }
 
 nonisolated protocol AudioPipelineControlling: AnyObject {
+    /// Starts the pipeline with the fully resolved source and destination
+    /// routing. Every implementation must observe this route directly.
     func start(
-        on output: OutputDeviceDescriptor,
-        muteBehavior: AudioTapMuteBehavior,
-        verificationHandler: @escaping AudioCaptureVerificationHandler
-    ) throws
-    func start(
-        on output: OutputDeviceDescriptor,
+        on routing: ResolvedOutputRouting,
         purpose: AudioPipelinePurpose,
         verificationHandler: @escaping AudioCaptureVerificationHandler
     ) throws
@@ -63,12 +60,26 @@ extension AudioPipelineControlling {
         purpose: AudioPipelinePurpose,
         verificationHandler: @escaping AudioCaptureVerificationHandler
     ) throws {
-        switch purpose {
-        case .verification:
-            try start(on: output, muteBehavior: .unmuted, verificationHandler: verificationHandler)
-        case .processing:
-            try start(on: output, muteBehavior: .mutedWhenTapped, verificationHandler: verificationHandler)
+        let routing: ResolvedOutputRouting
+        switch OutputRoutingResolver.resolve(output: output) {
+        case .resolved(let resolved):
+            routing = resolved
+        case .unsupported(let reason):
+            throw AudioRuntimeError.unsupportedOutput(reason)
         }
+        try start(on: routing, purpose: purpose, verificationHandler: verificationHandler)
+    }
+
+    func start(
+        on output: OutputDeviceDescriptor,
+        muteBehavior: AudioTapMuteBehavior,
+        verificationHandler: @escaping AudioCaptureVerificationHandler
+    ) throws {
+        try start(
+            on: output,
+            purpose: muteBehavior == .unmuted ? .verification(includeOwnProcess: true) : .processing,
+            verificationHandler: verificationHandler
+        )
     }
 
     func start(
@@ -135,12 +146,27 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
         purpose: AudioPipelinePurpose,
         verificationHandler: @escaping AudioCaptureVerificationHandler
     ) throws {
+        let routing: ResolvedOutputRouting
+        switch OutputRoutingResolver.resolve(output: output) {
+        case .resolved(let resolved):
+            routing = resolved
+        case .unsupported(let reason):
+            throw AudioRuntimeError.unsupportedOutput(reason)
+        }
+        try start(on: routing, purpose: purpose, verificationHandler: verificationHandler)
+    }
+
+    func start(
+        on routing: ResolvedOutputRouting,
+        purpose: AudioPipelinePurpose,
+        verificationHandler: @escaping AudioCaptureVerificationHandler
+    ) throws {
         guard tap == nil, aggregate == nil, io == nil else { return }
         let pipelineID = ObjectIdentifier(self)
         AirwaveLog.audio.info("Pipeline start: stage=defaultOutput (\(String(describing: pipelineID))).")
         do {
-            guard output.isSupportedProfileOutput else {
-                throw AudioRuntimeError.unsupportedOutput(output.name)
+            guard OutputRoutingResolver.isValid(routing) else {
+                throw AudioRuntimeError.unsupportedOutput(routing.device.name)
             }
 
             let excludedProcesses: [AudioProcessHandle]
@@ -150,11 +176,11 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
             case .processing:
                 excludedProcesses = [try platform.resolveOwnProcess()]
             }
-            // The support policy requires one output stream, so CATap stream 0
-            // carries the complete supported device output.
+            // A device-bound tap follows the resolved source stream. Its
+            // native width may differ from both selected capture and output.
             let request = GlobalStereoTapRequest(
                 excludedProcesses: excludedProcesses,
-                output: output,
+                routing: routing,
                 muteBehavior: purpose == .processing ? .mutedWhenTapped : .unmuted
             )
             let createdTap = try platform.createGlobalStereoTap(request)
@@ -162,22 +188,27 @@ nonisolated final class AudioPipeline: AudioPipelineControlling {
             AirwaveLog.audio.info("Pipeline start: created tap \(createdTap.value) (\(String(describing: pipelineID))).")
 
             let tapFormat = try platform.streamFormat(for: createdTap)
-            let expectedCapture = AudioStreamFormat.capturing(channels: output.outputChannelCount, sampleRate: output.nominalSampleRate)
-            guard tapFormat.isFloat32CaptureCompatible(with: expectedCapture) else {
-                throw AudioRuntimeError.formatMismatch(expected: expectedCapture, actual: tapFormat)
+            let expectedTap = AudioStreamFormat.capturing(channels: routing.nativeWidth, sampleRate: routing.sampleRate)
+            guard tapFormat.isFloat32CaptureCompatible(with: expectedTap) else {
+                throw AudioRuntimeError.formatMismatch(expected: expectedTap, actual: tapFormat)
             }
 
-            let createdAggregate = try platform.createPrivateAggregate(tap: createdTap, output: output)
+            let createdAggregate = try platform.createPrivateAggregate(tap: createdTap, routing: routing)
             aggregate = createdAggregate
             AirwaveLog.audio.info("Pipeline start: created aggregate \(createdAggregate.value) (\(String(describing: pipelineID))).")
 
             let aggregateFormat = try platform.streamFormat(for: createdAggregate)
-            guard aggregateFormat.isFloat32CaptureCompatible(with: expectedCapture) else {
-                throw AudioRuntimeError.formatMismatch(expected: tapFormat, actual: aggregateFormat)
+            let expectedOutput = AudioStreamFormat.capturing(
+                channels: routing.device.outputChannelCount,
+                sampleRate: routing.sampleRate
+            )
+            guard aggregateFormat.matchesChannelCountAndSampleRate(of: expectedOutput) else {
+                throw AudioRuntimeError.formatMismatch(expected: expectedOutput, actual: aggregateFormat)
             }
 
             let createdIO = try platform.createIO(
                 aggregate: createdAggregate,
+                routing: routing,
                 callback: { [processor] inputChannels, inputChannelCount, outLeft, outRight, frames in
                     switch purpose {
                     case .processing:

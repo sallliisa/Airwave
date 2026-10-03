@@ -22,14 +22,14 @@ Airwave captures audio from your Mac, applies a spatial audio profile, and plays
 
 Airwave is designed for stereo headphones. The spatial effect may not sound as intended through speakers or other non-headphone outputs.
 
-Airwave accepts stereo and supported multichannel input automatically (no setting): it captures the device stream and writes binaural stereo back to device channels 1–2. A supported output is a physical device with one output stream, 2–16 channels, and a resolvable channel layout (unlabeled 2/6/8/12 use standard order; unlabeled 4-channel uses a generic quad fallback whose channel identity is not verified; other widths need complete usable labels; unknown, mismatched, or duplicate stereo-pair labels are unsupported). Virtual and aggregate outputs stay unsupported. LFE content is omitted from the fold-down. While Airwave runs on a multichannel device, surround speakers go silent; native playback on all channels resumes after teardown (see `docs/multichannel-known-tradeoffs.md`).
+Airwave captures a stereo or resolvable multichannel source automatically and always produces two output signals. On a multichannel physical interface, choose their destinations in **Settings > Registered Devices > Configure output…**. The saved left/right channel numbers can be reversed or nonadjacent; Airwave stores them for that device and does not change the macOS output selection. Without a saved assignment, it uses the device's valid preferred stereo pair or channels 1–2. Virtual and aggregate outputs are unsupported. Four-channel endpoints with duplicate stereo labels or no usable labels are treated as stereo sources, not assumed to be quad headphones. Surround input still needs a resolvable layout, and LFE content is omitted from the stereo fold-down. While Airwave's route is active, only the selected output pair receives its stereo signal; other device channels are silent. Native routing resumes after Airwave releases its private pipeline (see `docs/multichannel-known-tradeoffs.md`).
 
 Airwave follows your normal macOS output selection and volume. You do not need to manage a second audio route while using the app.
 
 ## Requirements
 
 - macOS 15 Sequoia or later
-- Headphones (stereo or supported multichannel device, per the rule above)
+- Stereo headphones connected to a supported physical output device
 - System Audio Capture permission
 
 Airwave does not use microphone access.
@@ -55,7 +55,7 @@ Airwave opens a short setup wizard the first time you run it. It has four pages 
 
 ### 1. Welcome
 
-The welcome page explains the two things Airwave needs: permission to capture system audio and a supported output (stereo headphones or a supported multichannel device) for the spatial effect.
+The welcome page explains the two things Airwave needs: permission to capture system audio and a supported physical output with a resolvable source feed. Airwave always sends stereo to two device channels, which can be assigned in Registered Devices.
 
 ![Airwave setup welcome page](docs/images/1Onboarding_Welcome.png)
 
@@ -122,10 +122,13 @@ The HRIR and Equalizer settings are independent. You can use spatial processing,
 
 ### Registered Devices
 
-**Registered Devices** lists the outputs Airwave remembers. Each device shows its transport, whether it is current, and the HRIR and EQ presets assigned to it.
+**Registered Devices** lists connected physical outputs and remembered device profiles, including profiles for devices that are offline. Each row shows its transport, connection/current status, and assigned HRIR and EQ presets. Selecting a row only selects it for these actions; macOS still controls the active output.
 
-- **Reset Profile** changes both HRIR and EQ to `None` for the selected device.
-- **Forget Device** removes a device that is not currently in use. If it is available again later, Airwave can create its profile again from the device selector.
+- **Configure output…** opens a native popover with **Left output** and **Right output** channel pickers. Airwave always sends stereo; choose two distinct channels on the selected device. **Save** applies the pair together. Outside-click or Escape dismissal keeps the in-memory draft for reopening; **Cancel** discards it. Connecting an interface does not verify which physical jack each channel reaches.
+- **Reset Profile** clears HRIR, EQ, and the saved output channel assignment for the selected device.
+- **Forget Device** removes the saved profile for a device that is not currently in use. A connected device stays listed; a profile is created again when you save an output assignment or choose a preset.
+
+When HRIR and EQ are both `None`, a device with an explicit output assignment remains active in routing-only mode. Airwave reports **Routing audio** while it sends the stereo output to the saved channels. With no saved assignment, `None`/`None` leaves normal macOS routing in place.
 
 ![Airwave Registered Devices](docs/images/7RegisteredDevices.png)
 
@@ -151,9 +154,11 @@ Open setup from **Settings > Setup & Troubleshooting** and run **Test System Aud
 Check that:
 
 1. Your headphones are the current macOS output.
-2. The output is a supported physical device (one stream, resolvable layout, not virtual or aggregate).
+2. The output is a supported physical device (not virtual or aggregate) with a source stream Airwave can resolve.
 3. An HRIR preset other than `None` is selected.
 4. Airwave's capture test has passed.
+
+If audio reaches the wrong interface channels, open **Settings > Registered Devices**, select that device, and choose **Configure output…**. Reconnect an offline device before editing its assignment. A saved channel number is a device destination; the actual connector mapping depends on the interface and has not been verified for every model.
 
 ### A device is not available
 

@@ -5,6 +5,7 @@ nonisolated enum RuntimeHealthIssue: Equatable, Sendable {
     enum Category: Int, CaseIterable, Sendable {
         case permission
         case output
+        case routing
         case capture
         case pipeline
         case recovery
@@ -15,6 +16,7 @@ nonisolated enum RuntimeHealthIssue: Equatable, Sendable {
     case permissionRequired
     case noUsableOutput
     case unsupportedOutput(reason: String)
+    case invalidOutputRouting(reason: String)
     case captureTestFailed(reason: String)
     case audioPipelineFailed(reason: String)
     case resourceRecovery(reason: String)
@@ -25,6 +27,7 @@ nonisolated enum RuntimeHealthIssue: Equatable, Sendable {
         switch self {
         case .permissionRequired: .permission
         case .noUsableOutput, .unsupportedOutput: .output
+        case .invalidOutputRouting: .routing
         case .captureTestFailed: .capture
         case .audioPipelineFailed: .pipeline
         case .resourceRecovery: .recovery
@@ -50,6 +53,7 @@ final class AudioRuntimeState: ObservableObject {
         case needsPermission
         case nativePassthrough(reason: String)
         case starting
+        case routing
         case processing
         case recovering(reason: String)
 
@@ -60,6 +64,7 @@ final class AudioRuntimeState: ObservableObject {
             case .needsPermission: "Permission required"
             case .nativePassthrough: "Native passthrough"
             case .starting: "Starting"
+            case .routing: "Routing audio"
             case .processing: "Processing"
             case .recovering: "Recovering"
             }
@@ -75,12 +80,14 @@ final class AudioRuntimeState: ObservableObject {
                 "System Audio Capture needs access before processing can start."
             case .starting:
                 "Airwave is preparing native audio processing."
+            case .routing:
+                "Airwave is routing stereo audio to the selected output channels."
             case .processing:
                 "Airwave is processing audio without changing macOS output or volume."
             }
         }
 
-        var isProcessing: Bool { self == .processing }
+        var isProcessing: Bool { self == .processing || self == .routing }
     }
 
     static let shared = AudioRuntimeState()
@@ -88,12 +95,14 @@ final class AudioRuntimeState: ObservableObject {
     @Published private(set) var status: Status
     @Published private(set) var captureAccess: CaptureAccess
     @Published private(set) var currentOutput: OutputDeviceDescriptor?
+    @Published private(set) var currentRouting: OutputRoutingSummary?
     @Published private(set) var warningMessage: String?
     @Published private(set) var healthIssues: [RuntimeHealthIssue]
 
     init(
         status: Status = .unavailable("Airwave 2.0 audio backend is not installed yet"),
         currentOutput: OutputDeviceDescriptor? = nil,
+        currentRouting: OutputRoutingSummary? = nil,
         warningMessage: String? = nil,
         captureAccess: CaptureAccess = .unverified,
         healthIssues: [RuntimeHealthIssue] = []
@@ -101,6 +110,7 @@ final class AudioRuntimeState: ObservableObject {
         self.status = status
         self.captureAccess = captureAccess
         self.currentOutput = currentOutput
+        self.currentRouting = currentRouting
         self.warningMessage = warningMessage
         self.healthIssues = Self.sortedIssues(healthIssues)
     }
@@ -109,9 +119,23 @@ final class AudioRuntimeState: ObservableObject {
         self.captureAccess = captureAccess
     }
 
+    func setCurrentRouting(_ routing: ResolvedOutputRouting?) {
+        currentRouting = routing.map(OutputRoutingSummary.init)
+    }
+
+    var isCurrentOutputRoutable: Bool {
+        guard let currentOutput, currentOutput.isConfigurationEligible else { return false }
+        if let currentRouting {
+            return currentRouting.deviceUID == currentOutput.uid
+        }
+        guard !healthIssues.contains(where: { $0.category == .output || $0.category == .routing }) else { return false }
+        if case .resolved = OutputRoutingResolver.resolve(output: currentOutput) { return true }
+        return false
+    }
+
     var isSetupHealthy: Bool {
         captureAccess == .verified
-            && (currentOutput?.isSupportedProfileOutput == true)
+            && isCurrentOutputRoutable
             && healthIssues.isEmpty
     }
 

@@ -32,6 +32,338 @@ final class AudioRuntimeControllerTests: XCTestCase {
         XCTAssertEqual(h.scheduler.scheduledCount, 0)
     }
 
+    func testPreparedRouteAndPassiveAndExplicitVerificationReachPipeline() {
+        let h = Harness(effect: true)
+        h.pipelines.automaticEvent = nil
+        let preferredPair = StereoOutputChannels(left: 3, right: 4)
+        h.platform.current = OutputDeviceDescriptor(
+            id: .init(7), uid: "preferred-output", name: "Preferred Output", transport: "USB",
+            channelLabels: nil, outputChannelCount: 4, nominalSampleRate: 48_000,
+            isVirtual: false, isAggregate: false,
+            preferredStereoChannels: preferredPair
+        )
+        let preparer = ProfilePreparerFake(
+            readiness: AudioRuntimeEffectReadiness(spatialReady: true, equalizerDefinition: nil)
+        )
+        h.controller.setProfilePreparer(preparer)
+        h.controller.launch(presetReady: true)
+
+        XCTAssertEqual(preparer.prepareCount, 1)
+        XCTAssertEqual(h.pipelines.routings.map(\.outputChannels), [preferredPair])
+        XCTAssertEqual(h.pipelines.purposes, [.verification(includeOwnProcess: false)])
+
+        h.controller.requestSystemAudioAccess()
+
+        XCTAssertEqual(preparer.prepareCount, 2)
+        XCTAssertEqual(h.pipelines.routings.map(\.outputChannels), [preferredPair, preferredPair])
+        XCTAssertEqual(h.pipelines.purposes, [
+            .verification(includeOwnProcess: false),
+            .verification(includeOwnProcess: true)
+        ])
+    }
+
+    func testExplicitRoutingWithNoEffectsPromotesPassiveVerificationToRouting() {
+        let h = Harness()
+        let pair = StereoOutputChannels(left: 4, right: 2)
+        h.platform.current = output(id: 42, name: "Interface", channels: 4)
+        let preparer = ProfilePreparerFake(
+            readiness: AudioRuntimeEffectReadiness(spatialReady: false, equalizerDefinition: nil),
+            channels: pair
+        )
+        h.controller.setProfilePreparer(preparer)
+
+        h.controller.launch(presetReady: false)
+
+        XCTAssertEqual(h.pipelines.purposes, [.verification(includeOwnProcess: false)])
+        XCTAssertEqual(h.pipelines.routings.map(\.outputChannels), [pair])
+        XCTAssertEqual(h.state.currentRouting?.outputChannels, pair)
+        XCTAssertEqual(h.state.status, .starting)
+        XCTAssertEqual(h.player.playCount, 0, "passive routing verification must not play a test sound")
+
+        h.pipelines.emit(.signalDetected)
+
+        XCTAssertEqual(h.pipelines.purposes, [.verification(includeOwnProcess: false), .processing])
+        XCTAssertEqual(h.pipelines.routings.map(\.outputChannels), [pair, pair])
+        XCTAssertTrue(h.pipelines.routings.allSatisfy(\.isExplicitAssignment))
+        XCTAssertEqual(h.state.status, .routing)
+        XCTAssertEqual(h.state.captureAccess, .verified)
+        XCTAssertEqual(h.pipelines.liveCount, 1)
+        XCTAssertEqual(h.player.playCount, 0)
+    }
+
+    func testExplicitAssignmentMatchingDefaultPairStillKeepsRoutingActive() {
+        let h = Harness()
+        let pair = StereoOutputChannels(left: 1, right: 2)
+        h.platform.current = output(id: 43, name: "Interface", channels: 4)
+        let preparer = ProfilePreparerFake(
+            readiness: AudioRuntimeEffectReadiness(spatialReady: false, equalizerDefinition: nil),
+            channels: pair
+        )
+        h.controller.setProfilePreparer(preparer)
+
+        h.controller.launch(presetReady: false, captureVerified: true)
+
+        XCTAssertEqual(h.pipelines.purposes, [.processing])
+        XCTAssertEqual(h.pipelines.routings.first?.outputChannels, pair)
+        XCTAssertEqual(h.pipelines.routings.first?.isExplicitAssignment, true)
+        XCTAssertEqual(h.state.status, .routing)
+        XCTAssertEqual(h.pipelines.liveCount, 1)
+    }
+
+    func testEffectGraphReceivesAutomaticSourceLayoutAndSavedDestinationPair() {
+        let h = Harness(effectGraph: OrderedEffectGraph(eventLog: RuntimeEventLog()))
+        let preferredSource = StereoOutputChannels(left: 1, right: 2)
+        let destination = StereoOutputChannels(left: 4, right: 2)
+        h.platform.current = OutputDeviceDescriptor(
+            id: .init(47), uid: "interface-47", name: "Interface", transport: "USB",
+            channelLabels: [1, 2, 1, 2], outputChannelCount: 4, nominalSampleRate: 48_000,
+            isVirtual: false, isAggregate: false, preferredStereoChannels: preferredSource
+        )
+        let graph = h.effectGraphForTesting as? OrderedEffectGraph
+        let preparer = ProfilePreparerFake(
+            readiness: AudioRuntimeEffectReadiness(spatialReady: true, equalizerDefinition: nil),
+            channels: destination
+        )
+        h.controller.setProfilePreparer(preparer)
+        h.controller.launch(presetReady: true, captureVerified: true)
+
+        let route = graph?.preparedRoutings.first
+        XCTAssertEqual(route?.outputChannels, destination)
+        XCTAssertEqual(route?.nativeWidth, 4)
+        XCTAssertEqual(route?.sourceChannelIndices, [0, 1])
+        XCTAssertEqual(route?.inputLayout, .stereo)
+        XCTAssertEqual(h.pipelines.routings.first, route)
+    }
+
+    func testExplicitDestinationDoesNotReplaceReversedPreferredStereoSource() {
+        let h = Harness(effectGraph: OrderedEffectGraph(eventLog: RuntimeEventLog()))
+        let preferredSource = StereoOutputChannels(left: 2, right: 1)
+        let destination = StereoOutputChannels(left: 1, right: 2)
+        h.platform.current = OutputDeviceDescriptor(
+            id: .init(471), uid: "reversed-stereo", name: "Reversed Stereo", transport: "USB",
+            channelLabels: nil, outputChannelCount: 2, nominalSampleRate: 48_000,
+            isVirtual: false, isAggregate: false, preferredStereoChannels: preferredSource
+        )
+        let graph = h.effectGraphForTesting as? OrderedEffectGraph
+        let preparer = ProfilePreparerFake(
+            readiness: AudioRuntimeEffectReadiness(spatialReady: false, equalizerDefinition: nil),
+            channels: destination
+        )
+        h.controller.setProfilePreparer(preparer)
+        h.controller.launch(presetReady: false, captureVerified: true)
+
+        XCTAssertEqual(h.pipelines.routings.first?.outputChannels, destination)
+        XCTAssertEqual(h.pipelines.routings.first?.sourceChannelIndices, [1, 0])
+        XCTAssertEqual(graph?.preparedRoutings.first?.outputChannels, destination)
+        XCTAssertEqual(graph?.preparedRoutings.first?.sourceChannelIndices, [1, 0])
+    }
+
+    func testHRIRActivationFailureKeepsUnverifiedExplicitRouteAndError() {
+        let h = Harness()
+        h.pipelines.automaticEvent = nil
+        let pair = StereoOutputChannels(left: 4, right: 2)
+        h.platform.current = output(id: 472, name: "Interface", channels: 4)
+        let preparer = ProfilePreparerFake(
+            readiness: AudioRuntimeEffectReadiness(spatialReady: true, equalizerDefinition: nil),
+            channels: pair
+        )
+        h.controller.setProfilePreparer(preparer)
+        h.controller.launch(
+            effectReadiness: AudioRuntimeEffectReadiness(spatialReady: true, equalizerDefinition: nil)
+        )
+
+        let message = "The selected HRIR could not be activated."
+        h.controller.presetActivationFailed(message)
+
+        XCTAssertEqual(h.pipelines.purposes, [.verification(includeOwnProcess: false)])
+        XCTAssertEqual(h.pipelines.routings.map(\.outputChannels), [pair])
+        XCTAssertEqual(h.pipelines.liveCount, 1, "the existing verification pipeline remains the sole owner")
+        XCTAssertEqual(h.state.currentRouting?.outputChannels, pair)
+        XCTAssertEqual(h.state.captureAccess, .unverified)
+        XCTAssertEqual(h.state.healthIssues, [.spatialPresetFailed(reason: message)])
+
+        h.pipelines.emit(.signalDetected)
+
+        XCTAssertEqual(h.pipelines.purposes, [.verification(includeOwnProcess: false), .processing])
+        XCTAssertEqual(h.pipelines.routings.map(\.outputChannels), [pair, pair])
+        XCTAssertEqual(h.pipelines.liveCount, 1)
+        XCTAssertEqual(h.state.status, .routing)
+        XCTAssertEqual(h.state.captureAccess, .verified)
+        XCTAssertEqual(h.state.healthIssues, [.spatialPresetFailed(reason: message)])
+    }
+
+    func testHRIRActivationFailureKeepsRunnableEqualizerOnExplicitRoute() {
+        let graph = EmptyOnNilEffectGraph()
+        let h = Harness(effectGraph: graph)
+        let pair = StereoOutputChannels(left: 3, right: 1)
+        let definition = EqualizerDefinition(preampDB: 2)
+        h.platform.current = output(id: 473, name: "Interface", channels: 4)
+        let preparer = ProfilePreparerFake(
+            readiness: AudioRuntimeEffectReadiness(spatialReady: true, equalizerDefinition: definition),
+            channels: pair
+        )
+        h.controller.setProfilePreparer(preparer)
+        h.controller.launch(
+            effectReadiness: AudioRuntimeEffectReadiness(spatialReady: true, equalizerDefinition: definition),
+            captureVerified: true
+        )
+
+        let message = "The selected HRIR could not be activated."
+        h.controller.presetActivationFailed(message)
+
+        XCTAssertEqual(graph.updates, 1)
+        XCTAssertEqual(h.pipelines.routings.map(\.outputChannels), [pair])
+        XCTAssertEqual(h.pipelines.liveCount, 1)
+        XCTAssertEqual(h.state.status, .processing)
+        XCTAssertEqual(h.state.captureAccess, .verified)
+        XCTAssertEqual(h.state.healthIssues, [.spatialPresetFailed(reason: message)])
+    }
+
+    func testClearingLastHRIRRebuildsOnSameExplicitRouteAndShowsRouting() {
+        let h = Harness()
+        let pair = StereoOutputChannels(left: 3, right: 1)
+        h.platform.current = output(id: 44, name: "Interface", channels: 4)
+        let preparer = ProfilePreparerFake(
+            readiness: AudioRuntimeEffectReadiness(spatialReady: true, equalizerDefinition: nil),
+            channels: pair
+        )
+        h.controller.setProfilePreparer(preparer)
+        h.controller.launch(
+            effectReadiness: AudioRuntimeEffectReadiness(spatialReady: true, equalizerDefinition: nil),
+            captureVerified: true
+        )
+        XCTAssertEqual(h.state.status, .processing)
+
+        preparer.readiness = AudioRuntimeEffectReadiness(spatialReady: false, equalizerDefinition: nil)
+        h.controller.updateReadiness(preparer.readiness, invalidation: .spatial)
+
+        XCTAssertEqual(h.pipelines.purposes, [.processing, .processing])
+        XCTAssertEqual(h.pipelines.routings.map(\.outputChannels), [pair, pair])
+        XCTAssertEqual(h.pipelines.liveCount, 1)
+        XCTAssertEqual(h.state.status, .routing)
+    }
+
+    func testClearingLastEqualizerKeepsExplicitRoutePipelineLive() {
+        let h = Harness(effectGraph: EmptyOnNilEffectGraph())
+        let pair = StereoOutputChannels(left: 4, right: 1)
+        h.platform.current = output(id: 45, name: "Interface", channels: 4)
+        let definition = EqualizerDefinition(preampDB: 3)
+        let preparer = ProfilePreparerFake(
+            readiness: AudioRuntimeEffectReadiness(spatialReady: false, equalizerDefinition: definition),
+            channels: pair
+        )
+        h.controller.setProfilePreparer(preparer)
+        h.controller.launch(
+            effectReadiness: AudioRuntimeEffectReadiness(spatialReady: false, equalizerDefinition: definition),
+            captureVerified: true
+        )
+        XCTAssertEqual(h.state.status, .processing)
+
+        h.controller.updateCurrentEqualizer(nil)
+
+        XCTAssertEqual(h.pipelines.purposes, [.processing])
+        XCTAssertEqual(h.pipelines.routings.first?.outputChannels, pair)
+        XCTAssertEqual(h.pipelines.liveCount, 1)
+        XCTAssertEqual(h.state.status, .routing)
+    }
+
+    func testInvalidSavedPairIsRetainedAsRepairIssueWhenDeviceGeometryChanges() {
+        let h = Harness()
+        let pair = StereoOutputChannels(left: 4, right: 2)
+        h.platform.current = output(id: 46, name: "Interface", channels: 4)
+        let preparer = ProfilePreparerFake(
+            readiness: AudioRuntimeEffectReadiness(spatialReady: false, equalizerDefinition: nil),
+            channels: pair
+        )
+        h.controller.setProfilePreparer(preparer)
+        h.controller.launch(presetReady: false, captureVerified: true)
+        XCTAssertEqual(h.state.status, .routing)
+
+        h.platform.emit(output(id: 46, name: "Interface", channels: 2))
+
+        XCTAssertEqual(preparer.channels, pair, "a stale saved pair must remain available for repair")
+        XCTAssertEqual(h.pipelines.routings.map(\.outputChannels), [pair])
+        XCTAssertEqual(h.pipelines.liveCount, 0)
+        XCTAssertNil(h.state.currentRouting)
+        XCTAssertEqual(h.state.currentOutput?.uid, "output-46")
+        XCTAssertEqual(h.state.healthIssues, [
+            .invalidOutputRouting(reason: "Choose two distinct output channels available on this device.")
+        ])
+    }
+
+    func testRoutingOnlyPermissionDenialDoesNotPromoteOrDropSavedRoute() {
+        let h = Harness()
+        let pair = StereoOutputChannels(left: 3, right: 1)
+        h.platform.current = output(id: 48, name: "Interface", channels: 4)
+        let preparer = ProfilePreparerFake(
+            readiness: AudioRuntimeEffectReadiness(spatialReady: false, equalizerDefinition: nil),
+            channels: pair
+        )
+        h.controller.setProfilePreparer(preparer)
+
+        h.controller.launch(presetReady: false)
+        h.pipelines.emit(.permissionDenied)
+
+        XCTAssertEqual(h.state.status, .needsPermission)
+        XCTAssertEqual(h.state.captureAccess, .permissionRequired)
+        XCTAssertEqual(h.state.currentRouting?.outputChannels, pair)
+        XCTAssertEqual(h.pipelines.purposes, [.verification(includeOwnProcess: false)])
+        XCTAssertEqual(h.pipelines.liveCount, 0)
+    }
+
+    func testRoutingOnlyPipelineFailureCanRetryAndRecover() {
+        let h = Harness()
+        let pair = StereoOutputChannels(left: 4, right: 2)
+        h.platform.current = output(id: 49, name: "Interface", channels: 4)
+        h.pipelines.startError = .ioStartFailed("route start failed")
+        let preparer = ProfilePreparerFake(
+            readiness: AudioRuntimeEffectReadiness(spatialReady: false, equalizerDefinition: nil),
+            channels: pair
+        )
+        h.controller.setProfilePreparer(preparer)
+
+        h.controller.launch(presetReady: false, captureVerified: true)
+
+        XCTAssertEqual(h.state.healthIssues, [.audioPipelineFailed(reason: "route start failed")])
+        XCTAssertEqual(h.state.currentRouting?.outputChannels, pair)
+        h.pipelines.automaticEvent = .signalDetected
+        h.controller.retryNow()
+
+        XCTAssertEqual(h.pipelines.purposes, [.verification(includeOwnProcess: false), .processing])
+        XCTAssertEqual(h.pipelines.routings.map(\.outputChannels), [pair, pair])
+        XCTAssertEqual(h.state.status, .routing)
+        XCTAssertEqual(h.state.captureAccess, .verified)
+        XCTAssertEqual(h.state.healthIssues, [])
+    }
+
+    func testRoutingOnlyRouteIsReverifiedAndRestoredAfterWake() {
+        let h = Harness()
+        let pair = StereoOutputChannels(left: 3, right: 1)
+        h.platform.current = output(id: 50, name: "Interface", channels: 4)
+        let preparer = ProfilePreparerFake(
+            readiness: AudioRuntimeEffectReadiness(spatialReady: false, equalizerDefinition: nil),
+            channels: pair
+        )
+        h.controller.setProfilePreparer(preparer)
+        h.controller.launch(presetReady: false, captureVerified: true)
+        XCTAssertEqual(h.state.status, .routing)
+
+        h.controller.willSleep()
+        XCTAssertEqual(h.pipelines.liveCount, 0)
+        h.pipelines.automaticEvent = .signalDetected
+        h.controller.didWake()
+
+        XCTAssertEqual(h.pipelines.purposes, [
+            .processing,
+            .verification(includeOwnProcess: false),
+            .processing
+        ])
+        XCTAssertEqual(h.pipelines.routings.map(\.outputChannels), [pair, pair, pair])
+        XCTAssertEqual(h.pipelines.liveCount, 1)
+        XCTAssertEqual(h.state.status, .routing)
+        XCTAssertEqual(h.state.captureAccess, .verified)
+    }
+
     func testExplicitTestUsesAllProcessProbeAndOnePlayer() {
         let h = Harness()
         h.controller.launch(presetReady: false)
@@ -860,6 +1192,7 @@ private final class Harness {
     let scheduler = SchedulerFake()
     let player = PlayerFake()
     private let effectGraph: AudioEffectGraphControlling?
+    var effectGraphForTesting: AudioEffectGraphControlling? { effectGraph }
     private(set) lazy var controller: AudioRuntimeController = AudioRuntimeController(
         state: state,
         platform: platform,
@@ -887,6 +1220,7 @@ private final class RuntimeEventLog {
 private final class OrderedEffectGraph: AudioEffectGraphControlling {
     private let eventLog: RuntimeEventLog
     private(set) var prepareCount = 0
+    private(set) var preparedRoutings: [ResolvedOutputRouting] = []
     var nextResult: AudioEffectPreparationResult?
 
     init(eventLog: RuntimeEventLog) {
@@ -894,11 +1228,12 @@ private final class OrderedEffectGraph: AudioEffectGraphControlling {
     }
 
     func prepare(
-        for output: OutputDeviceDescriptor,
+        for routing: ResolvedOutputRouting,
         equalizerDefinition: EqualizerDefinition?
     ) -> AudioEffectPreparationResult {
         eventLog.events.append("prepare")
         prepareCount += 1
+        preparedRoutings.append(routing)
         let result = nextResult ?? AudioEffectPreparationResult(runnableEffects: [.spatial], equalizerWarning: nil)
         nextResult = nil
         return result
@@ -911,7 +1246,7 @@ private final class OrderedEffectGraph: AudioEffectGraphControlling {
 
 private final class EmptyOnNilEffectGraph: AudioEffectGraphControlling {
     var updates = 0
-    func prepare(for output: OutputDeviceDescriptor, equalizerDefinition: EqualizerDefinition?) -> AudioEffectPreparationResult {
+    func prepare(for routing: ResolvedOutputRouting, equalizerDefinition: EqualizerDefinition?) -> AudioEffectPreparationResult {
         AudioEffectPreparationResult(runnableEffects: [.equalizer], equalizerWarning: nil)
     }
     func updateEqualizer(definition: EqualizerDefinition?) -> AudioEffectPreparationResult {
@@ -927,6 +1262,7 @@ private final class PipelineFactoryFake {
     var stopError: AudioRuntimeError?
     var purposes: [AudioPipelinePurpose] = []
     var muteBehaviors: [AudioTapMuteBehavior] = []
+    var routings: [ResolvedOutputRouting] = []
     var handlers: [AudioCaptureVerificationHandler] = []
     var liveCount = 0
 
@@ -947,14 +1283,15 @@ private final class PipelineFake: AudioPipelineControlling {
 
     init(owner: PipelineFactoryFake) { self.owner = owner }
 
-    func start(on output: OutputDeviceDescriptor, muteBehavior: AudioTapMuteBehavior, verificationHandler: @escaping AudioCaptureVerificationHandler) throws {
-        try start(on: output, purpose: muteBehavior == .unmuted ? .verification(includeOwnProcess: true) : .processing, verificationHandler: verificationHandler)
-    }
-
-    func start(on output: OutputDeviceDescriptor, purpose: AudioPipelinePurpose, verificationHandler: @escaping AudioCaptureVerificationHandler) throws {
+    func start(
+        on routing: ResolvedOutputRouting,
+        purpose: AudioPipelinePurpose,
+        verificationHandler: @escaping AudioCaptureVerificationHandler
+    ) throws {
         guard let owner else { return }
         if let error = owner.startError { owner.startError = nil; throw error }
         owner.eventLog.events.append("start")
+        owner.routings.append(routing)
         owner.purposes.append(purpose)
         owner.muteBehaviors.append(purpose == .processing ? .mutedWhenTapped : .unmuted)
         owner.handlers.append(verificationHandler)
@@ -983,11 +1320,11 @@ private final class PlatformFake: AudioPlatformClient {
     func resolveOwnProcess() throws -> AudioProcessHandle { .init(value: 1) }
     func createGlobalStereoTap(_ request: GlobalStereoTapRequest) throws -> AudioTapHandle { .init(value: 1) }
     func destroyTap(_ tap: AudioTapHandle) throws {}
-    func createPrivateAggregate(tap: AudioTapHandle, output: OutputDeviceDescriptor) throws -> PrivateAggregateHandle { .init(value: 1) }
+    func createPrivateAggregate(tap: AudioTapHandle, routing: ResolvedOutputRouting) throws -> PrivateAggregateHandle { .init(value: 1) }
     func destroyPrivateAggregate(_ aggregate: PrivateAggregateHandle) throws {}
     func streamFormat(for tap: AudioTapHandle) throws -> AudioStreamFormat { .stereo(sampleRate: 48_000) }
     func streamFormat(for aggregate: PrivateAggregateHandle) throws -> AudioStreamFormat { .stereo(sampleRate: 48_000) }
-    func createIO(aggregate: PrivateAggregateHandle, callback: @escaping AudioIOCallback, verificationHandler: @escaping AudioCaptureVerificationHandler) throws -> AudioIOHandle { .init(value: 1) }
+    func createIO(aggregate: PrivateAggregateHandle, routing: ResolvedOutputRouting, callback: @escaping AudioIOCallback, verificationHandler: @escaping AudioCaptureVerificationHandler) throws -> AudioIOHandle { .init(value: 1) }
     func startIO(_ io: AudioIOHandle) throws {}
     func stopIO(_ io: AudioIOHandle) throws {}
     func destroyIO(_ io: AudioIOHandle) throws {}
@@ -1027,15 +1364,21 @@ private final class PlayerFake: AudioProbeStimulusPlaying {
 
 @MainActor
 private final class ProfilePreparerFake: OutputEffectProfilePreparing {
-    let readiness: AudioRuntimeEffectReadiness
+    var readiness: AudioRuntimeEffectReadiness
+    var channels: StereoOutputChannels?
     var prepareCount = 0
+    private(set) var preparedRoutings: [ResolvedOutputRouting] = []
 
-    init(readiness: AudioRuntimeEffectReadiness) {
+    init(readiness: AudioRuntimeEffectReadiness, channels: StereoOutputChannels? = nil) {
         self.readiness = readiness
+        self.channels = channels
     }
 
-    func prepare(output: OutputDeviceDescriptor, completion: @escaping (AudioRuntimeEffectReadiness) -> Void) {
+    func savedOutputChannels(for output: OutputDeviceDescriptor) -> StereoOutputChannels? { channels }
+
+    func prepare(routing: ResolvedOutputRouting, completion: @escaping (AudioRuntimeEffectReadiness) -> Void) {
         prepareCount += 1
+        preparedRoutings.append(routing)
         completion(readiness)
     }
 
@@ -1091,7 +1434,7 @@ private final class CreationCountingPlatformFake: AudioPlatformClient {
         destroyTapCount += 1
     }
 
-    func createPrivateAggregate(tap: AudioTapHandle, output: OutputDeviceDescriptor) throws -> PrivateAggregateHandle {
+    func createPrivateAggregate(tap: AudioTapHandle, routing: ResolvedOutputRouting) throws -> PrivateAggregateHandle {
         events.append("createAggregate")
         aggregateCreationCount += 1
         return PrivateAggregateHandle(value: UInt64(aggregateCreationCount))
@@ -1107,6 +1450,7 @@ private final class CreationCountingPlatformFake: AudioPlatformClient {
 
     func createIO(
         aggregate: PrivateAggregateHandle,
+        routing: ResolvedOutputRouting,
         callback: @escaping AudioIOCallback,
         verificationHandler: @escaping AudioCaptureVerificationHandler
     ) throws -> AudioIOHandle {

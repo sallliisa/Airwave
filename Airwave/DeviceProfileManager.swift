@@ -8,6 +8,7 @@ nonisolated struct DeviceAudioProfile: Codable, Equatable, Identifiable, Sendabl
     var transport: String
     var hrirPresetID: UUID?
     var equalizerPresetID: UUID?
+    var outputChannels: StereoOutputChannels? = nil
     var lastSeenAt: Date
 }
 
@@ -29,8 +30,11 @@ nonisolated struct DeviceProfileTarget: Equatable, Identifiable, Sendable {
 nonisolated enum DeviceProfileEffect: Equatable, Sendable {
     case hrir
     case equalizer
+    case routing
     case metadata
     case both
+    /// Reset changed at least one effect and the saved output pair together.
+    case reset
 }
 
 nonisolated struct DeviceProfileChange: Equatable, Sendable {
@@ -121,7 +125,7 @@ final class DeviceProfileManager: ObservableObject {
     }
 
     func observeCurrentOutput(_ output: OutputDeviceDescriptor?) {
-        guard let output, output.isSupportedProfileOutput else {
+        guard let output, output.isConfigurationEligible else {
             currentDeviceUID = nil
             currentOutput = nil
             repairEditingTarget()
@@ -129,15 +133,23 @@ final class DeviceProfileManager: ObservableObject {
             return
         }
 
-        currentDeviceUID = output.uid
-        currentOutput = output
-        editingDeviceUID = output.uid
-        mergeCurrentOutputIntoInventory(output)
-        refreshSavedMetadata(using: [output], updateLastSeen: true)
+        let current = currentOutput.map { output.retainingMissingRoutingMetadata(from: $0) } ?? output
+        let activeDeviceChanged = currentDeviceUID != current.uid
+        currentDeviceUID = current.uid
+        currentOutput = current
+        if activeDeviceChanged || target(for: editingDeviceUID) == nil {
+            editingDeviceUID = current.uid
+        }
+        mergeCurrentOutputIntoInventory(current)
+        refreshSavedMetadata(using: [current], updateLastSeen: true)
     }
 
     func updateAvailableOutputs(_ outputs: [OutputDeviceDescriptor]) {
-        inventoryOutputs = Self.deduplicatedSupportedDescriptors(outputs)
+        let previousByUID = Dictionary(uniqueKeysWithValues: inventoryOutputs.map { ($0.uid, $0) })
+        let retained = outputs.map { output in
+            previousByUID[output.uid].map { output.retainingMissingRoutingMetadata(from: $0) } ?? output
+        }
+        inventoryOutputs = Self.deduplicatedEligibleDescriptors(retained)
         rebuildAvailableOutputs()
         refreshSavedMetadata(using: inventoryOutputs)
         repairEditingTarget()
@@ -185,16 +197,54 @@ final class DeviceProfileManager: ObservableObject {
         mutate(uid: uid, effect: .equalizer)
     }
 
+    /// Saves an explicit pair for the captured UID. A nil pair is an internal
+    /// reset operation; ordinary callers must pass a live, eligible target.
+    @discardableResult
+    func setOutputChannels(_ channels: StereoOutputChannels?, for deviceUID: String) -> Bool {
+        if let channels {
+            guard let output = availableOutputs.first(where: { $0.uid == deviceUID }),
+                  output.isConfigurationEligible,
+                  OutputRoutingResolver.isValidDestination(channels, output: output) else { return false }
+            if let index = index(of: deviceUID) {
+                guard profiles[index].outputChannels != channels else { return false }
+                profiles[index].outputChannels = channels
+                mutate(uid: deviceUID, effect: .routing)
+                return true
+            }
+            guard let target = target(for: deviceUID), target.isAvailable else { return false }
+            createProfile(
+                for: target,
+                hrirPresetID: nil,
+                equalizerPresetID: nil,
+                outputChannels: channels,
+                effect: .routing
+            )
+            return true
+        }
+
+        guard let index = index(of: deviceUID), profiles[index].outputChannels != nil else { return false }
+        profiles[index].outputChannels = nil
+        mutate(uid: deviceUID, effect: .routing)
+        return true
+    }
+
     @discardableResult
     func resetProfile(deviceUID: String) -> Bool {
-        guard let index = index(of: deviceUID),
-              profiles[index].hrirPresetID != nil || profiles[index].equalizerPresetID != nil else {
+        guard let index = index(of: deviceUID) else {
             return false
         }
 
+        let hadEffects = profiles[index].hrirPresetID != nil || profiles[index].equalizerPresetID != nil
+        let hadOutputChannels = profiles[index].outputChannels != nil
+        guard hadEffects || hadOutputChannels else { return false }
+
         profiles[index].hrirPresetID = nil
         profiles[index].equalizerPresetID = nil
-        mutate(uid: deviceUID, effect: .both)
+        profiles[index].outputChannels = nil
+        let change: DeviceProfileEffect = hadEffects && hadOutputChannels
+            ? .reset
+            : (hadEffects ? .both : .routing)
+        mutate(uid: deviceUID, effect: change)
         return true
     }
 
@@ -241,6 +291,7 @@ final class DeviceProfileManager: ObservableObject {
         for target: DeviceProfileTarget,
         hrirPresetID: UUID?,
         equalizerPresetID: UUID?,
+        outputChannels: StereoOutputChannels? = nil,
         effect: DeviceProfileEffect
     ) {
         guard target.isAvailable, target.savedProfile == nil else { return }
@@ -250,18 +301,19 @@ final class DeviceProfileManager: ObservableObject {
             transport: target.transport,
             hrirPresetID: hrirPresetID,
             equalizerPresetID: equalizerPresetID,
+            outputChannels: outputChannels,
             lastSeenAt: now()
         ))
         mutate(uid: target.deviceUID, effect: effect)
     }
 
     private func mergeCurrentOutputIntoInventory(_ output: OutputDeviceDescriptor) {
-        inventoryOutputs = Self.deduplicatedSupportedDescriptors(inventoryOutputs + [output])
+        inventoryOutputs = Self.deduplicatedEligibleDescriptors(inventoryOutputs + [output])
         rebuildAvailableOutputs()
     }
 
     private func rebuildAvailableOutputs() {
-        availableOutputs = Self.deduplicatedSupportedDescriptors(inventoryOutputs + (currentOutput.map { [$0] } ?? []))
+        availableOutputs = Self.deduplicatedEligibleDescriptors(inventoryOutputs + (currentOutput.map { [$0] } ?? []))
     }
 
     private func refreshSavedMetadata(
@@ -339,9 +391,9 @@ final class DeviceProfileManager: ObservableObject {
         }
     }
 
-    private static func deduplicatedSupportedDescriptors(_ outputs: [OutputDeviceDescriptor]) -> [OutputDeviceDescriptor] {
+    private static func deduplicatedEligibleDescriptors(_ outputs: [OutputDeviceDescriptor]) -> [OutputDeviceDescriptor] {
         var result: [String: OutputDeviceDescriptor] = [:]
-        for output in outputs where output.isSupportedProfileOutput {
+        for output in outputs where output.isConfigurationEligible {
             if let existing = result[output.uid] {
                 let comparison = output.name.localizedCaseInsensitiveCompare(existing.name)
                 if comparison == .orderedAscending || (comparison == .orderedSame && output.id.value < existing.id.value) {

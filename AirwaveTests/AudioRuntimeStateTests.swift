@@ -21,6 +21,31 @@ final class AudioRuntimeStateTests: XCTestCase {
         XCTAssertFalse(runtime.isSetupHealthy)
     }
 
+    func testSourceAwareRoutingAllowsDuplicateStereoInterfaceAndRejectsInvalidSavedPair() {
+        let interface = OutputDeviceDescriptor(
+            id: .init(7), uid: "interface", name: "Interface", transport: "USB",
+            channelLabels: [1, 2, 1, 2], outputChannelCount: 4, nominalSampleRate: 48_000,
+            isVirtual: false, isAggregate: false
+        )
+        let runtime = AudioRuntimeState(currentOutput: interface, captureAccess: .verified)
+
+        XCTAssertTrue(runtime.isCurrentOutputRoutable)
+        XCTAssertTrue(runtime.isSetupHealthy)
+
+        runtime.setHealthIssue(
+            .invalidOutputRouting(reason: "Choose two distinct channels."),
+            for: .routing
+        )
+        XCTAssertFalse(runtime.isCurrentOutputRoutable)
+        XCTAssertFalse(runtime.isSetupHealthy)
+    }
+
+    func testRoutingStatusNamesRoutingOnlyOperation() {
+        XCTAssertEqual(AudioRuntimeState.Status.routing.title, "Routing audio")
+        XCTAssertTrue(AudioRuntimeState.Status.routing.detail.contains("selected output channels"))
+        XCTAssertTrue(AudioRuntimeState.Status.routing.isProcessing)
+    }
+
     func testCaptureFailureRemainsDistinctFromPermissionRequired() {
         let runtime = AudioRuntimeState()
 

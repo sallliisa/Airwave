@@ -1,26 +1,30 @@
 # Multichannel capture — known trade-offs
 
-Written 2026-08-23 when plan 022 (`plans/022-multichannel-capture.md`) was
-drafted. The maintainer chose **automatic engagement** (no settings toggle)
-for multichannel devices, accepting these consequences for now. Revisit after
-the first hardware validation session.
+Updated 2026-10-04 for configurable stereo output destinations. Airwave always
+produces two output signals. In **Settings > Registered Devices > Configure
+output…**, users can save distinct left and right destination channels for a
+physical device; the pair may be reversed or nonadjacent. Airwave uses a saved
+pair, otherwise a valid preferred stereo pair, otherwise channels 1–2. This
+does not establish which physical jack a device channel reaches.
 
-Supported multichannel input follows the shared plan-038 rule: a physical
-device with one output stream, nonempty UID, 2–16 channels, and a resolvable
-layout. Unlabeled 2/6/8/12 use standard order; unlabeled 4-channel uses a
-generic quad fallback whose channel identity is not verified (not a per-device
-or BOOM routing fix); other widths need complete usable labels. Unknown,
-mismatched, or duplicate stereo-pair labels are unsupported. Capture writes
-binaural stereo to device channels 1–2. No channel-identity claim is made for
-untested hardware; hardware identity stays a plan-043 check.
+Capture remains automatic and separate from destination selection. A normal
+stereo source is captured as stereo. Four-channel devices with duplicate
+stereo-pair labels or no usable labels use a preferred stereo source pair or
+channels 1–2; channel count alone does not identify quad headphones. Surround
+input requires a resolvable source layout (standard order is used for
+unlabeled 6/8/12-channel layouts). Unknown or mismatched surround layouts can
+remain unsupported. The result is downmixed to two output signals, and LFE
+content is omitted. Virtual and aggregate outputs remain unsupported. Actual
+BOOM jack/source identity and listening behavior have not been validated.
 
 ## 1. Surround speakers go silent while Airwave runs on a multichannel device
 
-Airwave's replacement-output architecture mutes native playback and writes
-processed audio back to device channels 1–2. On an AVR/HDMI receiver, channels
-3+ (surrounds) receive nothing while Airwave is engaged: the user plugged in
-headphones for spatial audio but their speaker rig goes quiet rather than
-passthrough.
+Airwave's replacement-output architecture mutes native playback and writes its
+stereo signal only to the selected left and right device channels. The other
+device channels receive no Airwave signal while the route is active; Airwave
+does not provide multichannel passthrough. The chosen pair can be any two
+distinct destinations, so the exact silent channels depend on the device
+assignment.
 
 - Why accepted: auto-engagement keeps Airwave set-and-forget; a toggle was
   judged as UI + persisted-state scope not justified before hardware
@@ -48,15 +52,17 @@ content.
 
 ## 3. Count-based layout fallback can misorder exotic devices
 
-When `kAudioDevicePropertyChannelLayout` labels are missing/unrecognized, the
-layout comes from the plan-038 fallback (`InputLayout.detect(channelCount:)`
-for unlabeled 2/6/8/12; generic quad fallback for unlabeled 4), which assumes
-standard
-WAV/Media order. Devices whose stream order differs produce mirrored/reordered
-spatialization (front/back swap, side/rear swap). The 4-channel fallback is not
-verified channel identity.
+When `kAudioDevicePropertyChannelLayout` labels are missing for a supported
+surround input, the shared fallback assumes standard WAV/Media order for
+6/8/12-channel layouts. Devices whose stream order differs can produce
+mirrored or reordered spatialization (front/back swap, side/rear swap).
+Four-channel unlabeled or duplicate-stereo endpoints use a stereo source pair,
+not a count-based quad interpretation. Airwave's configurable output channels
+select destinations independently of this source-layout decision.
 
 - Mitigations already in plan: prefer channel labels when present; manual
-  checklist step 2 captures logged labels on misorder.
+  checklist step 2 captures logged labels on misorder. Actual BOOM jack and
+  source mapping, microphone-prefix behavior, multistream behavior, and
+  listening checks remain NOT RUN without hardware evidence.
 - Trigger to revisit: any misorder report → consider a per-device layout
   override (deferred follow-up).

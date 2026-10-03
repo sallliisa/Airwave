@@ -20,7 +20,8 @@ nonisolated enum AudioRuntimeInvalidation { case spatial, equalizerTarget, outpu
 
 @MainActor
 protocol OutputEffectProfilePreparing: AnyObject {
-    func prepare(output: OutputDeviceDescriptor, completion: @escaping (AudioRuntimeEffectReadiness) -> Void)
+    func savedOutputChannels(for output: OutputDeviceDescriptor) -> StereoOutputChannels?
+    func prepare(routing: ResolvedOutputRouting, completion: @escaping (AudioRuntimeEffectReadiness) -> Void)
     func cancelPreparation()
     func outputBecameUnsupportedOrUnavailable()
 }
@@ -93,6 +94,7 @@ final class AudioRuntimeController {
     private var retryAttempt = 0
     private var generation = 0
     private var effectReadiness = AudioRuntimeEffectReadiness(spatialReady: false, equalizerDefinition: nil)
+    private var preparedEffectKinds: Set<AudioEffectKind>?
     private var captureVerified = false
     private var captureProbeRequested = false
     private var explicitCaptureTest = false
@@ -103,7 +105,16 @@ final class AudioRuntimeController {
     private var terminated = false
     private weak var profilePreparer: (any OutputEffectProfilePreparing)?
     private var desiredOutput: OutputDeviceDescriptor?
+    private var desiredRouting: ResolvedOutputRouting?
     private var hasPreparedDesiredOutput = false
+
+    private var hasExplicitOutputRouting: Bool { desiredRouting?.isExplicitAssignment == true }
+    private var needsAudioPipeline: Bool {
+        effectReadiness.hasSelectedEffect || hasExplicitOutputRouting || captureProbeRequested
+    }
+    private var hasRunnableEffects: Bool {
+        preparedEffectKinds.map { !$0.isEmpty } ?? effectReadiness.hasSelectedEffect
+    }
 
     init(
         state: AudioRuntimeState,
@@ -162,8 +173,10 @@ final class AudioRuntimeController {
             handleLiveEffectUpdate(result)
             return
         }
+        preparedEffectKinds = nil
         guard stopForInvalidation() else { return }
-        captureProbeRequested = effectReadiness.hasSelectedEffect
+        captureProbeRequested = explicitCaptureTest
+            || (!captureVerified && (effectReadiness.hasSelectedEffect || hasExplicitOutputRouting))
         reconcile()
     }
 
@@ -206,6 +219,24 @@ final class AudioRuntimeController {
             equalizerDefinition: effectReadiness.equalizerDefinition
         )
         let isPipelineLive = canUpdateSpatialLive
+        if readiness != effectReadiness,
+           !readiness.hasSelectedEffect,
+           hasExplicitOutputRouting {
+            effectReadiness = readiness
+            preparedEffectKinds = []
+            captureProbeRequested = false
+            state.setHealthIssue(nil, for: .spatial)
+            state.setHealthIssue(nil, for: .pipeline)
+            if isPipelineLive {
+                state.publish(.routing, output: state.currentOutput, captureAccess: .verified)
+                scheduleStabilityReset(for: generation)
+                return true
+            }
+            guard stopForInvalidation() else { return false }
+            captureProbeRequested = !captureVerified
+            reconcile()
+            return false
+        }
         guard canUpdateSpatialLive, readiness.hasSelectedEffect else {
             AirwaveLog.audio.info(
                 "updateSpatialLive refused (isReady \(isReady, privacy: .public), pipelineLive \(isPipelineLive, privacy: .public), effectRemains \(readiness.hasSelectedEffect, privacy: .public))."
@@ -217,6 +248,7 @@ final class AudioRuntimeController {
             // the tap can never unmute native audio into program audio.
             guard readiness != effectReadiness else { return false }
             effectReadiness = readiness
+            preparedEffectKinds = nil
             let stopped = stopForInvalidation(allowingPassthroughHold: true)
             if stopped {
                 captureProbeRequested = false
@@ -225,6 +257,7 @@ final class AudioRuntimeController {
             return false
         }
         effectReadiness = readiness
+        preparedEffectKinds = nil
         state.setHealthIssue(nil, for: .spatial)
         state.setHealthIssue(nil, for: .pipeline)
         AirwaveLog.audio.info(
@@ -268,7 +301,8 @@ final class AudioRuntimeController {
                 scheduleCleanupRetry(error)
                 return
             }
-            captureProbeRequested = explicitCaptureTest || (effectReadiness.hasSelectedEffect && !captureVerified)
+            captureProbeRequested = explicitCaptureTest
+                || ((effectReadiness.hasSelectedEffect || hasExplicitOutputRouting) && !captureVerified)
             reconcile()
             return
         }
@@ -277,7 +311,8 @@ final class AudioRuntimeController {
         // Rebuilding the effect graph does not revoke capture capability. Keep
         // verified state so HRIR swaps restart processing directly instead of
         // waiting for another unrelated passive signal.
-        captureProbeRequested = explicitCaptureTest || (effectReadiness.hasSelectedEffect && !captureVerified)
+        captureProbeRequested = explicitCaptureTest
+            || ((effectReadiness.hasSelectedEffect || hasExplicitOutputRouting) && !captureVerified)
         reconcile()
     }
 
@@ -292,17 +327,52 @@ final class AudioRuntimeController {
     }
 
     func presetActivationFailed(_ message: String) {
-        effectReadiness = AudioRuntimeEffectReadiness(spatialReady: false, equalizerDefinition: nil, spatialError: message)
-        guard stopForInvalidation() else { return }
+        let retainsRouting = hasExplicitOutputRouting
+        let equalizerDefinition = retainsRouting ? effectReadiness.equalizerDefinition : nil
+        effectReadiness = AudioRuntimeEffectReadiness(
+            spatialReady: false,
+            equalizerDefinition: equalizerDefinition,
+            spatialError: message
+        )
         state.setHealthIssue(.spatialPresetFailed(reason: message), for: .spatial)
-        state.publish(.nativePassthrough(reason: message), output: state.currentOutput)
+
+        guard retainsRouting else {
+            preparedEffectKinds = nil
+            guard stopForInvalidation() else { return }
+            state.publish(.nativePassthrough(reason: message), output: state.currentOutput)
+            return
+        }
+
+        // An in-flight passive probe is still required to establish capture
+        // access. Keep its owned pipeline alive; promotion will prepare the
+        // now-dry graph from this same route snapshot.
+        if !captureVerified, pipeline != nil, state.status == .starting { return }
+
+        // On an already verified route, remove any failed spatial renderer
+        // while keeping EQ (if selected) in the live graph. The pipeline is
+        // already the owner of the same route, so no new IO candidate is
+        // created or permitted around an existing one.
+        if captureVerified, pipeline != nil, state.status.isProcessing {
+            if let effectGraph {
+                handleLiveEffectUpdate(effectGraph.updateEqualizer(definition: equalizerDefinition))
+            } else {
+                preparedEffectKinds = []
+                state.setHealthIssue(nil, for: .pipeline)
+                state.publish(.routing, output: state.currentOutput, captureAccess: .verified)
+            }
+            return
+        }
+
+        // If the route is not live, rebuild through the normal generation,
+        // permission-verification, and teardown path. Keep the UID assignment.
+        reprepareCurrentOutput()
     }
 
     func retryNow() {
         retryAttempt = 0
         retryToken?.cancel()
         retryToken = nil
-        captureProbeRequested = explicitCaptureTest || effectReadiness.hasSelectedEffect
+        captureProbeRequested = explicitCaptureTest || effectReadiness.hasSelectedEffect || hasExplicitOutputRouting
         if captureProbeRequested { state.setCaptureAccess(.checking) }
         reconcile()
     }
@@ -349,14 +419,18 @@ final class AudioRuntimeController {
         guard stopForInvalidation() else { return }
         explicitCaptureTest = false
         captureProbeRequested = false
-        state.publish(.nativePassthrough(reason: "Sleeping; native audio remains active."), captureAccess: .unverified)
+        state.publish(
+            .nativePassthrough(reason: "Sleeping; native audio remains active."),
+            output: desiredOutput,
+            captureAccess: .unverified
+        )
     }
 
     func didWake() {
         guard !terminated else { return }
         sleeping = false
         captureVerified = false
-        captureProbeRequested = effectReadiness.hasSelectedEffect
+        captureProbeRequested = effectReadiness.hasSelectedEffect || hasExplicitOutputRouting
         state.setCaptureAccess(.unverified)
         reconcile()
     }
@@ -368,6 +442,8 @@ final class AudioRuntimeController {
         stimulusPlayer.stop()
         platform.stopObservingDefaultOutput()
         _ = stopForInvalidation()
+        desiredRouting = nil
+        state.setCurrentRouting(nil)
         state.publish(.unavailable("Airwave stopped"), captureAccess: .unverified)
     }
 
@@ -383,9 +459,11 @@ final class AudioRuntimeController {
         // old filters attached to a new rate.
         if let output, let current = state.currentOutput, output.id == current.id,
            !output.hasProcessingFormatChange(from: current),
-           pipeline != nil, state.status == .processing { return }
-        if let output, output == state.currentOutput, pipeline != nil, state.status == .processing { return }
+           pipeline != nil, state.status.isProcessing { return }
+        if let output, output == state.currentOutput, pipeline != nil, state.status.isProcessing { return }
         desiredOutput = output
+        desiredRouting = nil
+        state.setCurrentRouting(nil)
         hasPreparedDesiredOutput = false
         guard stopForInvalidation() else { return }
         captureVerified = false
@@ -415,11 +493,11 @@ final class AudioRuntimeController {
     private func reconcile() {
         guard launched, !sleeping, !terminated else { return }
         if let desiredOutput, hasPreparedDesiredOutput {
-            guard effectReadiness.hasSelectedEffect || captureProbeRequested else {
+            guard needsAudioPipeline, let routing = desiredRouting else {
                 publishInactive(output: desiredOutput)
                 return
             }
-            start(on: desiredOutput)
+            start(on: routing)
             return
         }
         guard profilePreparer != nil || effectReadiness.hasSelectedEffect || captureProbeRequested else {
@@ -432,31 +510,46 @@ final class AudioRuntimeController {
     }
 
     private func transition(to output: OutputDeviceDescriptor) {
-        guard validate(output) else { return }
         desiredOutput = output
+        guard let routing = resolveRouting(output) else { return }
+        if !captureVerified,
+           effectReadiness.hasSelectedEffect || routing.isExplicitAssignment {
+            captureProbeRequested = true
+        }
         hasPreparedDesiredOutput = false
         guard let profilePreparer else {
             hasPreparedDesiredOutput = true
-            start(on: output)
+            guard needsAudioPipeline else {
+                publishInactive(output: output)
+                return
+            }
+            start(on: routing)
             return
         }
         let preparationGeneration = generation
         state.publish(.starting, output: output)
-        profilePreparer.prepare(output: output) { [weak self] readiness in
+        profilePreparer.prepare(routing: routing) { [weak self] readiness in
             guard let self, preparationGeneration == self.generation,
-                  self.desiredOutput?.uid == output.uid, !self.sleeping, !self.terminated else { return }
+                  self.desiredOutput?.uid == output.uid,
+                  self.desiredRouting == routing,
+                  !self.sleeping, !self.terminated else { return }
             self.effectReadiness = readiness
             self.state.setHealthIssue(
                 readiness.spatialError.map(RuntimeHealthIssue.spatialPresetFailed(reason:)),
                 for: .spatial
             )
             self.hasPreparedDesiredOutput = true
-            if readiness.hasSelectedEffect { self.captureProbeRequested = !self.captureVerified }
-            guard readiness.hasSelectedEffect || self.captureProbeRequested else {
+            self.preparedEffectKinds = nil
+            if !self.captureVerified {
+                self.captureProbeRequested = self.explicitCaptureTest
+                    || readiness.hasSelectedEffect
+                    || routing.isExplicitAssignment
+            }
+            guard self.needsAudioPipeline else {
                 self.publishInactive(output: output)
                 return
             }
-            self.start(on: output)
+            self.start(on: routing)
         }
     }
 
@@ -468,8 +561,9 @@ final class AudioRuntimeController {
         }
     }
 
-    private func start(on output: OutputDeviceDescriptor) {
-        guard validate(output) else { return }
+    private func start(on routing: ResolvedOutputRouting) {
+        guard desiredRouting == routing else { return }
+        let output = routing.device
         let purpose: AudioPipelinePurpose = captureProbeRequested && !captureVerified
             ? .verification(includeOwnProcess: explicitCaptureTest)
             : .processing
@@ -480,14 +574,18 @@ final class AudioRuntimeController {
 
         let preparation: AudioEffectPreparationResult?
         if let effectGraph {
-            let result = effectGraph.prepare(for: output, equalizerDefinition: effectReadiness.equalizerDefinition)
+            let result = effectGraph.prepare(for: routing, equalizerDefinition: effectReadiness.equalizerDefinition)
+            preparedEffectKinds = result.runnableEffects
             publishEqualizerIssue(result.equalizerWarning)
-            guard purpose != .processing || !result.noEffectCanRun else {
+            guard purpose != .processing || !result.noEffectCanRun || routing.isExplicitAssignment else {
                 state.publish(.nativePassthrough(reason: result.equalizerWarning?.errorDescription ?? "No compatible audio effect is available for this output."), output: output)
                 return
             }
             preparation = result
-        } else { preparation = nil }
+        } else {
+            preparedEffectKinds = nil
+            preparation = nil
+        }
 
         let currentGeneration = generation
         let candidate = pipelineFactory()
@@ -502,7 +600,7 @@ final class AudioRuntimeController {
         }
         state.publish(.starting, output: output, warning: preparation?.equalizerWarning?.errorDescription, captureAccess: captureAccess)
         do {
-            try candidate.start(on: output, purpose: purpose) { [weak self] event in
+            try candidate.start(on: routing, purpose: purpose) { [weak self] event in
                 guard let self else { return }
                 let work = { @MainActor in
                     self.handleCaptureVerification(
@@ -510,7 +608,7 @@ final class AudioRuntimeController {
                         purpose: purpose,
                         generation: currentGeneration,
                         pipelineIdentity: candidateIdentity,
-                        output: output,
+                        routing: routing,
                         warning: preparation?.equalizerWarning?.errorDescription
                     )
                 }
@@ -524,7 +622,12 @@ final class AudioRuntimeController {
                 if explicitCaptureTest { scheduleStimulus(for: currentGeneration) }
             } else {
                 clearCaptureAndPipelineIssuesAfterSuccess()
-                state.publish(.processing, output: output, warning: preparation?.equalizerWarning?.errorDescription, captureAccess: .verified)
+                state.publish(
+                    hasRunnableEffects ? .processing : .routing,
+                    output: output,
+                    warning: preparation?.equalizerWarning?.errorDescription,
+                    captureAccess: .verified
+                )
                 scheduleStabilityReset(for: currentGeneration)
             }
         } catch {
@@ -544,7 +647,7 @@ final class AudioRuntimeController {
             handleFailure(
                 error,
                 output: output,
-                shouldScheduleRetry: !explicitCaptureTest && effectReadiness.hasSelectedEffect
+                shouldScheduleRetry: !explicitCaptureTest && needsAudioPipeline
             )
         }
     }
@@ -582,12 +685,14 @@ final class AudioRuntimeController {
         purpose: AudioPipelinePurpose,
         generation eventGeneration: Int,
         pipelineIdentity eventPipelineIdentity: ObjectIdentifier,
-        output: OutputDeviceDescriptor,
+        routing: ResolvedOutputRouting,
         warning: String?
     ) {
         guard eventGeneration == generation,
+              desiredRouting == routing,
               let currentPipeline = pipeline,
               ObjectIdentifier(currentPipeline) == eventPipelineIdentity else { return }
+        let output = routing.device
         switch event {
         case .signalDetected:
             guard case .verification = purpose, !captureVerified else { return }
@@ -606,7 +711,7 @@ final class AudioRuntimeController {
             pipeline = nil
             clearCaptureAndPipelineIssuesAfterSuccess()
             state.setCaptureAccess(.verified)
-            if effectReadiness.hasSelectedEffect { start(on: output) }
+            if needsAudioPipeline { start(on: routing) }
             else { state.publish(.inactive, output: output, captureAccess: .verified) }
         case .permissionDenied:
             handleFailure(AudioRuntimeError.permissionDenied, output: output)
@@ -614,7 +719,7 @@ final class AudioRuntimeController {
             handleFailure(
                 AudioRuntimeError.ioStartFailed("Render system audio failed (OSStatus \(status))"),
                 output: output,
-                shouldScheduleRetry: !explicitCaptureTest && effectReadiness.hasSelectedEffect
+                shouldScheduleRetry: !explicitCaptureTest && needsAudioPipeline
             )
         }
     }
@@ -664,14 +769,30 @@ final class AudioRuntimeController {
         }
     }
 
-    private func validate(_ output: OutputDeviceDescriptor) -> Bool {
-        guard let reason = output.unsupportedProfileReason else {
+    private func resolveRouting(_ output: OutputDeviceDescriptor) -> ResolvedOutputRouting? {
+        let savedChannels = profilePreparer?.savedOutputChannels(for: output)
+        switch OutputRoutingResolver.resolve(output: output, channels: savedChannels) {
+        case .resolved(let routing):
+            desiredRouting = routing
+            state.setCurrentRouting(routing)
             state.setHealthIssue(nil, for: .output)
-            return true
+            state.setHealthIssue(nil, for: .routing)
+            return routing
+        case .unsupported(let reason):
+            desiredRouting = nil
+            state.setCurrentRouting(nil)
+            if output.isConfigurationEligible,
+               let savedChannels,
+               !OutputRoutingResolver.isValidDestination(savedChannels, output: output) {
+                state.setHealthIssue(nil, for: .output)
+                state.setHealthIssue(.invalidOutputRouting(reason: reason), for: .routing)
+            } else {
+                state.setHealthIssue(nil, for: .routing)
+                state.setHealthIssue(.unsupportedOutput(reason: reason), for: .output)
+            }
+            state.publish(.nativePassthrough(reason: reason), output: output, captureAccess: .unverified)
+            return nil
         }
-        state.setHealthIssue(.unsupportedOutput(reason: reason), for: .output)
-        state.publish(.nativePassthrough(reason: reason), output: output, captureAccess: .unverified)
-        return false
     }
 
     /// True when the pending readiness leaves no effect running at all
@@ -700,7 +821,7 @@ final class AudioRuntimeController {
         stabilityToken?.cancel(); stabilityToken = nil
         guard let pipeline else { return true }
         do {
-            if allowingPassthroughHold, noEffectRemainsAfterUpdate {
+            if allowingPassthroughHold, noEffectRemainsAfterUpdate, !hasExplicitOutputRouting {
                 try pipeline.stop(holdingPassthroughFade: true) { [weak self] error in
                     guard let self else { return }
                     MainActor.assumeIsolated {
@@ -762,14 +883,16 @@ final class AudioRuntimeController {
     }
 
     private func scheduleRetry(reason: String, output: OutputDeviceDescriptor?) {
-        guard retryToken == nil, effectReadiness.hasSelectedEffect, !sleeping, !terminated else { return }
+        guard retryToken == nil, needsAudioPipeline, !sleeping, !terminated else { return }
         let delay = retryDelays[min(retryAttempt, retryDelays.count - 1)]
         retryAttempt += 1
         let retryGeneration = generation
         state.publish(.recovering(reason: "\(reason) Retrying in \(Int(delay))s."), output: output)
         retryToken = scheduler.schedule(after: delay) { [weak self] in
             guard let self, self.generation == retryGeneration else { return }
-            self.retryToken = nil; self.captureProbeRequested = true; self.reconcile()
+            self.retryToken = nil
+            self.captureProbeRequested = true
+            self.reconcile()
         }
     }
 
@@ -780,7 +903,7 @@ final class AudioRuntimeController {
         let retryGeneration = generation
         let reason = "Releasing audio resources. Retrying in \(Int(delay))s."
         state.setHealthIssue(.resourceRecovery(reason: reason), for: .recovery)
-        state.publish(.recovering(reason: reason))
+        state.publish(.recovering(reason: reason), output: desiredOutput)
         AirwaveLog.audio.info(
             "Cleanup retry scheduled in \(delay)s (generation \(retryGeneration)): \(reason, privacy: .public)"
         )
@@ -788,7 +911,7 @@ final class AudioRuntimeController {
             guard let self, self.generation == retryGeneration else { return }
             self.retryToken = nil
             guard self.stopForInvalidation() else { return }
-            if self.effectReadiness.hasSelectedEffect && !self.explicitCaptureTest {
+            if (self.effectReadiness.hasSelectedEffect || self.hasExplicitOutputRouting) && !self.explicitCaptureTest {
                 self.captureProbeRequested = true
             }
             AirwaveLog.audio.info(
@@ -807,8 +930,15 @@ final class AudioRuntimeController {
     }
 
     private func handleLiveEffectUpdate(_ result: AudioEffectPreparationResult) {
+        preparedEffectKinds = result.runnableEffects
         publishEqualizerIssue(result.equalizerWarning)
         if result.noEffectCanRun, !effectReadiness.spatialReady {
+            if hasExplicitOutputRouting {
+                state.setHealthIssue(nil, for: .pipeline)
+                state.publish(.routing, output: state.currentOutput, captureAccess: .verified)
+                scheduleStabilityReset(for: generation)
+                return
+            }
             if stopForInvalidation(allowingPassthroughHold: true) {
                 captureProbeRequested = false
                 state.publish(.inactive, output: state.currentOutput)

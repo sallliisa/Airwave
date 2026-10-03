@@ -139,7 +139,7 @@ struct SettingsView: View {
         case .equalizer:
             "Import and choose an EqualizerAPO-format preset."
         case .devices:
-            "Review, reset, or forget registered devices."
+            "Configure stereo output channels or manage device profiles."
         case .application:
             "Manage startup, updates, and app information."
         }
@@ -190,7 +190,7 @@ struct SettingsView: View {
                 AirwaveNavigationCard(
                     systemImage: "headphones",
                     title: "Registered Devices",
-                    subtitle: "Review, reset, or forget registered devices."
+                    subtitle: "Configure stereo output channels or manage device profiles."
                 ) {
                     page.wrappedValue = .devices
                 }

@@ -6,23 +6,33 @@ signed-update gates below stay BLOCKED/NOT RUN. Raw logs, recordings, and
 traces belong under `build/`; use `build/Plan043-manual.md` as the session
 log with links to those artifacts.
 
-Support policy (from plan 038, final authority): physical device, one output
-stream, nonempty UID, 2–16 channels, AND a resolvable layout. Unlabeled
-2/6/8/12 use standard order; unlabeled 4 uses a generic quad fallback
-(channel identity not verified; not a per-device or BOOM routing fix).
-Other widths need complete usable labels. Unknown, mismatched, or duplicate
-explicit stereo-pair labels are unsupported. Capture writes binaural stereo
-to channels 1–2; LFE content is omitted from the fold-down. Virtual and
-aggregate outputs stay rejected. No channel-identity claim for untested
-hardware; no BOOM pair routing.
+Airwave's output is always stereo. A live physical device can store two
+distinct destination channels from **Settings > Registered Devices >
+Configure output…**; the saved pair may be reversed or nonadjacent. Without a
+saved pair, Airwave uses a valid preferred stereo pair or channels 1–2. Output
+selection remains separate from the automatically resolved source feed.
+The channel editor uses a native popover; Save applies both destinations
+together, while outside-click or Escape dismissal retains the in-memory draft
+and Cancel discards it. Manual popover acceptance remains NOT RUN.
+
+Two-channel and ambiguous four-channel duplicate-stereo or unlabeled sources
+use a preferred stereo source pair or channels 1–2. Surround input still needs
+a resolvable source layout; standard-order fallback applies to unlabeled
+6/8/12-channel layouts. LFE content is omitted from the stereo fold-down.
+Virtual and aggregate outputs remain unsupported. Actual BOOM jack/source
+identity, microphone-prefix behavior, multistream behavior, and listening
+acceptance remain NOT RUN; software tests do not establish physical channel
+identity.
 
 ## Step 1 — software guidance (DONE per plan evidence)
 
 - `OnboardingViewModel.recommendedVoluntaryEntryStep` uses the shared
-  descriptor support result (`isSupportedProfileOutput`); no second width
-  check; permission and setup ordering kept.
-- `RuntimePresentations` and `README.md` distinguish multichannel input
-  capture from binaural output on channels 1–2.
+  runtime routability result (`AudioRuntimeState.isCurrentOutputRoutable`),
+  which delegates to the source-aware `OutputRoutingResolver`; there is no
+  second output-width check, and permission and setup ordering are kept.
+- `RuntimePresentations` and `README.md` distinguish automatic source capture
+  from two-channel output destinations; explicit destinations are configured
+  per device in Registered Devices.
 - `ProductSurfaceTests` covers stereo, resolved multichannel, unresolved
   layout, multi-stream, virtual, aggregate, and narrow cases as
   routing/presentation behavior.
@@ -38,18 +48,19 @@ channels where support is claimed and equipment exists. Missing equipment is
 NOT RUN and blocks that claim. Cover HRIR/EQ/both/None and reset
 transitions; A→B→A during activation; same-ID file replacement; same-device
 rate/layout change; sleep/wake; disconnect/reconnect; restoration of native
-channels 3+ after teardown. Low output volume; stop a case on unexpected
-full-scale output, missing native restoration, or unsafe teardown.
+routing on all device channels after teardown. Use low output volume; stop a
+case on unexpected full-scale output, missing native restoration, or unsafe
+teardown.
 
 | Case ID | Device/transport/width/rate | Stimulus + steps | Expected | Observed | Evidence |
 |---|---|---|---|---|---|
-| MC-HW-01 | NOT RUN | One signal per channel on stereo headphones | Binaural stereo on ch 1–2 | NOT RUN | — |
-| MC-HW-02 | NOT RUN | One signal per channel on physical 6ch | Resolved 5.1 maps to correct ears | NOT RUN | — |
-| MC-HW-03 | NOT RUN | One signal per channel on physical 8ch | Resolved 7.1 maps to correct ears | NOT RUN | — |
+| MC-HW-01 | NOT RUN | One signal per channel on stereo headphones | Stereo on the saved/preferred pair or fallback ch 1–2 | NOT RUN | — |
+| MC-HW-02 | NOT RUN | One signal per channel on physical 6ch | Resolved 5.1 source maps to stereo on the selected pair | NOT RUN | — |
+| MC-HW-03 | NOT RUN | One signal per channel on physical 8ch | Resolved 7.1 source maps to stereo on the selected pair | NOT RUN | — |
 | MC-HW-04 | NOT RUN | 12/16ch where claimed + equipment | Correct mapping or explicit NOT RUN | NOT RUN | — |
 | MC-HW-05 | NOT RUN | HRIR/EQ/both/None + reset transitions | Audible output matches selection | NOT RUN | — |
 | MC-HW-06 | NOT RUN | A→B→A, same-ID replacement, rate/layout change, sleep/wake, disconnect/reconnect | No failure, restoration correct | NOT RUN | — |
-| MC-HW-07 | NOT RUN | Teardown on multichannel device | Native channels 3+ restored | NOT RUN | — |
+| MC-HW-07 | NOT RUN | Teardown on multichannel device | Native routing restored on all device channels | NOT RUN | — |
 
 ## Step 3 — long-duration ownership and CPU (BLOCKED, NOT RUN)
 

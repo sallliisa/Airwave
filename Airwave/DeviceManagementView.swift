@@ -13,6 +13,7 @@ nonisolated struct DeviceManagementRow: Equatable, Identifiable {
     let status: String
     let hrirName: String
     let equalizerName: String
+    let canConfigureOutput: Bool
     let canReset: Bool
     let canForget: Bool
 }
@@ -73,22 +74,26 @@ final class DeviceManagementCoordinator: ObservableObject {
     }
 
     private func makeRows() -> [DeviceManagementRow] {
-        profileManager.sortedProfiles.map { profile in
-            let hrirName = profile.hrirPresetID.flatMap { id in
+        profileManager.targets.map { target in
+            let profile = target.savedProfile
+            let hrirName = profile?.hrirPresetID.flatMap { id in
                 hrirManager.presets.first { $0.id == id }?.name
             } ?? "None"
-            let equalizerName = profile.equalizerPresetID.flatMap { id in
+            let equalizerName = profile?.equalizerPresetID.flatMap { id in
                 equalizerManager.presets.first { $0.id == id }?.displayName
             } ?? "None"
             return DeviceManagementRow(
-                id: profile.deviceUID,
-                deviceName: profile.deviceName,
-                transport: displayTransport(profile.transport),
-                status: profile.deviceUID == profileManager.currentDeviceUID ? "Current" : "Not Current",
+                id: target.deviceUID,
+                deviceName: target.deviceName,
+                transport: displayTransport(target.transport),
+                status: target.isCurrent ? "Current" : (target.isAvailable ? "Connected" : "Not Connected"),
                 hrirName: hrirName,
                 equalizerName: equalizerName,
-                canReset: profile.hrirPresetID != nil || profile.equalizerPresetID != nil,
-                canForget: profile.deviceUID != profileManager.currentDeviceUID
+                canConfigureOutput: target.isAvailable,
+                canReset: profile?.hrirPresetID != nil
+                    || profile?.equalizerPresetID != nil
+                    || profile?.outputChannels != nil,
+                canForget: profile != nil && target.deviceUID != profileManager.currentDeviceUID
             )
         }
     }
@@ -116,7 +121,7 @@ final class DeviceManagementCoordinator: ObservableObject {
             deviceUID: row.id,
             deviceName: row.deviceName,
             title: "Reset " + row.deviceName + " profile?",
-            message: "Both HRIR and EQ will become None.",
+            message: "HRIR, EQ, and the saved output channel assignment will be cleared.",
             destructiveButtonTitle: "Reset Profile"
         )
     }
@@ -128,7 +133,7 @@ final class DeviceManagementCoordinator: ObservableObject {
             deviceUID: row.id,
             deviceName: row.deviceName,
             title: "Forget " + row.deviceName + "?",
-            message: "If this device remains available, its profile can be recreated from the device selector.",
+            message: "A connected device stays listed. A profile is created when you save an output assignment or choose a preset.",
             destructiveButtonTitle: "Forget Device"
         )
     }
@@ -154,6 +159,7 @@ final class DeviceManagementCoordinator: ObservableObject {
 
 struct DeviceManagementView: View {
     @StateObject private var coordinator: DeviceManagementCoordinator
+    @StateObject private var outputPresentation: ConfigureOutputPopoverCoordinator
     @State private var selectedDeviceUID: String?
 
     init(
@@ -161,19 +167,49 @@ struct DeviceManagementView: View {
         hrirManager: HRIRManager,
         equalizerManager: EqualizerManager
     ) {
+        self.init(
+            profileManager: profileManager,
+            hrirManager: hrirManager,
+            equalizerManager: equalizerManager,
+            makeOutputEditor: nil
+        )
+    }
+
+    private init(
+        profileManager: DeviceProfileManager,
+        hrirManager: HRIRManager,
+        equalizerManager: EqualizerManager,
+        makeOutputEditor: ConfigureOutputPopoverCoordinator.EditorFactory?
+    ) {
         _coordinator = StateObject(wrappedValue: DeviceManagementCoordinator(
             profileManager: profileManager,
             hrirManager: hrirManager,
             equalizerManager: equalizerManager
         ))
+        _outputPresentation = StateObject(wrappedValue: ConfigureOutputPopoverCoordinator(
+            profiles: profileManager,
+            makeEditor: makeOutputEditor
+        ))
     }
 
     @MainActor
     init() {
+        let viewModel = MenuBarViewModel.shared
+        let profiles = viewModel.profileManager
         self.init(
-            profileManager: .shared,
-            hrirManager: .shared,
-            equalizerManager: .shared
+            profileManager: profiles,
+            hrirManager: viewModel.hrirManager,
+            equalizerManager: .shared,
+            makeOutputEditor: { [weak viewModel] deviceUID, deviceName in
+                ConfigureOutputCoordinator(
+                    deviceUID: deviceUID,
+                    deviceName: deviceName,
+                    profiles: profiles,
+                    saveOperation: { [weak viewModel] channels, uid in
+                        viewModel?.setOutputChannels(channels, for: uid) ?? false
+                    }
+                )
+            }
         )
     }
 
@@ -212,7 +248,9 @@ struct DeviceManagementView: View {
             if let selectedDeviceUID, !rows.contains(where: { $0.id == selectedDeviceUID }) {
                 self.selectedDeviceUID = nil
             }
+            outputPresentation.pruneDrafts(retaining: Set(rows.map(\.id)))
         }
+        .onDisappear { outputPresentation.discardAllDrafts() }
         .confirmationDialog(
             coordinator.pendingConfirmation?.title ?? "",
             isPresented: Binding(
@@ -224,7 +262,9 @@ struct DeviceManagementView: View {
         ) {
             if let confirmation = coordinator.pendingConfirmation {
                 Button(confirmation.destructiveButtonTitle, role: .destructive) {
-                    coordinator.confirmPendingAction()
+                    if coordinator.confirmPendingAction() {
+                        outputPresentation.discardDraft(for: confirmation.deviceUID)
+                    }
                 }
             }
             Button("Cancel", role: .cancel, action: coordinator.cancelConfirmation)
@@ -240,9 +280,9 @@ struct DeviceManagementView: View {
             Image(systemName: "headphones")
                 .font(.system(size: 24))
                 .foregroundStyle(.secondary)
-            Text("No remembered devices")
+            Text("No physical outputs available")
                 .font(.system(size: 13, weight: .semibold))
-            Text("Supported stereo outputs will appear here after Airwave sees them.")
+            Text("Connected physical outputs and devices Airwave remembers will appear here.")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -251,7 +291,7 @@ struct DeviceManagementView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .padding(AirwaveLayout.cardPadding)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("No remembered devices. Supported stereo outputs will appear here after Airwave sees them.")
+        .accessibilityLabel("No physical outputs available. Connected physical outputs and devices Airwave remembers will appear here.")
     }
 
     private func deviceRow(_ row: DeviceManagementRow) -> some View {
@@ -300,6 +340,43 @@ struct DeviceManagementView: View {
 
     private var actionFooter: some View {
         HStack(spacing: 8) {
+            Button("Configure output…") {
+                guard let selectedRow else { return }
+                outputPresentation.present(deviceUID: selectedRow.id, deviceName: selectedRow.deviceName)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(selectedRow?.canConfigureOutput != true)
+            .accessibilityLabel(
+                selectedRow.map { "Configure output for \($0.deviceName)" } ?? "Configure output"
+            )
+            .popover(isPresented: Binding(
+                get: { outputPresentation.presentedDeviceUID != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        outputPresentation.dismissTransiently()
+                    }
+                }
+            )) {
+                if let editor = outputPresentation.presentedEditor {
+                    ConfigureOutputView(
+                        coordinator: editor,
+                        onCancel: {
+                            outputPresentation.cancelPresentedDraft(for: editor.deviceUID)
+                        },
+                        onSave: {
+                            outputPresentation.savePresentedDraft(for: editor.deviceUID)
+                        }
+                    )
+                }
+            }
+            if let selectedRow, !selectedRow.canConfigureOutput {
+                Text("Reconnect device to configure output channels")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
             Spacer(minLength: 0)
             Button("Reset Profile") {
                 if let selectedDeviceUID {

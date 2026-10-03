@@ -77,7 +77,7 @@ struct CaptureFailureGuidance: Equatable {
                 reason: reason,
                 suggestions: [
                     "Enable Airwave under Privacy & Security → System Audio Capture.",
-                    "Use a supported physical output (one stream, resolvable layout); virtual and aggregate outputs are unsupported."
+                    "Use a physical output with a resolvable source feed; virtual and aggregate outputs are unsupported."
                 ]
             )
         case .unverified, .checking, .verified:
@@ -162,8 +162,7 @@ final class OnboardingViewModel: ObservableObject {
         if persistence.isComplete { return .welcome }
         if runtime.status == .needsPermission { return .systemAudio }
         if case .failed = runtime.captureAccess { return .systemAudio }
-        if let output = runtime.currentOutput,
-           !output.isSupportedProfileOutput {
+        if runtime.currentOutput != nil, !runtime.isCurrentOutputRoutable {
             return .liveHealth
         }
         if captureAccessPresentation != .verified { return .systemAudio }
@@ -197,7 +196,7 @@ final class OnboardingViewModel: ObservableObject {
     var permissionPresentation: CaptureAccessPresentation { captureAccessPresentation }
 
     func canComplete(allowingUnknownCapture: Bool) -> Bool {
-        guard runtime.currentOutput?.isSupportedProfileOutput == true else { return false }
+        guard runtime.isCurrentOutputRoutable else { return false }
         guard !runtime.hasBlockingHealthIssue else { return false }
 
         switch runtime.captureAccess {

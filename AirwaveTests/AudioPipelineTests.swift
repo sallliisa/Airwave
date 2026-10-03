@@ -24,9 +24,10 @@ final class AudioPipelineTests: XCTestCase {
             "createAggregate:Built-in Output", "aggregateFormat", "createIO", "startIO",
             "stopIO", "destroyIO", "destroyAggregate", "destroyTap"
         ])
-        XCTAssertEqual(platform.tapRequests, [GlobalStereoTapRequest(excludedProcess: platform.process, output: platform.output)])
+        let defaultRouting = resolvedRoute(for: platform.output)
+        XCTAssertEqual(platform.tapRequests, [GlobalStereoTapRequest(excludedProcess: platform.process, routing: defaultRouting)])
         XCTAssertEqual(platform.tapRequests[0].outputDeviceUID, platform.output.uid)
-        XCTAssertEqual(platform.tapRequests[0].streamIndex, 0)
+        XCTAssertEqual(platform.tapRequests[0].streamIndex, defaultRouting.tapStreamIndex)
         XCTAssertTrue(platform.tapRequests[0].isGlobal)
         XCTAssertTrue(platform.tapRequests[0].isPrivate)
         XCTAssertEqual(platform.tapRequests[0].muteBehavior, .mutedWhenTapped)
@@ -195,6 +196,10 @@ final class AudioPipelineTests: XCTestCase {
         assertFailure(.createIO, cleanup: ["destroyAggregate", "destroyTap"])
     }
 
+    func testChannelMapSetupFailureUnwindsAggregateThenTap() {
+        assertFailure(.mapSetup, cleanup: ["destroyAggregate", "destroyTap"])
+    }
+
     func testAggregateFormatFailureUnwindsAggregateThenTap() {
         assertFailure(.aggregateFormat, cleanup: ["destroyAggregate", "destroyTap"])
     }
@@ -245,18 +250,68 @@ final class AudioPipelineTests: XCTestCase {
         XCTAssertTrue(platform.hasNoLiveResources)
     }
 
-    func testMultistreamPhysicalDeviceIsRejectedBeforeProcessResolutionOrTapCreation() {
+    func testStereoCaptureUsesNativeTapWidthAndHardwareOutputWidthIndependently() throws {
         let platform = RecordingAudioPlatformClient()
         platform.output = OutputDeviceDescriptor(
-            id: .init(6), uid: "multi-stream", name: "Multi-stream", transport: "HDMI",
-            channelLabels: nil, outputChannelCount: 8, nominalSampleRate: 48_000,
-            isVirtual: false, isAggregate: false, outputStreamCount: 2
+            id: .init(7), uid: "four-channel", name: "Four channel", transport: "USB",
+            channelLabels: nil, outputChannelCount: 4, nominalSampleRate: 48_000,
+            isVirtual: false, isAggregate: false,
+            preferredStereoChannels: .init(left: 1, right: 2)
+        )
+        platform.tapStreamFormat = .init(sampleRate: 48_000, channelCount: 4, sampleType: .float32, isInterleaved: false)
+        platform.aggregateStreamFormat = .init(sampleRate: 48_000, channelCount: 4, sampleType: .float32, isInterleaved: false)
+        let routing = resolvedRoute(for: platform.output, channels: .init(left: 3, right: 4))
+        let pipeline = AudioPipeline(platform: platform, processor: PassthroughProcessor())
+
+        try pipeline.start(on: routing, purpose: .processing, verificationHandler: { _ in })
+
+        XCTAssertEqual(platform.tapRequests[0].channelCount, 4, "native tap width")
+        XCTAssertEqual(platform.tapRequests[0].streamIndex, 0)
+        XCTAssertEqual(platform.createdAggregateRouting?.sourceChannelIndices, [0, 1], "selected capture width is stereo")
+        XCTAssertEqual(platform.createdAggregateRouting?.outputChannels, .init(left: 3, right: 4))
+        XCTAssertEqual(platform.createdAggregateRouting?.device.outputChannelCount, 4, "physical output width")
+        XCTAssertEqual(platform.createdIORouting, routing)
+        try pipeline.stop()
+    }
+
+    func testMultiStreamRoutingUsesResolvedTapStreamIndex() throws {
+        let platform = RecordingAudioPlatformClient()
+        platform.output = OutputDeviceDescriptor(
+            id: .init(6), uid: "multi-stream", name: "Multi-stream", transport: "USB",
+            channelLabels: nil, outputChannelCount: 4, nominalSampleRate: 48_000,
+            isVirtual: false, isAggregate: false, outputStreamCount: 2,
+            outputStreams: [
+                .init(streamIndex: 0, startingChannel: 1, channelCount: 2),
+                .init(streamIndex: 1, startingChannel: 3, channelCount: 2),
+            ],
+            preferredStereoChannels: .init(left: 3, right: 4)
+        )
+        platform.tapStreamFormat = .stereo(sampleRate: 48_000)
+        platform.aggregateStreamFormat = .init(sampleRate: 48_000, channelCount: 4, sampleType: .float32, isInterleaved: false)
+        let pipeline = AudioPipeline(platform: platform, processor: PassthroughProcessor())
+        let routing = resolvedRoute(for: platform.output, channels: .init(left: 1, right: 2))
+
+        try pipeline.start(on: routing, purpose: .processing, verificationHandler: { _ in })
+
+        XCTAssertEqual(routing.tapStreamIndex, 1)
+        XCTAssertEqual(routing.sourceChannelIndices, [0, 1])
+        XCTAssertEqual(platform.tapRequests[0].streamIndex, 1)
+        XCTAssertEqual(platform.tapRequests[0].channelCount, 2)
+        XCTAssertEqual(platform.createdIORouting, routing)
+        try pipeline.stop()
+    }
+
+    func testInvalidMultiStreamGeometryFailsBeforeResourceAcquisition() {
+        let platform = RecordingAudioPlatformClient()
+        platform.output = OutputDeviceDescriptor(
+            id: .init(8), uid: "bad-multi-stream", name: "Bad multi-stream", transport: "USB",
+            channelLabels: nil, outputChannelCount: 4, nominalSampleRate: 48_000,
+            isVirtual: false, isAggregate: false, outputStreamCount: 2,
+            outputStreams: [.init(streamIndex: 0, startingChannel: 1, channelCount: 2)]
         )
         let pipeline = AudioPipeline(platform: platform, processor: PassthroughProcessor())
 
-        XCTAssertThrowsError(try pipeline.start(on: platform.output)) { error in
-            XCTAssertEqual(error as? AudioRuntimeError, .unsupportedOutput("Multi-stream"))
-        }
+        XCTAssertThrowsError(try pipeline.start(on: platform.output))
         XCTAssertTrue(platform.events.isEmpty)
         XCTAssertTrue(platform.hasNoLiveResources)
     }
@@ -527,7 +582,7 @@ private final class RecordingAudioPlatformClient: AudioPlatformClient {
     enum Resource: Hashable { case tap, aggregate, io }
     enum FailurePoint {
         case defaultOutput, resolveOwnProcess, createTap, tapFormat
-        case createAggregate, aggregateFormat, createIO, startIO
+        case createAggregate, aggregateFormat, createIO, mapSetup, startIO
     }
 
     let process = AudioProcessHandle(value: 10)
@@ -543,6 +598,8 @@ private final class RecordingAudioPlatformClient: AudioPlatformClient {
     var teardownFailuresRemaining: [String: Int] = [:]
     var events: [String] = []
     var tapRequests: [GlobalStereoTapRequest] = []
+    private(set) var createdAggregateRouting: ResolvedOutputRouting?
+    private(set) var createdIORouting: ResolvedOutputRouting?
     var tapStreamFormat = AudioStreamFormat.stereo(sampleRate: 48_000)
     var aggregateStreamFormat = AudioStreamFormat.stereo(sampleRate: 48_000)
     private(set) var liveResources: Set<Resource> = []
@@ -571,10 +628,11 @@ private final class RecordingAudioPlatformClient: AudioPlatformClient {
         return tap
     }
     func destroyTap(_ tap: AudioTapHandle) throws { try teardown("destroyTap") }
-    func createPrivateAggregate(tap: AudioTapHandle, output: OutputDeviceDescriptor) throws -> PrivateAggregateHandle {
-        events.append("createAggregate:\(output.name)")
+    func createPrivateAggregate(tap: AudioTapHandle, routing: ResolvedOutputRouting) throws -> PrivateAggregateHandle {
+        events.append("createAggregate:\(routing.device.name)")
         if failurePoint == .createAggregate { throw AudioRuntimeError.aggregateCreationFailed("test") }
         liveResources.insert(.aggregate)
+        createdAggregateRouting = routing
         return aggregate
     }
     func destroyPrivateAggregate(_ aggregate: PrivateAggregateHandle) throws { try teardown("destroyAggregate") }
@@ -590,12 +648,15 @@ private final class RecordingAudioPlatformClient: AudioPlatformClient {
     }
     func createIO(
         aggregate: PrivateAggregateHandle,
+        routing: ResolvedOutputRouting,
         callback: @escaping AudioIOCallback,
         verificationHandler: @escaping AudioCaptureVerificationHandler
     ) throws -> AudioIOHandle {
         events.append("createIO")
+        if failurePoint == .mapSetup { throw AudioRuntimeError.ioCreationFailed("channel map") }
         if failurePoint == .createIO { throw AudioRuntimeError.ioCreationFailed("test") }
         liveResources.insert(.io)
+        createdIORouting = routing
         self.ioCallback = callback
         self.verificationHandler = verificationHandler
         return io
@@ -631,4 +692,14 @@ private final class RecordingAudioPlatformClient: AudioPlatformClient {
             break
         }
     }
+}
+
+private func resolvedRoute(
+    for output: OutputDeviceDescriptor,
+    channels: StereoOutputChannels? = nil
+) -> ResolvedOutputRouting {
+    guard case .resolved(let route) = OutputRoutingResolver.resolve(output: output, channels: channels) else {
+        preconditionFailure("Test output must resolve to a route")
+    }
+    return route
 }

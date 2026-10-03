@@ -1,8 +1,27 @@
+import AudioToolbox
 import CoreAudio
 import XCTest
 @testable import Airwave
 
 final class CoreAudioPlatformClientTests: XCTestCase {
+    func testOutputStreamInventoryCountUsesActualStreamsInsteadOfABLBufferCount() {
+        let actualStreams = [
+            OutputStreamDescriptor(streamIndex: 0, startingChannel: 1, channelCount: 2),
+            OutputStreamDescriptor(streamIndex: 1, startingChannel: 3, channelCount: 2),
+        ]
+
+        XCTAssertEqual(
+            OutputStreamInventory.count(actualStreams: actualStreams, fallbackBufferCount: 4),
+            2,
+            "four ABL buffers can belong to two actual output AudioStreams"
+        )
+        XCTAssertEqual(
+            OutputStreamInventory.count(actualStreams: nil, fallbackBufferCount: 4),
+            4,
+            "an unreadable optional stream inventory keeps the safe fallback count"
+        )
+    }
+
     func testPermissionAndGenericHALFailuresMapSeparately() {
         XCTAssertEqual(CoreAudioErrorMapping.ioStart(kAudioHardwareIllegalOperationError), .permissionDenied)
         XCTAssertEqual(CoreAudioErrorMapping.ioStart(kAudioDevicePermissionsError), .permissionDenied)
@@ -393,8 +412,9 @@ final class CoreAudioPlatformClientTests: XCTestCase {
             isVirtual: false, isAggregate: false
         )
         let process = AudioProcessHandle(value: 7)
-        XCTAssertEqual(GlobalStereoTapRequest(excludedProcesses: [], output: output).excludedProcesses, [])
-        XCTAssertEqual(GlobalStereoTapRequest(excludedProcesses: [process], output: output).excludedProcesses, [process])
+        let route = resolvedRoute(output)
+        XCTAssertEqual(GlobalStereoTapRequest(excludedProcesses: [], routing: route).excludedProcesses, [])
+        XCTAssertEqual(GlobalStereoTapRequest(excludedProcesses: [process], routing: route).excludedProcesses, [process])
     }
 
     func testTapRequestWidthFollowsDeviceChannelCount() {
@@ -404,7 +424,17 @@ final class CoreAudioPlatformClientTests: XCTestCase {
                 channelLabels: nil, outputChannelCount: width, nominalSampleRate: 48_000,
                 isVirtual: false, isAggregate: false
             )
-            XCTAssertEqual(GlobalStereoTapRequest(excludedProcesses: [], output: output).channelCount, width, "width \(width)")
+            let route = ResolvedOutputRouting(
+                device: output,
+                outputChannels: .init(left: 1, right: 2),
+                tapStreamIndex: 0,
+                nativeWidth: width,
+                sourceChannelIndices: [0, 1],
+                inputLayout: .stereo,
+                sampleRate: output.nominalSampleRate,
+                isExplicitAssignment: false
+            )
+            XCTAssertEqual(GlobalStereoTapRequest(excludedProcesses: [], routing: route).channelCount, width, "width \(width)")
         }
     }
 
@@ -416,10 +446,344 @@ final class CoreAudioPlatformClientTests: XCTestCase {
         )
 
         XCTAssertFalse(output.isSupportedProfileOutput)
+        XCTAssertTrue(output.isConfigurationEligible)
         XCTAssertEqual(
             output.unsupportedProfileReason,
             "Airwave supports physical output devices with one output stream."
         )
+    }
+
+    func testOutputRouteKeepsSourceStereoOnOneTwoWhenDestinationIsThreeFour() throws {
+        let output = routingDescriptor(channels: 4, preferred: .init(left: 1, right: 2))
+
+        guard case .resolved(let route) = OutputRoutingResolver.resolve(
+            output: output,
+            channels: .init(left: 3, right: 4)
+        ) else { return XCTFail("expected a resolved stereo route") }
+
+        XCTAssertEqual(route.outputChannels, .init(left: 3, right: 4))
+        XCTAssertEqual(route.sourceChannelIndices, [0, 1])
+        XCTAssertEqual(route.inputLayout, .stereo)
+        XCTAssertEqual(route.tapStreamIndex, 0)
+        XCTAssertEqual(route.nativeWidth, 4)
+        XCTAssertTrue(route.isExplicitAssignment)
+    }
+
+    func testAUHALMapsMicPrefixTapSourceAndStereoOutputDestinations() throws {
+        let output = routingDescriptor(channels: 4, preferred: .init(left: 1, right: 2))
+        let route = resolvedRoute(output, channels: .init(left: 3, right: 4))
+
+        let maps = try AUHALChannelMapBuilder.make(
+            routing: route,
+            physicalInputStreamChannelCounts: [2, 1],
+            aggregateInputStreamChannelCounts: [2, 1, 4]
+        )
+
+        XCTAssertEqual(maps.tapInputOffset, 3)
+        XCTAssertEqual(maps.input, [3, 4], "only the tap suffix feeds the two-channel client input")
+        XCTAssertEqual(maps.output, [-1, -1, 0, 1], "hardware channels 3 and 4 receive stereo")
+    }
+
+    func testAUHALOutputMapsSupportReversedAndNonAdjacentDestinations() throws {
+        let output = routingDescriptor(channels: 6)
+        let reversed = try AUHALChannelMapBuilder.make(
+            routing: resolvedRoute(output, channels: .init(left: 4, right: 3)),
+            physicalInputStreamChannelCounts: [],
+            aggregateInputStreamChannelCounts: [6]
+        )
+        XCTAssertEqual(reversed.output, [-1, -1, 1, 0, -1, -1])
+
+        let nonAdjacent = try AUHALChannelMapBuilder.make(
+            routing: resolvedRoute(output, channels: .init(left: 6, right: 2)),
+            physicalInputStreamChannelCounts: [],
+            aggregateInputStreamChannelCounts: [6]
+        )
+        XCTAssertEqual(nonAdjacent.output, [-1, 1, -1, -1, -1, 0])
+    }
+
+    func testAUHALRejectsInputGeometryThatCannotProveTapSuffix() {
+        XCTAssertThrowsError(try AUHALChannelMapBuilder.resolveTapInputOffset(
+            physicalInputStreamChannelCounts: [2, 1],
+            aggregateInputStreamChannelCounts: [2, 1, 3],
+            tapNativeWidth: 4
+        )) { error in
+            XCTAssertEqual(error as? AUHALChannelMapError, .aggregateInputDoesNotEndWithTap)
+        }
+        XCTAssertThrowsError(try AUHALChannelMapBuilder.resolveTapInputOffset(
+            physicalInputStreamChannelCounts: [2, 1],
+            aggregateInputStreamChannelCounts: [2, 2, 4],
+            tapNativeWidth: 4
+        )) { error in
+            XCTAssertEqual(error as? AUHALChannelMapError, .aggregateInputDoesNotEndWithTap)
+        }
+    }
+
+    func testAUHALChannelMapInstallerUsesBusScopesAndStopsOnSetupFailure() throws {
+        let output = routingDescriptor(channels: 4, preferred: .init(left: 1, right: 2))
+        let maps = try AUHALChannelMapBuilder.make(
+            routing: resolvedRoute(output, channels: .init(left: 3, right: 4)),
+            physicalInputStreamChannelCounts: [2],
+            aggregateInputStreamChannelCounts: [2, 4]
+        )
+        var calls: [(AudioUnitScope, AudioUnitElement, [Int32])] = []
+
+        try AUHALChannelMapInstaller.install(maps) { scope, element, channels in
+            calls.append((scope, element, channels))
+            return noErr
+        }
+
+        XCTAssertEqual(calls.count, 2)
+        XCTAssertEqual(calls[0].0, kAudioUnitScope_Output)
+        XCTAssertEqual(calls[0].1, 1)
+        XCTAssertEqual(calls[0].2, [2, 3])
+        XCTAssertEqual(calls[1].0, kAudioUnitScope_Input)
+        XCTAssertEqual(calls[1].1, 0)
+        XCTAssertEqual(calls[1].2, [-1, -1, 0, 1])
+
+        calls.removeAll()
+        XCTAssertThrowsError(try AUHALChannelMapInstaller.install(maps) { scope, element, channels in
+            calls.append((scope, element, channels))
+            return scope == kAudioUnitScope_Input ? -50 : noErr
+        }) { error in
+            XCTAssertEqual(error as? AUHALChannelMapInstallationError, .output(-50))
+        }
+        XCTAssertEqual(calls.count, 2, "output map failure occurs after the input map call")
+    }
+
+    func testOutputRouteAcceptsReversedAndNonAdjacentDestinations() throws {
+        let output = routingDescriptor(channels: 6)
+
+        for pair in [StereoOutputChannels(left: 6, right: 2), .init(left: 4, right: 1)] {
+            guard case .resolved(let route) = OutputRoutingResolver.resolve(output: output, channels: pair) else {
+                return XCTFail("expected destination pair \(pair) to resolve")
+            }
+            XCTAssertEqual(route.outputChannels, pair)
+        }
+    }
+
+    func testDuplicateStereoLabelsChoosePreferredSourcePairWithoutCallingItQuad() throws {
+        let output = routingDescriptor(
+            channels: 4,
+            labels: [1, 2, 1, 2],
+            preferred: .init(left: 3, right: 4)
+        )
+
+        guard case .resolved(let route) = OutputRoutingResolver.resolve(
+            output: output,
+            channels: .init(left: 1, right: 2)
+        ) else { return XCTFail("expected duplicate stereo endpoints to resolve as stereo") }
+
+        XCTAssertEqual(route.inputLayout, .stereo)
+        XCTAssertEqual(route.sourceChannelIndices, [2, 3])
+        XCTAssertEqual(route.outputChannels, .init(left: 1, right: 2))
+    }
+
+    func testMalformedThreeLeftOneRightLabelsAreNotTreatedAsDuplicateStereo() {
+        let output = routingDescriptor(
+            channels: 4,
+            labels: [1, 1, 1, 2],
+            preferred: .init(left: 3, right: 4)
+        )
+
+        guard case .unsupported = OutputRoutingResolver.resolve(output: output) else {
+            return XCTFail("three left labels and one right label are not two stereo endpoints")
+        }
+    }
+
+    func testUnlabeledFourChannelDefaultsToPreferredStereoPair() throws {
+        let output = routingDescriptor(channels: 4, preferred: .init(left: 3, right: 4))
+
+        guard case .resolved(let route) = OutputRoutingResolver.resolve(output: output) else {
+            return XCTFail("expected an unlabeled four-channel interface to resolve as stereo")
+        }
+
+        XCTAssertEqual(route.outputChannels, .init(left: 3, right: 4))
+        XCTAssertEqual(route.inputLayout, .stereo)
+        XCTAssertEqual(route.sourceChannelIndices, [2, 3])
+        XCTAssertFalse(route.isExplicitAssignment)
+    }
+
+    func testInvalidPreferredStereoPairFallsBackToChannelsOneAndTwo() throws {
+        let output = routingDescriptor(channels: 4, preferred: .init(left: 3, right: 8))
+
+        guard case .resolved(let route) = OutputRoutingResolver.resolve(output: output) else {
+            return XCTFail("expected the internal 1–2 fallback")
+        }
+
+        XCTAssertEqual(route.outputChannels, .init(left: 1, right: 2))
+        XCTAssertEqual(route.sourceChannelIndices, [0, 1])
+    }
+
+    func testExplicitQuadAndKnownSurroundLayoutsKeepTheirFullSourceWidth() throws {
+        let cases: [(channels: Int, labels: [UInt32], expectedWidth: Int)] = [
+            (4, [1, 2, 10, 11], 4),
+            (6, [1, 2, 3, 4, 10, 11], 6),
+            (8, [1, 2, 3, 4, 10, 11, 5, 6], 8),
+        ]
+        for testCase in cases {
+            let output = routingDescriptor(channels: testCase.channels, labels: testCase.labels)
+            guard case .resolved(let route) = OutputRoutingResolver.resolve(output: output) else {
+                return XCTFail("expected \(testCase.channels)-channel layout to resolve")
+            }
+            XCTAssertEqual(route.nativeWidth, testCase.expectedWidth)
+            XCTAssertEqual(route.sourceChannelIndices, Array(0..<testCase.expectedWidth))
+            XCTAssertEqual(route.inputLayout.channels.count, testCase.expectedWidth)
+        }
+    }
+
+    func testUnlabeledTwelveChannelSurroundFallbackAndUnsupportedOtherWidth() throws {
+        let twelveChannel = routingDescriptor(channels: 12)
+        guard case .resolved(let surround) = OutputRoutingResolver.resolve(output: twelveChannel) else {
+            return XCTFail("the established unlabeled 7.1.4 fallback should remain supported")
+        }
+        XCTAssertEqual(surround.nativeWidth, 12)
+        XCTAssertEqual(surround.inputLayout, .atmos714)
+
+        let fiveChannel = routingDescriptor(channels: 5)
+        guard case .unsupported(let reason) = OutputRoutingResolver.resolve(output: fiveChannel) else {
+            return XCTFail("an unlabeled nonstandard width must not be guessed as surround")
+        }
+        XCTAssertTrue(reason.contains("supported input layout"))
+    }
+
+    func testMultiStreamSourceUsesActualStreamOffsetAndDestinationCanCrossStreams() throws {
+        let output = routingDescriptor(
+            channels: 4,
+            preferred: .init(left: 3, right: 4),
+            streamCount: 2,
+            streams: [
+                .init(streamIndex: 0, startingChannel: 1, channelCount: 2),
+                .init(streamIndex: 1, startingChannel: 3, channelCount: 2),
+            ]
+        )
+
+        guard case .resolved(let route) = OutputRoutingResolver.resolve(
+            output: output,
+            channels: .init(left: 4, right: 1)
+        ) else { return XCTFail("expected the preferred pair to resolve in the second stream") }
+
+        XCTAssertEqual(route.tapStreamIndex, 1)
+        XCTAssertEqual(route.nativeWidth, 2)
+        XCTAssertEqual(route.sourceChannelIndices, [0, 1])
+        XCTAssertEqual(route.outputChannels, .init(left: 4, right: 1))
+    }
+
+    func testMultiStreamWithoutPreferredSourceFallsBackToChannelsOneAndTwo() throws {
+        let output = routingDescriptor(
+            channels: 4,
+            streamCount: 2,
+            streams: [
+                .init(streamIndex: 0, startingChannel: 1, channelCount: 2),
+                .init(streamIndex: 1, startingChannel: 3, channelCount: 2),
+            ]
+        )
+
+        guard case .resolved(let route) = OutputRoutingResolver.resolve(output: output) else {
+            return XCTFail("missing preferred stereo metadata should use channels 1–2")
+        }
+
+        XCTAssertEqual(route.tapStreamIndex, 0)
+        XCTAssertEqual(route.sourceChannelIndices, [0, 1])
+    }
+
+    func testPreferredSourcePairSpanningActualStreamsIsUnsupportedWithoutChangingAssignment() {
+        let output = routingDescriptor(
+            channels: 4,
+            preferred: .init(left: 2, right: 3),
+            streamCount: 2,
+            streams: [
+                .init(streamIndex: 0, startingChannel: 1, channelCount: 2),
+                .init(streamIndex: 1, startingChannel: 3, channelCount: 2),
+            ]
+        )
+
+        guard case .unsupported(let reason) = OutputRoutingResolver.resolve(
+            output: output,
+            channels: .init(left: 4, right: 1)
+        ) else {
+            return XCTFail("a valid preferred stereo source spanning streams must not fall back to 1–2")
+        }
+
+        XCTAssertTrue(reason.contains("span multiple output streams"))
+    }
+
+    func testMultiStreamSourcePairSpanningStreamsIsUnsupported() {
+        let output = routingDescriptor(
+            channels: 4,
+            preferred: .init(left: 1, right: 2),
+            streamCount: 2,
+            streams: [
+                .init(streamIndex: 0, startingChannel: 1, channelCount: 1),
+                .init(streamIndex: 1, startingChannel: 2, channelCount: 3),
+            ]
+        )
+
+        guard case .unsupported(let reason) = OutputRoutingResolver.resolve(output: output) else {
+            return XCTFail("a source pair spanning AudioStreams must not be guessed")
+        }
+        XCTAssertTrue(reason.contains("span multiple output streams"))
+    }
+
+    func testRouteRejectsInvalidPairsAndMissingActualStreamMetadata() {
+        let output = routingDescriptor(channels: 4)
+        for pair in [StereoOutputChannels(left: 2, right: 2), .init(left: 0, right: 3), .init(left: 1, right: 5)] {
+            guard case .unsupported = OutputRoutingResolver.resolve(output: output, channels: pair) else {
+                return XCTFail("invalid pair \(pair) unexpectedly resolved")
+            }
+        }
+
+        let missingStreams = routingDescriptor(channels: 4, streamCount: 2, streams: [])
+        guard case .unsupported(let reason) = OutputRoutingResolver.resolve(output: missingStreams) else {
+            return XCTFail("missing multistream geometry must not be synthesized")
+        }
+        XCTAssertTrue(reason.contains("stream ranges"))
+    }
+
+    func testRouteRejectsNonPhysicalUnstableNarrowAndInvalidRateDescriptors() {
+        let invalidDescriptors = [
+            routingDescriptor(channels: 2, uid: " "),
+            routingDescriptor(channels: 2, virtual: true),
+            routingDescriptor(channels: 2, aggregate: true),
+            routingDescriptor(channels: 1),
+            routingDescriptor(channels: 2, rate: 0),
+            routingDescriptor(channels: 2, rate: .nan),
+            routingDescriptor(channels: 2, rate: .infinity),
+        ]
+
+        for output in invalidDescriptors {
+            guard case .unsupported = OutputRoutingResolver.resolve(output: output) else {
+                return XCTFail("invalid descriptor \(output.uid) unexpectedly resolved")
+            }
+        }
+    }
+
+    private func routingDescriptor(
+        channels: Int,
+        uid: String? = nil,
+        rate: Double = 48_000,
+        virtual: Bool = false,
+        aggregate: Bool = false,
+        labels: [UInt32]? = nil,
+        preferred: StereoOutputChannels? = nil,
+        streamCount: Int = 1,
+        streams: [OutputStreamDescriptor]? = nil
+    ) -> OutputDeviceDescriptor {
+        OutputDeviceDescriptor(
+            id: .init(UInt64(900 + channels)), uid: uid ?? "route-\(channels)", name: "Route \(channels)", transport: "USB",
+            channelLabels: labels, outputChannelCount: channels, nominalSampleRate: rate,
+            isVirtual: virtual, isAggregate: aggregate, outputStreamCount: streamCount,
+            outputStreams: streams, preferredStereoChannels: preferred
+        )
+    }
+
+    private func resolvedRoute(
+        _ output: OutputDeviceDescriptor,
+        channels: StereoOutputChannels? = nil
+    ) -> ResolvedOutputRouting {
+        guard case .resolved(let route) = OutputRoutingResolver.resolve(output: output, channels: channels) else {
+            preconditionFailure("Test descriptor must resolve to a route")
+        }
+        return route
     }
 
     func testUnlabeledStandardWidthsStaySupportedThroughSharedPolicy() {
@@ -512,7 +876,17 @@ final class CoreAudioPlatformClientTests: XCTestCase {
                 channelLabels: nil, outputChannelCount: width, nominalSampleRate: 48_000,
                 isVirtual: false, isAggregate: false
             )
-            let request = GlobalStereoTapRequest(excludedProcesses: [], output: output)
+            let route = ResolvedOutputRouting(
+                device: output,
+                outputChannels: StereoOutputChannels(left: 1, right: 2),
+                tapStreamIndex: 0,
+                nativeWidth: width,
+                sourceChannelIndices: [0, 1],
+                inputLayout: .stereo,
+                sampleRate: output.nominalSampleRate,
+                isExplicitAssignment: false
+            )
+            let request = GlobalStereoTapRequest(excludedProcesses: [], routing: route)
             XCTAssertEqual(request.channelCount, width, "request width must follow the descriptor")
             XCTAssertThrowsError(try client.createGlobalStereoTap(request), "width \(width)") { error in
                 guard case AudioRuntimeError.tapCreationFailed("Invalid global tap request") = error else {
@@ -533,7 +907,17 @@ final class CoreAudioPlatformClientTests: XCTestCase {
                 channelLabels: nil, outputChannelCount: 8, nominalSampleRate: 48_000,
                 isVirtual: isVirtual, isAggregate: isAggregate
             )
-            XCTAssertThrowsError(try client.createPrivateAggregate(tap: tap, output: output), name) { error in
+            let routing = ResolvedOutputRouting(
+                device: output,
+                outputChannels: .init(left: 1, right: 2),
+                tapStreamIndex: 0,
+                nativeWidth: 8,
+                sourceChannelIndices: [0, 1],
+                inputLayout: .stereo,
+                sampleRate: output.nominalSampleRate,
+                isExplicitAssignment: false
+            )
+            XCTAssertThrowsError(try client.createPrivateAggregate(tap: tap, routing: routing), name) { error in
                 XCTAssertEqual(error as? AudioRuntimeError, .unsupportedOutput(name.capitalized), name)
             }
         }
@@ -660,6 +1044,8 @@ final class CoreAudioPlatformClientTests: XCTestCase {
         rate: Double = 48_000,
         channels: Int = 2,
         streams: Int = 1,
+        outputStreams: [OutputStreamDescriptor]? = nil,
+        preferred: StereoOutputChannels? = nil,
         labels: [UInt32]? = nil,
         name: String = "Built-in"
     ) -> OutputDeviceDescriptor {
@@ -667,13 +1053,14 @@ final class CoreAudioPlatformClientTests: XCTestCase {
             id: .init(11), uid: "plan039-device", name: name, transport: "built-in",
             channelLabels: labels, outputChannelCount: channels,
             nominalSampleRate: rate, isVirtual: false, isAggregate: false,
-            outputStreamCount: streams
+            outputStreamCount: streams, outputStreams: outputStreams,
+            preferredStereoChannels: preferred
         )
     }
 
-    func testPlan039CurrentDeviceRecordsWatchRateStreamConfigAndLayout() {
+    func testCurrentDeviceRecordsWatchRateLayoutStreamsAndPreferredStereo() {
         let records = CurrentDeviceFormatObservation.records(for: 77)
-        XCTAssertEqual(records.count, 3)
+        XCTAssertEqual(records.count, 5)
         XCTAssertEqual(records[0].selector, kAudioDevicePropertyNominalSampleRate)
         XCTAssertTrue(records[0].isRequired)
         XCTAssertEqual(records[1].selector, kAudioDevicePropertyStreamConfiguration)
@@ -681,6 +1068,12 @@ final class CoreAudioPlatformClientTests: XCTestCase {
         XCTAssertTrue(records[1].isRequired)
         XCTAssertEqual(records[2].selector, kAudioDevicePropertyPreferredChannelLayout)
         XCTAssertFalse(records[2].isRequired, "optional layout absence uses plan 038 fallback, not failure")
+        XCTAssertEqual(records[3].selector, kAudioDevicePropertyStreams)
+        XCTAssertEqual(records[3].scope, kAudioObjectPropertyScopeOutput)
+        XCTAssertFalse(records[3].isRequired)
+        XCTAssertEqual(records[4].selector, kAudioDevicePropertyPreferredChannelsForStereo)
+        XCTAssertEqual(records[4].scope, kAudioObjectPropertyScopeOutput)
+        XCTAssertFalse(records[4].isRequired)
         XCTAssertTrue(records.allSatisfy { $0.deviceID == 77 })
     }
 
@@ -689,10 +1082,10 @@ final class CoreAudioPlatformClientTests: XCTestCase {
         var removed = 0
         let set = CurrentDeviceListenerSet(add: { _, _ in added += 1; return noErr }, remove: { _, _ in removed += 1; return noErr })
         XCTAssertNoThrow(try set.bind(deviceID: 5, seed: plan039Descriptor()))
-        XCTAssertEqual(added, 3)
-        XCTAssertEqual(set.installedCount, 3)
+        XCTAssertEqual(added, 5)
+        XCTAssertEqual(set.installedCount, 5)
         set.unbind()
-        XCTAssertEqual(removed, 3)
+        XCTAssertEqual(removed, 5)
         XCTAssertEqual(set.installedCount, 0)
         let removedAfterFirstStop = removed
         set.unbind()
@@ -713,9 +1106,15 @@ final class CoreAudioPlatformClientTests: XCTestCase {
         XCTAssertEqual(set.installedCount, 0)
     }
 
-    func testPlan039ListenerSetOptionalLayoutFailureKeepsRequiredListeners() {
+    func testListenerSetOptionalMetadataFailuresKeepRequiredListeners() {
         let set = CurrentDeviceListenerSet(
-            add: { _, address in address.mSelector == kAudioDevicePropertyPreferredChannelLayout ? OSStatus(-50) : noErr },
+            add: { _, address in
+                [kAudioDevicePropertyPreferredChannelLayout,
+                 kAudioDevicePropertyStreams,
+                 kAudioDevicePropertyPreferredChannelsForStereo].contains(address.mSelector)
+                    ? OSStatus(-50)
+                    : noErr
+            },
             remove: { _, _ in noErr }
         )
         XCTAssertNoThrow(try set.bind(deviceID: 7, seed: plan039Descriptor()))
@@ -731,7 +1130,7 @@ final class CoreAudioPlatformClientTests: XCTestCase {
         )
         XCTAssertNoThrow(try set.bind(deviceID: 8, seed: plan039Descriptor()))
         XCTAssertNoThrow(try set.bind(deviceID: 9, seed: plan039Descriptor()))
-        XCTAssertEqual(removedDevices, [8, 8, 8], "old device registrations removed before new bind")
+        XCTAssertEqual(removedDevices, Array(repeating: 8, count: 5), "old device registrations removed before new bind")
         XCTAssertTrue(set.installed.allSatisfy { $0.deviceID == 9 })
     }
 
@@ -766,6 +1165,24 @@ final class CoreAudioPlatformClientTests: XCTestCase {
         )
     }
 
+    func testTransientMissingRouteMetadataRetainsLastCurrentDescriptor() {
+        let streams = [
+            OutputStreamDescriptor(streamIndex: 0, startingChannel: 1, channelCount: 2),
+            OutputStreamDescriptor(streamIndex: 1, startingChannel: 3, channelCount: 2),
+        ]
+        let preferred = StereoOutputChannels(left: 3, right: 4)
+        let seed = plan039Descriptor(channels: 4, streams: 2, outputStreams: streams, preferred: preferred)
+        let set = CurrentDeviceListenerSet(add: { _, _ in noErr }, remove: { _, _ in noErr })
+        XCTAssertNoThrow(try set.bind(deviceID: 13, seed: seed))
+
+        let missingOptionalMetadata = plan039Descriptor(channels: 4, streams: 1, outputStreams: [], preferred: nil)
+
+        XCTAssertFalse(set.shouldDeliver(missingOptionalMetadata, eventGeneration: set.generation))
+        XCTAssertEqual(set.lastDelivered?.outputStreamCount, 2)
+        XCTAssertEqual(set.lastDelivered?.outputStreams, streams)
+        XCTAssertEqual(set.lastDelivered?.preferredStereoChannels, preferred)
+    }
+
     func testPlan039ListenerSetFirstReadAfterBindDeliversAndStopCancelsStale() {
         let set = CurrentDeviceListenerSet(add: { _, _ in noErr }, remove: { _, _ in noErr })
         XCTAssertNoThrow(try set.bind(deviceID: 12))
@@ -781,7 +1198,7 @@ final class CoreAudioPlatformClientTests: XCTestCase {
         )
     }
 
-    func testPlan039DescriptorFormatChangeComparesProcessingFieldsOnly() {
+    func testDescriptorFormatChangeIncludesStreamGeometryAndPreferredStereo() {
         let base = plan039Descriptor()
         XCTAssertFalse(base.hasProcessingFormatChange(from: base))
         XCTAssertFalse(plan039Descriptor(name: "Renamed").hasProcessingFormatChange(from: base))
@@ -789,6 +1206,10 @@ final class CoreAudioPlatformClientTests: XCTestCase {
         XCTAssertTrue(plan039Descriptor(channels: 6).hasProcessingFormatChange(from: base))
         XCTAssertTrue(plan039Descriptor(streams: 2).hasProcessingFormatChange(from: base))
         XCTAssertTrue(plan039Descriptor(channels: 2, labels: [1, 2]).hasProcessingFormatChange(from: base))
+        XCTAssertTrue(plan039Descriptor(preferred: .init(left: 1, right: 2)).hasProcessingFormatChange(from: base))
+        XCTAssertTrue(plan039Descriptor(
+            outputStreams: [.init(streamIndex: 1, startingChannel: 2, channelCount: 1)]
+        ).hasProcessingFormatChange(from: base))
     }
 
     // MARK: - Plan 039 Step 2: bounded descriptor retries (same seam)

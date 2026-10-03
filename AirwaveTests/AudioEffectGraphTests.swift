@@ -301,6 +301,91 @@ final class AudioEffectGraphTests: XCTestCase {
         XCTAssertEqual(mono.right, [5, 6])
     }
 
+    func testRoutingOnlyExplicitPairKeepsStereoSamplesBitExact() throws {
+        let graph = AudioEffectGraph(
+            spatial: SpatialEffectSpy(isReady: false, processResult: false),
+            equalizer: EqualizerEffectSpy(),
+            maxFramesPerCallback: 8
+        )
+        let output = OutputDeviceDescriptor(
+            id: .init(9), uid: "interface", name: "Interface", transport: "USB",
+            channelLabels: [1, 2, 1, 2], outputChannelCount: 4, nominalSampleRate: 48_000,
+            isVirtual: false, isAggregate: false,
+            preferredStereoChannels: .init(left: 1, right: 2)
+        )
+        let pair = StereoOutputChannels(left: 4, right: 2)
+        guard case .resolved(let routing) = OutputRoutingResolver.resolve(output: output, channels: pair) else {
+            return XCTFail("expected the explicit headphone destinations to resolve")
+        }
+        _ = graph.prepare(for: routing, equalizerDefinition: nil)
+
+        let left: [Float] = [0.25, -0.5, 2, -3]
+        let right: [Float] = [-0.75, 0.125, -2, 3]
+        let result = process(graph, left: left, right: right)
+
+        XCTAssertEqual(result.left.map(\.bitPattern), left.map(\.bitPattern))
+        XCTAssertEqual(result.right.map(\.bitPattern), right.map(\.bitPattern))
+    }
+
+    func testTwoChannelPreferredStereoPairControlsSourceOrderIndependentlyOfDestination() throws {
+        func output(
+            preferred: StereoOutputChannels?,
+            streams: [OutputStreamDescriptor]? = nil
+        ) -> OutputDeviceDescriptor {
+            OutputDeviceDescriptor(
+                id: .init(29), uid: "stereo-device", name: "Stereo Device", transport: "USB",
+                channelLabels: nil, outputChannelCount: 2, nominalSampleRate: 48_000,
+                isVirtual: false, isAggregate: false,
+                outputStreamCount: streams?.count ?? 1,
+                outputStreams: streams,
+                preferredStereoChannels: preferred
+            )
+        }
+
+        let explicitDestination = StereoOutputChannels(left: 1, right: 2)
+        guard case .resolved(let reversed) = OutputRoutingResolver.resolve(
+            output: output(preferred: .init(left: 2, right: 1)),
+            channels: explicitDestination
+        ) else {
+            return XCTFail("expected the reversed preferred source and explicit destination to resolve")
+        }
+        XCTAssertEqual(reversed.sourceChannelIndices, [1, 0])
+        XCTAssertEqual(reversed.outputChannels, explicitDestination)
+        XCTAssertEqual(reversed.inputLayout, .stereo)
+
+        guard case .resolved(let normal) = OutputRoutingResolver.resolve(
+            output: output(preferred: .init(left: 1, right: 2))
+        ), case .resolved(let fallback) = OutputRoutingResolver.resolve(output: output(preferred: nil)) else {
+            return XCTFail("expected normal preference and no-preference routes to resolve")
+        }
+        XCTAssertEqual(normal.sourceChannelIndices, [0, 1])
+        XCTAssertEqual(fallback.sourceChannelIndices, [0, 1])
+
+        guard case .unsupported(let reason) = OutputRoutingResolver.resolve(
+            output: output(
+                preferred: .init(left: 1, right: 2),
+                streams: [
+                    .init(streamIndex: 0, startingChannel: 1, channelCount: 1),
+                    .init(streamIndex: 1, startingChannel: 2, channelCount: 1)
+                ]
+            )
+        ) else {
+            return XCTFail("a preferred source pair spanning two actual streams must remain unsupported")
+        }
+        XCTAssertTrue(reason.contains("span multiple output streams"))
+
+        let graph = AudioEffectGraph(
+            spatial: SpatialEffectSpy(isReady: false, processResult: false),
+            equalizer: EqualizerEffectSpy(),
+            maxFramesPerCallback: 8
+        )
+        let preparation = graph.prepare(for: reversed, equalizerDefinition: nil)
+        XCTAssertTrue(preparation.noEffectCanRun)
+        let result = process(graph, left: [0.25, -0.5], right: [0.75, -1])
+        XCTAssertEqual(result.left, [0.25, -0.5])
+        XCTAssertEqual(result.right, [0.75, -1])
+    }
+
     func testSpatialOnlyUsesSpatialEffect() throws {
         let spatial = SpatialEffectSpy(isReady: true, offset: 10)
         let equalizer = EqualizerEffectSpy()
