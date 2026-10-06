@@ -22,7 +22,7 @@ Airwave captures audio from your Mac, applies a spatial audio profile, and plays
 
 Airwave is designed for stereo headphones. The spatial effect may not sound as intended through speakers or other non-headphone outputs.
 
-Airwave captures a stereo or resolvable multichannel source automatically and always produces two output signals. On a multichannel physical interface, choose their destinations in **Settings > Registered Devices > Configure output…**. The saved left/right channel numbers can be reversed or nonadjacent; Airwave stores them for that device and does not change the macOS output selection. Without a saved assignment, it uses the device's valid preferred stereo pair or channels 1–2. Virtual and aggregate outputs are unsupported. Four-channel endpoints with duplicate stereo labels or no usable labels are treated as stereo sources, not assumed to be quad headphones. Surround input still needs a resolvable layout, and LFE content is omitted from the stereo fold-down. While Airwave's route is active, only the selected output pair receives its stereo signal; other device channels are silent. Native routing resumes after Airwave releases its private pipeline (see `docs/multichannel-known-tradeoffs.md`).
+Airwave supports stereo and compatible multichannel input. Virtual and aggregate devices are unsupported.
 
 Airwave follows your normal macOS output selection and volume. You do not need to manage a second audio route while using the app.
 
