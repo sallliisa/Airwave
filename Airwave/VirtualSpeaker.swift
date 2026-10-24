@@ -209,18 +209,9 @@ struct HRIRChannelMap {
     }
 
     /// Create HeSuVi 7-channel mapping (Synthesis)
-    /// Assumes input channels are: FL, FR, C, BL, BR, SL, SR (Left Ear Only)
-    /// We synthesize Right Ear by swapping symmetric channels.
-    ///
-    /// Mapping Logic:
-    /// FL: Left=0 (FL), Right=1 (FR)
-    /// FR: Left=1 (FR), Right=0 (FL)
-    /// C:  Left=2 (C),  Right=2 (C)
-    /// LFE: Left=2 (C), Right=2 (C)
-    /// BL: Left=3 (BL), Right=4 (BR)
-    /// BR: Left=4 (BR), Right=3 (BL)
-    /// SL: Left=5 (SL), Right=6 (SR)
-    /// SR: Left=6 (SR), Right=5 (SL)
+    /// File channels: 0 FL→L, 1 FL→R, 2 SL→L, 3 SL→R, 4 BL→L, 5 BL→R, 6 center.
+    /// Right-side speakers reuse their matching left-side pair with ears swapped;
+    /// center and LFE use the symmetric center response.
     static func hesuvi7Channel(speakers: [VirtualSpeaker]) -> HRIRChannelMap {
         var map = HRIRChannelMap()
         
@@ -231,17 +222,17 @@ struct HRIRChannelMap {
             case .FR:
                 map.setMapping(speaker: speaker, leftEarIndex: 1, rightEarIndex: 0)
             case .FC:
-                map.setMapping(speaker: speaker, leftEarIndex: 2, rightEarIndex: 2)
+                map.setMapping(speaker: speaker, leftEarIndex: 6, rightEarIndex: 6)
             case .LFE:
-                map.setMapping(speaker: speaker, leftEarIndex: 2, rightEarIndex: 2)
+                map.setMapping(speaker: speaker, leftEarIndex: 6, rightEarIndex: 6)
             case .BL:
-                map.setMapping(speaker: speaker, leftEarIndex: 3, rightEarIndex: 4)
+                map.setMapping(speaker: speaker, leftEarIndex: 4, rightEarIndex: 5)
             case .BR:
-                map.setMapping(speaker: speaker, leftEarIndex: 4, rightEarIndex: 3)
+                map.setMapping(speaker: speaker, leftEarIndex: 5, rightEarIndex: 4)
             case .SL:
-                map.setMapping(speaker: speaker, leftEarIndex: 5, rightEarIndex: 6)
+                map.setMapping(speaker: speaker, leftEarIndex: 2, rightEarIndex: 3)
             case .SR:
-                map.setMapping(speaker: speaker, leftEarIndex: 6, rightEarIndex: 5)
+                map.setMapping(speaker: speaker, leftEarIndex: 3, rightEarIndex: 2)
             default:
                 break
             }

@@ -2,6 +2,85 @@ import CoreAudio
 import XCTest
 @testable import Airwave
 
+final class HRIRChannelMapTests: XCTestCase {
+    private let standardSpeakers: [(speaker: VirtualSpeaker, left: Int, right: Int)] = [
+        (.FL, 0, 1),
+        (.FR, 1, 0),
+        (.FC, 6, 6),
+        (.LFE, 6, 6),
+        (.SL, 2, 3),
+        (.SR, 3, 2),
+        (.BL, 4, 5),
+        (.BR, 5, 4),
+    ]
+
+    func testHeSuViSevenChannelMapsAllStandardSpeakers() {
+        let map = HRIRChannelMap.hesuvi7Channel(speakers: standardSpeakers.map { $0.speaker })
+
+        for (speaker, expectedLeft, expectedRight) in standardSpeakers {
+            guard let indices = map.getIndices(for: speaker) else {
+                XCTFail("\(speaker.displayName) must have a seven-channel HeSuVi mapping")
+                continue
+            }
+            XCTAssertEqual(indices.leftEar, expectedLeft, "\(speaker.displayName) left-ear HRIR")
+            XCTAssertEqual(indices.rightEar, expectedRight, "\(speaker.displayName) right-ear HRIR")
+        }
+    }
+
+    func testHeSuViSevenChannelLookupIsKeyedForReorderedSubset() {
+        let speakers: [VirtualSpeaker] = [.SR, .FC, .FL, .BL]
+        let map = HRIRChannelMap.hesuvi7Channel(speakers: speakers)
+        let expected: [(speaker: VirtualSpeaker, left: Int, right: Int)] = [
+            (.SR, 3, 2),
+            (.FC, 6, 6),
+            (.FL, 0, 1),
+            (.BL, 4, 5),
+        ]
+
+        for (speaker, expectedLeft, expectedRight) in expected {
+            guard let indices = map.getIndices(for: speaker) else {
+                XCTFail("\(speaker.displayName) must remain available in a reordered subset")
+                continue
+            }
+            XCTAssertEqual(indices.leftEar, expectedLeft, "\(speaker.displayName) left-ear HRIR")
+            XCTAssertEqual(indices.rightEar, expectedRight, "\(speaker.displayName) right-ear HRIR")
+        }
+        XCTAssertFalse(map.hasMappingFor(.BR), "speakers omitted from the request must remain unmapped")
+    }
+
+    func testHeSuViSevenChannelLeavesUnsupportedSpeakersUnmapped() {
+        let speakers: [VirtualSpeaker] = [.FL, .TFL, .custom("Wide")]
+        let map = HRIRChannelMap.hesuvi7Channel(speakers: speakers)
+
+        XCTAssertTrue(map.hasMappingFor(.FL))
+        XCTAssertFalse(map.hasMappingFor(.TFL), "height speakers have no seven-channel HeSuVi response")
+        XCTAssertFalse(map.hasMappingFor(.custom("Wide")), "custom speakers have no seven-channel HeSuVi response")
+    }
+
+    func testHeSuViFourteenChannelMappingContractRemainsUnchanged() {
+        let map = HRIRChannelMap.hesuvi14Channel(speakers: standardSpeakers.map { $0.speaker })
+        let expected: [(speaker: VirtualSpeaker, left: Int, right: Int)] = [
+            (.FL, 0, 1),
+            (.FR, 8, 7),
+            (.FC, 6, 13),
+            (.LFE, 6, 13),
+            (.SL, 2, 3),
+            (.SR, 10, 9),
+            (.BL, 4, 5),
+            (.BR, 12, 11),
+        ]
+
+        for (speaker, expectedLeft, expectedRight) in expected {
+            guard let indices = map.getIndices(for: speaker) else {
+                XCTFail("\(speaker.displayName) must have a fourteen-channel HeSuVi mapping")
+                continue
+            }
+            XCTAssertEqual(indices.leftEar, expectedLeft, "\(speaker.displayName) left-ear HRIR")
+            XCTAssertEqual(indices.rightEar, expectedRight, "\(speaker.displayName) right-ear HRIR")
+        }
+    }
+}
+
 final class InputLayoutResolutionTests: XCTestCase {
     func testDetectEightChannelsYieldsStandardSevenOneOrder() {
         // Order is a contract: it is the fallback mapping for unlabeled devices.
