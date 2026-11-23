@@ -80,12 +80,14 @@ protocol PresetLibraryManaging: AnyObject {
 /// The per-feature strings and file types; everything else is shared.
 nonisolated struct PresetLibraryConfiguration {
     let contentType: UTType
+    let canChooseDirectories: Bool
     let panelTitle: String
     let panelMessage: String
     let deletionFailureFallback: String
 
     static let hrir = PresetLibraryConfiguration(
         contentType: UTType(filenameExtension: "wav") ?? .audio,
+        canChooseDirectories: false,
         panelTitle: "Import HRIR Presets",
         panelMessage: "Choose one or more compatible HRIR WAV files.",
         deletionFailureFallback: "Could not delete the managed HRIR preset."
@@ -93,8 +95,9 @@ nonisolated struct PresetLibraryConfiguration {
 
     static let equalizer = PresetLibraryConfiguration(
         contentType: UTType(filenameExtension: "txt") ?? .plainText,
+        canChooseDirectories: true,
         panelTitle: "Import Equalizer Presets",
-        panelMessage: "Choose one or more EqualizerAPO .txt preset files.",
+        panelMessage: "Choose .txt presets or folders containing config.txt.",
         deletionFailureFallback: "Could not delete the managed preset."
     )
 }
@@ -184,7 +187,7 @@ final class PresetLibraryCoordinator: ObservableObject {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseFiles = true
-        panel.canChooseDirectories = false
+        panel.canChooseDirectories = configuration.canChooseDirectories
         panel.allowsOtherFileTypes = false
         panel.allowedContentTypes = [configuration.contentType]
         panel.title = configuration.panelTitle

@@ -139,6 +139,107 @@ final class EqualizerLibraryTests: XCTestCase {
         ]))])
     }
 
+    func testFolderImportKeepsNestedIncludesInOrderAfterSourceIsRemoved() throws {
+        let context = try TestContext()
+        let source = context.sourceDirectory
+        let filters = source.appendingPathComponent("Filters", isDirectory: true)
+        try FileManager.default.createDirectory(at: filters, withIntermediateDirectories: true)
+        try Data("""
+            Filter: ON PK Fc 110 Hz Gain -1 dB Q 1
+            Include: Filters\\Room curve.txt
+            Filter: ON PK Fc 330 Hz Gain -1 dB Q 1
+            """.utf8).write(to: source.appendingPathComponent("config.txt"))
+        try Data("Include: ../Shared.txt\n".utf8).write(to: filters.appendingPathComponent("Room curve.txt"))
+        try Data("Filter: ON PK Fc 220 Hz Gain -1 dB Q 1\n".utf8)
+            .write(to: source.appendingPathComponent("Shared.txt"))
+
+        XCTAssertEqual(context.manager.preflightImport([source]).acceptable, [source])
+        let result = context.manager.importPresets([source], collisionPolicy: .reject)
+        XCTAssertTrue(result.failures.isEmpty)
+        let preset = try XCTUnwrap(result.imported.first)
+        XCTAssertEqual(preset.definition.filters.map(\.frequencyHz), [110, 220, 330])
+        XCTAssertEqual(context.manager.presets.count, 1)
+        try FileManager.default.removeItem(at: source)
+
+        let relaunched = EqualizerManager(managedDirectory: context.managed)
+        XCTAssertEqual(relaunched.preset(id: preset.id)?.definition, preset.definition)
+        XCTAssertTrue(relaunched.delete(preset))
+        XCTAssertNil(relaunched.preset(id: preset.id))
+    }
+
+    func testMissingInvalidAndCyclicIncludesReportTheirSource() throws {
+        let context = try TestContext()
+        let source = context.sourceDirectory
+        let root = source.appendingPathComponent("config.txt")
+        let child = source.appendingPathComponent("Child.txt")
+        try Data("# Comment\r\nInclude: Child.txt\r\n".utf8).write(to: root)
+
+        let missing = context.manager.preflightImport([source]).rejected.first?.reason
+        XCTAssertTrue(missing?.contains("config.txt, line 2") == true)
+        XCTAssertTrue(missing?.contains("Child.txt") == true)
+
+        try Data("# Comment\nInvalid: content\n".utf8).write(to: child)
+        let invalid = context.manager.preflightImport([source]).rejected.first?.reason
+        XCTAssertTrue(invalid?.contains("Child.txt, line 2") == true)
+
+        try Data("Include: config.txt\n".utf8).write(to: child)
+        let cycle = context.manager.preflightImport([source]).rejected.first?.reason
+        XCTAssertTrue(cycle?.contains("Child.txt, line 1") == true)
+        XCTAssertTrue(cycle?.contains("cycle") == true)
+    }
+
+    func testIncludesCannotEscapeThroughParentPathsOrSymbolicLinks() throws {
+        let context = try TestContext()
+        let source = context.sourceDirectory
+        let root = source.appendingPathComponent("config.txt")
+        _ = try context.writePreset(named: "Outside.txt", preamp: -3, directory: context.root)
+
+        try Data("Include: ../Outside.txt\n".utf8).write(to: root)
+        XCTAssertEqual(context.manager.preflightImport([source]).rejected.count, 1)
+
+        let directoryLink = source.appendingPathComponent("Linked")
+        try FileManager.default.createSymbolicLink(at: directoryLink, withDestinationURL: context.root)
+        try Data("Include: Linked/Outside.txt\n".utf8).write(to: root)
+        XCTAssertEqual(context.manager.preflightImport([source]).rejected.count, 1)
+        XCTAssertTrue(context.manager.presets.isEmpty)
+    }
+
+    func testIncludedFilterPreparationErrorNamesOriginalFileAndLine() throws {
+        let context = try TestContext()
+        let source = context.sourceDirectory
+        try Data("Include: Child.txt\n".utf8).write(to: source.appendingPathComponent("config.txt"))
+        try Data("# comment\nFilter: ON PK Fc 23000 Hz Gain -3 dB Q 1\n".utf8)
+            .write(to: source.appendingPathComponent("Child.txt"))
+        let preset = try XCTUnwrap(context.manager.importPresets([source], collisionPolicy: .reject).imported.first)
+
+        XCTAssertThrowsError(try context.manager.runtimeEffect.prepare(definition: preset.definition, sampleRate: 44_100)) { error in
+            let issue = error as? EqualizerAudioEffectError
+            XCTAssertEqual(issue?.filterLine, 2)
+            XCTAssertTrue(issue?.errorDescription?.contains("Child.txt") == true)
+        }
+    }
+
+    func testManagedIncludeReloadKeepsLastWorkingDefinitionWhenSnapshotIsInvalid() throws {
+        let context = try TestContext()
+        let source = context.sourceDirectory
+        try Data("Include: Child.txt\n".utf8).write(to: source.appendingPathComponent("config.txt"))
+        _ = try context.writePreset(named: "Child.txt", preamp: -2)
+        let preset = try XCTUnwrap(context.manager.importPresets([source], collisionPolicy: .reject).imported.first)
+
+        let original = try Data(contentsOf: preset.fileURL)
+        try Data("broken".utf8).write(to: preset.fileURL)
+        context.manager.reload()
+        XCTAssertEqual(context.manager.preset(id: preset.id)?.definition.preampDB, -2)
+        XCTAssertEqual(context.manager.libraryError?.filename, preset.fileURL.lastPathComponent)
+
+        try original.write(to: preset.fileURL)
+        _ = try context.writePreset(named: "Child.txt", preamp: -4)
+        XCTAssertEqual(context.manager.preflightImport([source]).conflicts, [source])
+        let replacement = context.manager.importPresets([source], collisionPolicy: .replace)
+        XCTAssertEqual(replacement.imported.first?.id, preset.id)
+        XCTAssertEqual(replacement.imported.first?.definition.preampDB, -4)
+    }
+
     func testInvalidManagedFileIsSkippedAndReported() throws {
         let context = try TestContext()
         let invalid = context.managed.appendingPathComponent("broken.txt")
@@ -390,7 +491,7 @@ private final class TestContext {
         let directory = directory ?? sourceDirectory
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent(name)
-        let contents = preamp.map { "Preamp: \($0) dB\n" } ?? "Include: invalid\n"
+        let contents = preamp.map { "Preamp: \($0) dB\n" } ?? "Unsupported: invalid\n"
         try Data(contents.utf8).write(to: url)
         return url
     }

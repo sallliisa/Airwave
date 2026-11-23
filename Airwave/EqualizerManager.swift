@@ -140,12 +140,10 @@ final class EqualizerManager: ObservableObject {
             options: [.skipsHiddenFiles]
         )) ?? []
         let childFilenames = Set(children.map(\.lastPathComponent))
-        for fileURL in children where fileURL.pathExtension.caseInsensitiveCompare("txt") == .orderedSame {
+        for fileURL in children where fileURL.pathExtension.caseInsensitiveCompare("txt") == .orderedSame
+            || EqualizerConfigFiles.isArchive(fileURL) {
             do {
-                let definition = try EqualizerAPOParser.parse(
-                    data: Data(contentsOf: fileURL),
-                    filename: fileURL.lastPathComponent
-                )
+                let definition = try EqualizerConfigFiles.readManagedDefinition(at: fileURL)
                 let stored = metadataByFilename[fileURL.lastPathComponent]
                 updatedPresets.append(EqualizerPreset(
                     id: stored?.id ?? UUID(),
@@ -154,6 +152,10 @@ final class EqualizerManager: ObservableObject {
                     definition: definition
                 ))
             } catch {
+                if EqualizerConfigFiles.isArchive(fileURL),
+                   let previous = presets.first(where: { $0.fileURL == fileURL.standardizedFileURL }) {
+                    updatedPresets.append(previous)
+                }
                 errors.append(.init(filename: fileURL.lastPathComponent, reason: error.localizedDescription))
             }
         }
@@ -272,24 +274,15 @@ final class EqualizerManager: ObservableObject {
                 }
 
                 let destinationExisted = fileManager.fileExists(atPath: input.destination.path)
-                let originalData = destinationExisted ? try? Data(contentsOf: input.destination) : nil
+                let originalData = destinationExisted
+                    ? try? EqualizerConfigFiles.readFile(at: input.destination, limit: EqualizerConfigFiles.maximumArchiveSize)
+                    : nil
                 guard !destinationExisted || originalData != nil else {
                     throw InputValidationError(reason: "the existing managed file could not be read")
                 }
                 let previousPresets = presets
 
-                let temporary = managedDirectory.appendingPathComponent(".airwave-\(UUID().uuidString).txt")
-                do {
-                    try fileManager.copyItem(at: url, to: temporary)
-                    if fileManager.fileExists(atPath: input.destination.path) {
-                        _ = try fileManager.replaceItemAt(input.destination, withItemAt: temporary)
-                    } else {
-                        try fileManager.moveItem(at: temporary, to: input.destination)
-                    }
-                } catch {
-                    try? fileManager.removeItem(at: temporary)
-                    throw error
-                }
+                try input.data.write(to: input.destination, options: .atomic)
 
                 let preset = EqualizerPreset(
                     id: existing?.id ?? UUID(),
@@ -333,7 +326,7 @@ final class EqualizerManager: ObservableObject {
         }
         let originalData: Data
         do {
-            originalData = try Data(contentsOf: stored.fileURL)
+            originalData = try EqualizerConfigFiles.readFile(at: stored.fileURL, limit: EqualizerConfigFiles.maximumArchiveSize)
         } catch {
             libraryError = .init(filename: stored.fileURL.lastPathComponent, reason: "the managed file could not be read")
             return false
@@ -357,6 +350,7 @@ final class EqualizerManager: ObservableObject {
     private struct ValidatedInput {
         let filename: String
         let destination: URL
+        let data: Data
         let definition: EqualizerDefinition
     }
 
@@ -371,46 +365,12 @@ final class EqualizerManager: ObservableObject {
             if accessed { securityScope.stopAccessingSecurityScopedResource(for: url) }
         }
 
-        var isDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
-            throw InputValidationError(reason: "choose a text file, not a folder")
-        }
-        guard url.pathExtension.caseInsensitiveCompare("txt") == .orderedSame else {
-            throw InputValidationError(reason: "only .txt files can be imported")
-        }
-        guard fileManager.isReadableFile(atPath: url.path) else {
-            throw InputValidationError(reason: "the file could not be read")
-        }
-        let attributes = try fileManager.attributesOfItem(atPath: url.path)
-        if let type = attributes[.type] as? FileAttributeType,
-           type == .typeSymbolicLink {
-            throw InputValidationError(reason: "symbolic links cannot be imported")
-        }
-        let data: Data
-        do {
-            let handle = try FileHandle(forReadingFrom: url)
-            defer { try? handle.close() }
-            data = try handle.read(upToCount: EqualizerAPOParser.maximumDataSize + 1) ?? Data()
-        } catch {
-            throw InputValidationError(reason: "the file could not be read")
-        }
-        guard data.count <= EqualizerAPOParser.maximumDataSize else {
-            throw InputValidationError(reason: "file exceeds the 1 MiB limit")
-        }
-        let filename = url.lastPathComponent
-        guard !filename.isEmpty, filename != ".", filename != ".." else {
-            throw InputValidationError(reason: "invalid filename")
-        }
-        let destination = managedDirectory.appendingPathComponent(filename, isDirectory: false).standardizedFileURL
+        let input = try EqualizerConfigFiles.prepareImport(url)
+        let destination = managedDirectory.appendingPathComponent(input.filename, isDirectory: false).standardizedFileURL
         guard isDirectChildOfManagedDirectory(destination) else {
             throw InputValidationError(reason: "invalid filename")
         }
-        do {
-            let definition = try EqualizerAPOParser.parse(data: data, filename: filename)
-            return ValidatedInput(filename: filename, destination: destination, definition: definition)
-        } catch {
-            throw InputValidationError(reason: reason(for: error))
-        }
+        return ValidatedInput(filename: input.filename, destination: destination, data: input.data, definition: input.definition)
     }
 
     private func loadManifest() -> [EqualizerPresetMetadata] {
@@ -447,9 +407,11 @@ final class EqualizerManager: ObservableObject {
     }
 
     private func restoreManagedFile(at url: URL, existed: Bool, data: Data?) {
-        try? fileManager.removeItem(at: url)
-        guard existed, let data else { return }
-        try? data.write(to: url, options: .atomic)
+        if existed, let data {
+            try? data.write(to: url, options: .atomic)
+        } else {
+            try? fileManager.removeItem(at: url)
+        }
     }
 
     private func sort(_ presets: [EqualizerPreset]) -> [EqualizerPreset] {

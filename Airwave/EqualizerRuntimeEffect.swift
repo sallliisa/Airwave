@@ -136,12 +136,13 @@ nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
     ) -> EqualizerAudioEffectError {
         switch error {
         case .invalidFilter(let index, let coefficientError):
-            return .invalidFilter(
+            return sourceError(
                 line: definition?.filters.filter(\.isEnabled)[safe: index]?.sourceLine,
-                reason: coefficientError.localizedDescription
+                reason: coefficientError.localizedDescription,
+                definition: definition
             )
         case .invalidGraphicCurve(let line):
-            return .invalidFilter(line: line, reason: error.localizedDescription)
+            return sourceError(line: line, reason: error.localizedDescription, definition: definition)
         case .invalidSampleRate:
             return .invalidSampleRate
         case .nonFinitePreamp:
@@ -154,6 +155,13 @@ nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
                 reason: "Equalizer supports at most \(ParametricEqualizerState.maximumFilterCount) filters; received \(count)."
             )
         }
+    }
+
+    private func sourceError(line: Int?, reason: String, definition: EqualizerDefinition?) -> EqualizerAudioEffectError {
+        if let line, let location = definition?.sourceLocations[safe: line - 1] {
+            return .invalidFilter(line: location.lineNumber, reason: "\(location.filename): \(reason)")
+        }
+        return .invalidFilter(line: line, reason: reason)
     }
 }
 

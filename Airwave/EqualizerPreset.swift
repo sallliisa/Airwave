@@ -72,6 +72,7 @@ nonisolated enum EqualizerDirective: Equatable {
 
 nonisolated struct EqualizerDefinition: Equatable {
     let directives: [EqualizerDirective]
+    let sourceLocations: [EqualizerConfigFiles.SourceLocation]
 
     var preampDB: Double {
         var total: Double = 0
@@ -94,8 +95,9 @@ nonisolated struct EqualizerDefinition: Equatable {
         self.init(directives: directives)
     }
 
-    init(directives: [EqualizerDirective]) {
+    init(directives: [EqualizerDirective], sourceLocations: [EqualizerConfigFiles.SourceLocation] = []) {
         self.directives = directives
+        self.sourceLocations = sourceLocations
     }
 }
 
