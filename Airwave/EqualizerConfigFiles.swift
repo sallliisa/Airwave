@@ -3,7 +3,7 @@ import Foundation
 
 nonisolated enum EqualizerConfigFiles {
     static let archiveExtension = "apo"
-    static let maximumArchiveSize = 3 * EqualizerAPOParser.maximumDataSize
+    static let maximumArchiveSize = 3 * EqualizerAPOParser.maximumDataSize + 2 * EqualizerConvolutionAsset.maximumTotalFileSize
 
     static func isArchive(_ url: URL) -> Bool {
         url.pathExtension.caseInsensitiveCompare(archiveExtension) == .orderedSame
@@ -37,10 +37,13 @@ nonisolated enum EqualizerConfigFiles {
         let rootFilename: String
         let locations: [SourceLocation]
         let scopeBoundaries: [ScopeBoundary]
+        let assets: [Int: EqualizerConvolutionAsset]
 
         func parse() throws -> EqualizerDefinition {
             do {
-                let definition = try EqualizerAPOParser.parse(data: data, filename: rootFilename, fileBoundaries: scopeBoundaries)
+                let definition = try EqualizerAPOParser.parse(
+                    data: data, filename: rootFilename, fileBoundaries: scopeBoundaries, assets: assets
+                )
                 return EqualizerDefinition(directives: definition.directives, sourceLocations: locations)
             } catch let error as EqualizerParseError {
                 let issues = error.issues.map { issue in
@@ -73,10 +76,9 @@ nonisolated enum EqualizerConfigFiles {
 
         var expanded: Expanded {
             get throws {
-                let expander = Expander(rootFilename: rootFilename) { path in
-                    guard let data = files[path] else {
-                        throw FileError(reason: "\(path) is missing from the managed config")
-                    }
+                let expander = Expander(rootFilename: rootFilename) { path, limit in
+                    guard let data = files[path] else { throw FileError(reason: "\(path) is missing from the managed config") }
+                    guard data.count <= limit else { throw FileError(reason: "\(path) exceeds the file size limit") }
                     return data
                 }
                 return try expander.run()
@@ -101,12 +103,12 @@ nonisolated enum EqualizerConfigFiles {
             throw FileError(reason: "choose a .txt preset or a folder containing config.txt")
         }
 
-        let expander = Expander(rootFilename: rootFilename) { path in
+        let expander = Expander(rootFilename: rootFilename) { path, limit in
             if !isFolder && path == rootFilename {
-                return try readFile(at: source, limit: EqualizerAPOParser.maximumDataSize)
+                return try readFile(at: source, limit: limit)
             }
             do {
-                return try readFile(path, inside: folder)
+                return try readFile(path, inside: folder, limit: limit)
             } catch {
                 let detail = error.localizedDescription
                 if isFolder { throw error }
@@ -114,7 +116,7 @@ nonisolated enum EqualizerConfigFiles {
             }
         }
         let expanded = try expander.run()
-        if !isFolder && !expander.hasIncludes {
+        if !isFolder && !expander.hasIncludes && expanded.assets.isEmpty {
             guard let original = expander.files[rootFilename] else {
                 throw FileError(reason: "the preset could not be read")
             }
@@ -155,7 +157,7 @@ nonisolated enum EqualizerConfigFiles {
         return try readFile(descriptor, named: url.lastPathComponent, limit: limit)
     }
 
-    private static func readFile(_ path: String, inside folder: URL) throws -> Data {
+    private static func readFile(_ path: String, inside folder: URL, limit: Int) throws -> Data {
         var directory = open(folder.path, O_RDONLY | O_NOFOLLOW | O_DIRECTORY | O_CLOEXEC)
         guard directory >= 0 else {
             throw FileError(reason: "the config directory could not be opened")
@@ -178,7 +180,7 @@ nonisolated enum EqualizerConfigFiles {
         guard descriptor >= 0 else {
             throw FileError(reason: "\(path) could not be opened")
         }
-        return try readFile(descriptor, named: path, limit: EqualizerAPOParser.maximumDataSize)
+        return try readFile(descriptor, named: path, limit: limit)
     }
 
     private static func readFile(_ descriptor: Int32, named name: String, limit: Int) throws -> Data {
@@ -205,7 +207,7 @@ nonisolated enum EqualizerConfigFiles {
         let parts = path.split(separator: "/")
         guard !parts.isEmpty, path.utf8.count <= 1_024, !path.hasPrefix("/"),
               !path.contains(":"), !path.utf8.contains(0) else {
-            throw FileError(reason: "expected a relative Include path inside the config folder")
+            throw FileError(reason: "expected a relative path inside the config folder")
         }
         var resolved = parent.split(separator: "/").dropLast().map(String.init)
         for part in parts {
@@ -214,7 +216,7 @@ nonisolated enum EqualizerConfigFiles {
                 continue
             case "..":
                 guard !resolved.isEmpty else {
-                    throw FileError(reason: "Include path is outside the config folder")
+                    throw FileError(reason: "path is outside the config folder")
                 }
                 resolved.removeLast()
             default:
@@ -222,51 +224,69 @@ nonisolated enum EqualizerConfigFiles {
             }
         }
         guard !resolved.isEmpty else {
-            throw FileError(reason: "Include path does not name a file")
+            throw FileError(reason: "path does not name a file")
         }
         return resolved.joined(separator: "/")
     }
 
     nonisolated private final class Expander {
         private let rootFilename: String
-        private let load: (String) throws -> Data
+        private let load: (String, Int) throws -> Data
         private var output = [String]()
         private var locations = [SourceLocation]()
         private var scopeBoundaries = [ScopeBoundary]()
         private var active = Set<String>()
         private var expandedBytes = 0
         private var visits = 0
+        private var assetBytes = 0
+        private var assets: [Int: EqualizerConvolutionAsset] = [:]
 
         private(set) var files = [String: Data]()
         private(set) var hasIncludes = false
 
-        init(rootFilename: String, load: @escaping (String) throws -> Data) {
+        init(rootFilename: String, load: @escaping (String, Int) throws -> Data) {
             self.rootFilename = rootFilename
             self.load = load
         }
 
         func run() throws -> Expanded {
-            let rootPath = try resolve(rootFilename, relativeTo: "")
-            guard rootPath == rootFilename, !rootPath.contains("/") else {
+            guard !rootFilename.isEmpty, !rootFilename.contains("/"), !rootFilename.utf8.contains(0),
+                  rootFilename != ".", rootFilename != ".." else {
                 throw FileError(reason: "invalid config root filename")
             }
-            try expand(rootPath)
+            try expand(rootFilename)
             return Expanded(
                 data: Data(output.joined(separator: "\n").utf8),
-                rootFilename: rootPath,
+                rootFilename: rootFilename,
                 locations: locations,
-                scopeBoundaries: scopeBoundaries
+                scopeBoundaries: scopeBoundaries,
+                assets: assets
             )
         }
 
-        private func contents(of path: String) throws -> Data {
-            if let cached = files[path] { return cached }
-            guard files.count < 64 else {
-                throw FileError(reason: "a config can reference at most 64 text files")
+        private func contents(of path: String, limit: Int) throws -> Data {
+            if let cached = files[path] {
+                guard cached.count <= limit else { throw FileError(reason: "\(path) exceeds the file size limit") }
+                return cached
             }
-            let data = try load(path)
+            guard files.count < 64 else { throw FileError(reason: "a config can reference at most 64 files") }
+            let data = try load(path, limit)
             files[path] = data
             return data
+        }
+
+        private func addAsset(_ path: String) throws {
+            guard EqualizerConvolutionAsset.supports(filename: path) else {
+                throw FileError(reason: "Convolution requires a WAV impulse response")
+            }
+            guard assets.count < 4 else { throw FileError(reason: "a config can contain at most four Convolution commands") }
+            let bytes = try contents(of: path, limit: EqualizerConvolutionAsset.maximumFileSize)
+            assetBytes += bytes.count
+            guard assetBytes <= EqualizerConvolutionAsset.maximumTotalFileSize else {
+                throw FileError(reason: "config impulse responses exceed 16 MiB")
+            }
+            let lineNumber = output.count + 1
+            assets[lineNumber] = try EqualizerConvolutionAsset.decode(data: bytes, filename: path, sourceLine: lineNumber)
         }
 
         private func expand(_ path: String) throws {
@@ -280,7 +300,7 @@ nonisolated enum EqualizerConfigFiles {
             active.insert(path)
             defer { active.remove(path) }
 
-            let bytes = try contents(of: path)
+            let bytes = try contents(of: path, limit: EqualizerAPOParser.maximumDataSize)
             expandedBytes += bytes.count
             guard expandedBytes <= EqualizerAPOParser.maximumDataSize else {
                 throw FileError(reason: "expanded config exceeds the 1 MiB limit")
@@ -296,14 +316,13 @@ nonisolated enum EqualizerConfigFiles {
                 guard !line.isEmpty, !line.hasPrefix("#") else { continue }
                 let location = SourceLocation(filename: path, lineNumber: index + 1)
                 let fields = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
-                guard fields.count == 2,
-                      fields[0].trimmingCharacters(in: .whitespaces).caseInsensitiveCompare("Include") == .orderedSame else {
+                let command = fields[0].trimmingCharacters(in: .whitespaces).lowercased()
+                guard fields.count == 2, command == "include" || command == "convolution" else {
                     output.append(line)
                     locations.append(location)
                     continue
                 }
 
-                hasIncludes = true
                 var argument = fields[1].trimmingCharacters(in: .whitespaces)
                 if argument.count >= 2, argument.first == "\"",
                    argument.last == "\"" {
@@ -311,9 +330,16 @@ nonisolated enum EqualizerConfigFiles {
                 }
                 do {
                     let relativePath = try resolve(argument, relativeTo: path)
-                    scopeBoundaries.append(.enter(beforeLine: output.count + 1))
-                    try expand(relativePath)
-                    scopeBoundaries.append(.leave(beforeLine: output.count + 1))
+                    if command == "include" {
+                        hasIncludes = true
+                        scopeBoundaries.append(.enter(beforeLine: output.count + 1))
+                        try expand(relativePath)
+                        scopeBoundaries.append(.leave(beforeLine: output.count + 1))
+                    } else {
+                        try addAsset(relativePath)
+                        output.append(line)
+                        locations.append(location)
+                    }
                 } catch {
                     throw FileError(reason: "\(location.filename), line \(location.lineNumber): \(error.localizedDescription)")
                 }

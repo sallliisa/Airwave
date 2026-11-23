@@ -139,6 +139,46 @@ final class EqualizerLibraryTests: XCTestCase {
         ]))])
     }
 
+    func testNestedWAVConvolutionPlaysBothChannelsAfterRelaunch() throws {
+        let context = try TestContext()
+        let folder = context.sourceDirectory.appendingPathComponent("filters")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("Include: filters/Room.txt\n".utf8).write(to: context.sourceDirectory.appendingPathComponent("config.txt"))
+        try Data("# calibration\nConvolution: \"Room IR.wav\"\n".utf8).write(to: folder.appendingPathComponent("Room.txt"))
+        try makeEqualizerImpulseWAV(channels: [[0, 16_384, 0, 0], [8_192, 0, 0, 0]])
+            .write(to: folder.appendingPathComponent("Room IR.wav"))
+        let imported = try XCTUnwrap(context.manager.importPresets([context.sourceDirectory], collisionPolicy: .reject).imported.first)
+        try FileManager.default.removeItem(at: context.sourceDirectory)
+
+        let relaunched = EqualizerManager(managedDirectory: context.managed, startWatcher: false)
+        let definition = try XCTUnwrap(relaunched.preset(id: imported.id)?.definition)
+        let state = try ParametricEqualizerProcessor.prepare(definition: definition, sampleRate: 48_000)
+        var left: [Float] = [0.5, 0, 0, 0]
+        var right: [Float] = [0.25, 0, 0, 0]
+        left.withUnsafeMutableBufferPointer { l in
+            right.withUnsafeMutableBufferPointer { r in
+                state.process(inputLeft: l.baseAddress!, inputRight: r.baseAddress!, leftOutput: l.baseAddress!,
+                              rightOutput: r.baseAddress!, frameCount: l.count)
+            }
+        }
+        XCTAssertEqual(left, [0, 0.25, 0, 0])
+        XCTAssertEqual(right, [0.0625, 0, 0, 0])
+
+        XCTAssertThrowsError(try relaunched.runtimeEffect.prepare(definition: definition, sampleRate: 96_000)) { error in
+            let issue = error as? EqualizerAudioEffectError
+            XCTAssertEqual(issue?.filterLine, 2)
+            XCTAssertTrue(issue?.errorDescription?.contains("Room IR.wav") == true)
+        }
+    }
+
+    func testStandalonePresetAcceptsMacFilenameWithIncludePathPunctuation() throws {
+        let context = try TestContext()
+        let source = try context.writePreset(named: "Desk: close\\near.txt", preamp: -2)
+        let result = context.manager.importPresets([source], collisionPolicy: .reject)
+        XCTAssertTrue(result.failures.isEmpty)
+        XCTAssertEqual(result.imported.first?.fileURL.lastPathComponent, source.lastPathComponent)
+    }
+
     func testFolderImportKeepsNestedIncludesInOrderAfterSourceIsRemoved() throws {
         let context = try TestContext()
         let source = context.sourceDirectory
@@ -532,4 +572,34 @@ private final class EqualizerSecurityScopeFake: EqualizerSecurityScopeAccessing 
     func stopAccessingSecurityScopedResource(for url: URL) {
         stopCount += 1
     }
+}
+private func makeEqualizerImpulseWAV(channels: [[Int16]], sampleRate: UInt32 = 48_000) -> Data {
+    let channelCount = UInt16(channels.count)
+    let frameCount = channels[0].count
+    precondition(channels.allSatisfy { $0.count == frameCount })
+    let blockAlign = channelCount * 2
+    let byteCount = UInt32(frameCount) * UInt32(blockAlign)
+
+    var data = Data()
+    func append(_ value: some FixedWidthInteger) {
+        Swift.withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) }
+    }
+    data.append(contentsOf: "RIFF".utf8)
+    append(UInt32(36) + byteCount)
+    data.append(contentsOf: "WAVEfmt ".utf8)
+    append(UInt32(16))
+    append(UInt16(1))
+    append(channelCount)
+    append(sampleRate)
+    append(sampleRate * UInt32(blockAlign))
+    append(blockAlign)
+    append(UInt16(16))
+    data.append(contentsOf: "data".utf8)
+    append(byteCount)
+    for index in 0..<frameCount {
+        for channel in channels {
+            append(channel[index])
+        }
+    }
+    return data
 }

@@ -52,7 +52,8 @@ nonisolated struct EqualizerAPOParser {
     }
 
     static func parse(
-        data: Data, filename: String, fileBoundaries: [EqualizerConfigFiles.ScopeBoundary] = []
+        data: Data, filename: String, fileBoundaries: [EqualizerConfigFiles.ScopeBoundary] = [],
+        assets: [Int: EqualizerConvolutionAsset] = [:]
     ) throws -> EqualizerDefinition {
         guard data.count <= maximumDataSize else {
             throw EqualizerParseError(
@@ -148,9 +149,18 @@ nonisolated struct EqualizerAPOParser {
 
             let fields = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
             if fields.count == 2 {
+                let commandName = fields[0].trimmingCharacters(in: .whitespaces)
+                if commandName.caseInsensitiveCompare("Convolution") == .orderedSame {
+                    if let asset = assets[lineNumber] {
+                        directives.append(.convolution(asset))
+                    } else {
+                        issues.append(.init(lineNumber: lineNumber, reason: "import the config folder with its WAV impulse responses"))
+                    }
+                    continue
+                }
                 do {
                     if let command = try EqualizerStereoCommand.parse(
-                        command: fields[0].trimmingCharacters(in: .whitespaces),
+                        command: commandName,
                         parameters: String(fields[1])
                     ) {
                         stereoDeclarationCount += 1
@@ -192,7 +202,7 @@ nonisolated struct EqualizerAPOParser {
         switch directive {
         case .preamp(let gainDB): gainDB != 0
         case .parametric(let filter): filter.isEnabled
-        case .graphic: true
+        case .graphic, .convolution: true
         case .stereo(.channel, _), .enterInclude, .leaveInclude: false
         case .stereo: true
         }

@@ -21,6 +21,7 @@ nonisolated final class ParametricEqualizerState {
             switch stage {
             case .linear(let filter): filter.reset()
             case .delay(let delay): delay.reset()
+            case .convolution(let filter): filter.reset()
             case .copy: break
             }
         }
@@ -64,6 +65,8 @@ nonisolated final class ParametricEqualizerState {
                 copy.process(left: leftOutput, right: rightOutput, frameCount: frameCount)
             case .delay(let delay):
                 delay.process(left: leftOutput, right: rightOutput, frameCount: frameCount)
+            case .convolution(let filter):
+                filter.process(left: leftOutput, right: rightOutput, frameCount: frameCount)
             }
         }
     }
@@ -74,6 +77,7 @@ nonisolated private enum EqualizerStereoStage {
     case linear(EqualizerStereoFilterStage)
     case copy(EqualizerStereoCopy)
     case delay(EqualizerStereoDelay)
+    case convolution(EqualizerStereoConvolver)
 }
 
 nonisolated private final class EqualizerStereoFilterStage {
@@ -84,13 +88,13 @@ nonisolated private final class EqualizerStereoFilterStage {
     private let channels: EqualizerStereoChannels
     private let inputPointers: UnsafeMutablePointer<UnsafePointer<Float>>
     private let outputPointers: UnsafeMutablePointer<UnsafeMutablePointer<Float>>
-    private let graphicFilters: [GraphicEqualizerFilter]
+    private let graphicFilters: [EqualizerStereoConvolver]
 
     init(
         channels: EqualizerStereoChannels,
         preampLinear: Double,
         coefficients: [BiquadCoefficients],
-        graphicFilters: [GraphicEqualizerFilter] = []
+        graphicFilters: [EqualizerStereoConvolver] = []
     ) {
         self.channels = channels
         self.leftGain = channels.contains(.left) ? Float(preampLinear) : 1
@@ -605,7 +609,7 @@ nonisolated private final class EqualizerStereoCompiler {
     private var scopes: [EqualizerStereoChannels] = []
     private var preamp = 0.0
     private var coefficients: [BiquadCoefficients] = []
-    private var graphicFilters: [GraphicEqualizerFilter] = []
+    private var graphicFilters: [EqualizerStereoConvolver] = []
     private var filterCount = 0
     private var delaySamples = 0
 
@@ -622,12 +626,14 @@ nonisolated private final class EqualizerStereoCompiler {
                 if filter.isEnabled { try add(filter) }
             case .graphic(let curve):
                 guard let response = GraphicEqualizerImpulseResponse.make(points: curve.points, sampleRate: sampleRate),
-                      let filter = GraphicEqualizerFilter(impulseResponse: response) else {
+                      let filter = EqualizerStereoConvolver(impulseResponse: response) else {
                     throw ParametricEqualizerPreparationError.invalidGraphicCurve(line: curve.sourceLine)
                 }
                 graphicFilters.append(filter)
             case .stereo(let command, let line):
                 try add(command, line: line)
+            case .convolution(let asset):
+                try add(asset)
             case .enterInclude:
                 scopes.append(channels)
             case .leaveInclude:
@@ -680,6 +686,25 @@ nonisolated private final class EqualizerStereoCompiler {
                 throw ParametricEqualizerPreparationError.invalidStereoOperation(line: line, reason: error.localizedDescription)
             }
         }
+    }
+
+    private func add(_ asset: EqualizerConvolutionAsset) throws {
+        try flush()
+        guard abs(asset.sampleRate - sampleRate) <= 1 else {
+            throw ParametricEqualizerPreparationError.invalidStereoOperation(
+                line: asset.sourceLine,
+                reason: "\(asset.filename) sample rate (\(asset.sampleRate) Hz) must match the output rate (\(sampleRate) Hz)."
+            )
+        }
+        let left = channels.contains(.left) ? asset.channels.first : nil
+        let rightIndex = left != nil && asset.channels.count > 1 ? 1 : 0
+        let right = channels.contains(.right) ? asset.channels.dropFirst(rightIndex).first : nil
+        guard let filter = EqualizerStereoConvolver(leftResponse: left, rightResponse: right) else {
+            throw ParametricEqualizerPreparationError.invalidStereoOperation(
+                line: asset.sourceLine, reason: "Could not prepare impulse response \(asset.filename)."
+            )
+        }
+        stages.append(.convolution(filter))
     }
 
     private func flush() throws {

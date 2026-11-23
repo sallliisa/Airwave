@@ -90,28 +90,33 @@ nonisolated enum GraphicEqualizerImpulseResponse {
     }
 }
 
-nonisolated final class GraphicEqualizerFilter {
-    private let left: Channel
-    private let right: Channel
+nonisolated final class EqualizerStereoConvolver {
+    private let left: Channel?
+    private let right: Channel?
 
-    init?(impulseResponse: [Float]) {
-        guard let left = Channel(impulseResponse: impulseResponse),
-              let right = Channel(impulseResponse: impulseResponse) else { return nil }
-        self.left = left
-        self.right = right
+    convenience init?(impulseResponse: [Float]) {
+        self.init(leftResponse: impulseResponse, rightResponse: impulseResponse)
+    }
+
+    init?(leftResponse: [Float]?, rightResponse: [Float]?) {
+        left = leftResponse.flatMap(Channel.init(impulseResponse:))
+        right = rightResponse.flatMap(Channel.init(impulseResponse:))
+        guard (leftResponse == nil || left != nil), (rightResponse == nil || right != nil), left != nil || right != nil else {
+            return nil
+        }
     }
 
     func process(
         left: UnsafeMutablePointer<Float>, right: UnsafeMutablePointer<Float>, frameCount: Int,
         channels: EqualizerStereoChannels = .both
     ) {
-        if channels.contains(.left) { self.left.process(left, frameCount: frameCount) }
-        if channels.contains(.right) { self.right.process(right, frameCount: frameCount) }
+        if channels.contains(.left) { self.left?.process(left, frameCount: frameCount) }
+        if channels.contains(.right) { self.right?.process(right, frameCount: frameCount) }
     }
 
     func reset() {
-        left.reset()
-        right.reset()
+        left?.reset()
+        right?.reset()
     }
 
     nonisolated private final class Channel {

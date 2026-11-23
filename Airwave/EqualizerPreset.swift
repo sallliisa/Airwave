@@ -69,6 +69,7 @@ nonisolated enum EqualizerDirective: Equatable {
     case parametric(EqualizerFilter)
     case graphic(EqualizerGraphicCurve)
     case stereo(EqualizerStereoCommand, line: Int)
+    case convolution(EqualizerConvolutionAsset)
     case enterInclude
     case leaveInclude
 }
