@@ -118,15 +118,20 @@ jobs:
           test -f "$app/Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle"
           scripts/verify-bundled-presets.sh "$app"
 
-      - name: Generate release notes
+      - name: Prepare release notes
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.TAG }}
         run: |
-          gh api --method POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
-            -f tag_name="$TAG" \
-            -f target_commitish="${{ steps.version.outputs.COMMIT_SHA }}" \
-            --jq .body > build/release-notes.md
+          notes="docs/release-notes/$TAG.md"
+          if [ -s "$notes" ]; then
+            cp "$notes" build/release-notes.md
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+              -f tag_name="$TAG" \
+              -f target_commitish="${{ steps.version.outputs.COMMIT_SHA }}" \
+              --jq .body > build/release-notes.md
+          fi
 
       - name: Package and sign update
         env:
