@@ -19,16 +19,19 @@ nonisolated final class ParametricEqualizerState {
     private var preampGain: Float
     private let inputPointers: UnsafeMutablePointer<UnsafePointer<Float>>
     private let outputPointers: UnsafeMutablePointer<UnsafeMutablePointer<Float>>
+    private let graphicFilters: [GraphicEqualizerFilter]
 
     init(
         sampleRate: Double,
         preampDB: Double,
-        coefficients: [BiquadCoefficients]
+        coefficients: [BiquadCoefficients],
+        graphicFilters: [GraphicEqualizerFilter] = []
     ) {
         self.sampleRate = sampleRate
         self.filterCount = coefficients.count
         self.preampLinear = pow(10, preampDB / 20)
         self.preampGain = Float(preampLinear)
+        self.graphicFilters = graphicFilters
         self.inputPointers = UnsafeMutablePointer<UnsafePointer<Float>>.allocate(capacity: 2)
         self.outputPointers = UnsafeMutablePointer<UnsafeMutablePointer<Float>>.allocate(capacity: 2)
 
@@ -70,8 +73,8 @@ nonisolated final class ParametricEqualizerState {
     }
 
     func reset() {
-        guard let setup else { return }
-        vDSP_biquadm_ResetState(setup)
+        if let setup { vDSP_biquadm_ResetState(setup) }
+        for filter in graphicFilters { filter.reset() }
     }
 
     // BEGIN REALTIME CALLBACK
@@ -96,22 +99,24 @@ nonisolated final class ParametricEqualizerState {
             right = UnsafePointer(rightOutput)
         }
 
-        guard let setup else {
+        if let setup {
+            inputPointers.initialize(to: inputLeft)
+            inputPointers.advanced(by: 1).initialize(to: right)
+            outputPointers.initialize(to: leftOutput)
+            outputPointers.advanced(by: 1).initialize(to: rightOutput)
+            vDSP_biquadm(
+                setup,
+                inputPointers, 1,
+                outputPointers, 1,
+                vDSP_Length(frameCount)
+            )
+        } else {
             vDSP_vsmul(inputLeft, 1, &preampGain, leftOutput, 1, vDSP_Length(frameCount))
             vDSP_vsmul(right, 1, &preampGain, rightOutput, 1, vDSP_Length(frameCount))
-            return
         }
-
-        inputPointers.initialize(to: inputLeft)
-        inputPointers.advanced(by: 1).initialize(to: right)
-        outputPointers.initialize(to: leftOutput)
-        outputPointers.advanced(by: 1).initialize(to: rightOutput)
-        vDSP_biquadm(
-            setup,
-            inputPointers, 1,
-            outputPointers, 1,
-            vDSP_Length(frameCount)
-        )
+        for filter in graphicFilters {
+            filter.process(left: leftOutput, right: rightOutput, frameCount: frameCount)
+        }
     }
     // END REALTIME CALLBACK
 }
@@ -122,6 +127,7 @@ nonisolated enum ParametricEqualizerPreparationError: Error, Equatable, Localize
     case nonFiniteCoefficients
     case tooManyFilters(Int)
     case invalidFilter(index: Int, error: BiquadCoefficientError)
+    case invalidGraphicCurve(line: Int)
 
     var errorDescription: String? {
         switch self {
@@ -135,6 +141,8 @@ nonisolated enum ParametricEqualizerPreparationError: Error, Equatable, Localize
             return "Equalizer supports at most \(ParametricEqualizerState.maximumFilterCount) filters; received \(count)."
         case .invalidFilter(let index, let error):
             return "Filter \(index + 1) is invalid: \(error.localizedDescription)"
+        case .invalidGraphicCurve:
+            return "GraphicEQ could not produce a finite impulse response."
         }
     }
 }
@@ -250,10 +258,23 @@ nonisolated final class ParametricEqualizerProcessor {
             throw ParametricEqualizerPreparationError.nonFiniteCoefficients
         }
 
+        // This preset subset applies only linear filters and gain to both
+        // channels. Fuse the biquads and retain one FIR per graphic curve.
+        var graphicFilters: [GraphicEqualizerFilter] = []
+        for directive in definition?.directives ?? [] {
+            guard case .graphic(let curve) = directive else { continue }
+            guard let response = GraphicEqualizerImpulseResponse.make(points: curve.points, sampleRate: sampleRate),
+                  let filter = GraphicEqualizerFilter(impulseResponse: response) else {
+                throw ParametricEqualizerPreparationError.invalidGraphicCurve(line: curve.sourceLine)
+            }
+            graphicFilters.append(filter)
+        }
+
         return ParametricEqualizerState(
             sampleRate: sampleRate,
             preampDB: preampDB,
-            coefficients: coefficients
+            coefficients: coefficients,
+            graphicFilters: graphicFilters
         )
     }
 
@@ -331,6 +352,10 @@ nonisolated final class ParametricEqualizerProcessor {
     #endif
 
     func setTarget(definition: EqualizerDefinition?) throws {
+        guard let definition else {
+            try publish(unityState)
+            return
+        }
         let state = try Self.prepare(definition: definition, sampleRate: sampleRate)
         #if DEBUG
         // Tag the production state too: setTarget publishes fresh states on

@@ -202,11 +202,11 @@ nonisolated final class StereoConvolutionEngine {
     // MARK: - Processing
 
     // BEGIN REALTIME CALLBACK
-    /// Convolve one `blockSize` input block against both ears.
+    /// Convolve one `blockSize` input block against the requested responses.
     func process(
         input: UnsafePointer<Float>,
         outputLeft: UnsafeMutablePointer<Float>,
-        outputRight: UnsafeMutablePointer<Float>
+        outputRight: UnsafeMutablePointer<Float>?
     ) {
         // 1. Overlap-save input: [previous block | current block]
         memcpy(inputBuffer, inputOverlapBuffer, blockSize * MemoryLayout<Float>.size)
@@ -231,7 +231,9 @@ nonisolated final class StereoConvolutionEngine {
 
         // 3. One multiply-accumulate pass and one inverse FFT per ear.
         convolve(hrirReal: leftRealData, hrirImag: leftImagData, output: outputLeft)
-        convolve(hrirReal: rightRealData, hrirImag: rightImagData, output: outputRight)
+        if let outputRight {
+            convolve(hrirReal: rightRealData, hrirImag: rightImagData, output: outputRight)
+        }
     }
 
     @inline(__always)

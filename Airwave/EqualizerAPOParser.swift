@@ -23,6 +23,8 @@ nonisolated struct EqualizerParseError: LocalizedError, Equatable {
 nonisolated struct EqualizerAPOParser {
     static let maximumDataSize = 1_048_576
     static let maximumFilterCount = 64
+    static let maximumGraphicCurveCount = 4
+    static let maximumGraphicPointCount = 1_024
 
     private static let preampRegex = try! NSRegularExpression(
         pattern: #"^Preamp\s*:\s*(\S+)\s+dB$"#,
@@ -32,6 +34,14 @@ nonisolated struct EqualizerAPOParser {
         pattern: #"^Filter(?:\s+([0-9]+))?\s*:\s+(ON|OFF)\s+(PK|LSC|HSC)\s+Fc\s+(\S+)\s+Hz\s+Gain\s+(\S+)\s+dB\s+Q\s+(\S+)$"#,
         options: [.caseInsensitive]
     )
+    private static let graphicRegex = try! NSRegularExpression(
+        pattern: #"^GraphicEQ\s*:\s*(.*)$"#,
+        options: [.caseInsensitive]
+    )
+
+    private struct GraphicParseError: Error {
+        let reason: String
+    }
 
     static func parse(data: Data, filename: String) throws -> EqualizerDefinition {
         guard data.count <= maximumDataSize else {
@@ -50,13 +60,13 @@ nonisolated struct EqualizerAPOParser {
             source.removeFirst()
         }
 
-        var preampDB = 0.0
         var hasPreamp = false
         var filterDeclarationCount = 0
-        var filters: [EqualizerFilter] = []
+        var graphicDeclarationCount = 0
+        var directives: [EqualizerDirective] = []
         var issues: [EqualizerParseIssue] = []
 
-        for (index, rawLine) in source.components(separatedBy: .newlines).enumerated() {
+        for (index, rawLine) in source.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).enumerated() {
             let lineNumber = index + 1
             let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !line.isEmpty, !line.hasPrefix("#") else { continue }
@@ -70,12 +80,35 @@ nonisolated struct EqualizerAPOParser {
                     issues.append(.init(lineNumber: lineNumber, reason: "Preamp must be a finite number"))
                     continue
                 }
-                preampDB = value
+                directives.append(.preamp(value))
                 hasPreamp = true
                 continue
             }
 
-            if line.lowercased().hasPrefix("filter") {
+            let lowercased = line.lowercased()
+            if lowercased.hasPrefix("graphiceq") {
+                graphicDeclarationCount += 1
+                guard graphicDeclarationCount <= maximumGraphicCurveCount else {
+                    issues.append(.init(
+                        lineNumber: lineNumber,
+                        reason: "more than \(maximumGraphicCurveCount) GraphicEQ declarations are not allowed"
+                    ))
+                    continue
+                }
+                guard let captures = captures(for: graphicRegex, in: line) else {
+                    issues.append(.init(lineNumber: lineNumber, reason: "malformed GraphicEQ directive"))
+                    continue
+                }
+                do {
+                    let points = try parseGraphicPoints(captures[0])
+                    directives.append(.graphic(.init(sourceLine: lineNumber, points: points)))
+                } catch {
+                    issues.append(.init(lineNumber: lineNumber, reason: error.reason))
+                }
+                continue
+            }
+
+            if lowercased.hasPrefix("filter") {
                 filterDeclarationCount += 1
                 if filterDeclarationCount > maximumFilterCount {
                     issues.append(.init(lineNumber: lineNumber, reason: "more than 64 filter declarations are not allowed"))
@@ -122,7 +155,7 @@ nonisolated struct EqualizerAPOParser {
 
                 guard let frequencyHz, let gainDB, let q else { continue }
 
-                filters.append(EqualizerFilter(
+                directives.append(.parametric(EqualizerFilter(
                     sourceLine: lineNumber,
                     sourceNumber: sourceNumber,
                     isEnabled: isEnabled,
@@ -130,27 +163,71 @@ nonisolated struct EqualizerAPOParser {
                     frequencyHz: frequencyHz,
                     gainDB: gainDB,
                     q: q
-                ))
+                )))
                 continue
             }
 
-            if line.lowercased().hasPrefix("preamp") {
+            if lowercased.hasPrefix("preamp") {
                 issues.append(.init(lineNumber: lineNumber, reason: "malformed Preamp directive"))
             } else {
                 issues.append(.init(lineNumber: lineNumber, reason: "unsupported directive"))
             }
         }
 
-        if issues.isEmpty && preampDB == 0 && !filters.contains(where: \.isEnabled) {
-            issues.append(.init(lineNumber: nil, reason: "effective configuration must contain a non-zero preamp or an enabled supported filter"))
+        if issues.isEmpty && !directives.contains(where: isEffective) {
+            issues.append(.init(
+                lineNumber: nil,
+                reason: "effective configuration must contain a non-zero preamp, an enabled filter, or a GraphicEQ curve"
+            ))
         }
         guard issues.isEmpty else {
             throw EqualizerParseError(filename: filename, issues: issues)
         }
-        return EqualizerDefinition(preampDB: preampDB, filters: filters)
+        return EqualizerDefinition(directives: directives)
     }
 
-    private static func finiteDouble(_ value: String) -> Double? {
+    private static func isEffective(_ directive: EqualizerDirective) -> Bool {
+        switch directive {
+        case .preamp(let gainDB): gainDB != 0
+        case .parametric(let filter): filter.isEnabled
+        case .graphic: true
+        }
+    }
+
+    private static func parseGraphicPoints(_ argument: String) throws(GraphicParseError) -> [EqualizerGraphicPoint] {
+        let normalized = argument.contains(".") ? argument : argument.replacingOccurrences(of: ",", with: ".")
+        let value = normalized.last == ";" ? normalized.dropLast() : normalized[...]
+        let pairs = value.split(
+            separator: ";",
+            maxSplits: maximumGraphicPointCount,
+            omittingEmptySubsequences: false
+        )
+        guard pairs.count <= maximumGraphicPointCount else {
+            throw GraphicParseError(reason: "more than \(maximumGraphicPointCount) GraphicEQ points are not allowed")
+        }
+
+        guard !value.isEmpty else {
+            throw GraphicParseError(reason: "GraphicEQ needs at least one frequency and gain pair")
+        }
+
+        var points: [EqualizerGraphicPoint] = []
+        var frequencies: Set<Double> = []
+        for pair in pairs {
+            let fields = pair.split(maxSplits: 2, whereSeparator: \.isWhitespace)
+            guard fields.count == 2,
+                  let frequencyHz = finiteDouble(fields[0]), frequencyHz >= 0,
+                  let gainDB = finiteDouble(fields[1]) else {
+                throw GraphicParseError(reason: "GraphicEQ needs pairs of non-negative frequencies and finite gains")
+            }
+            guard frequencies.insert(frequencyHz).inserted else {
+                throw GraphicParseError(reason: "duplicate GraphicEQ frequency \(frequencyHz) Hz")
+            }
+            points.append(.init(frequencyHz: frequencyHz, gainDB: gainDB))
+        }
+        return points.sorted { $0.frequencyHz < $1.frequencyHz }
+    }
+
+    private static func finiteDouble(_ value: some StringProtocol) -> Double? {
         guard let number = Double(value), number.isFinite else { return nil }
         return number
     }

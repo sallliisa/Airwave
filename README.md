@@ -106,7 +106,9 @@ The **Spatial Profile** section is where you choose the HRIR preset for the outp
 
 ### Equalizer
 
-The optional Equalizer uses EqualizerAPO-format `.txt` presets. Airwave includes five presets:
+The optional Equalizer imports Equalizer APO `.txt` presets. It supports `Preamp`, `GraphicEQ`, and parametric filters of type `PK`, `LSC`, or `HSC` with an explicit Q value.
+
+Airwave includes five presets.
 
 - Bass Booster
 - Bass Reducer

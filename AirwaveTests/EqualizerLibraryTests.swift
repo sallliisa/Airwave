@@ -114,6 +114,31 @@ final class EqualizerLibraryTests: XCTestCase {
         XCTAssertEqual(relaunched.presets.map(\.definition), context.manager.presets.map(\.definition))
     }
 
+    func testImportedGraphicEQRemainsSelectableAfterRelaunch() throws {
+        let context = try TestContext()
+        let source = context.sourceDirectory.appendingPathComponent("GraphicEQ.txt")
+        try Data("GraphicEQ: 20 -2; 1000 0; 20000 1\n".utf8).write(to: source)
+
+        let result = context.manager.importPresets([source], collisionPolicy: .reject)
+        XCTAssertTrue(result.failures.isEmpty)
+        let imported = try XCTUnwrap(result.imported.first)
+        try FileManager.default.removeItem(at: source)
+        let relaunched = EqualizerManager(
+            managedDirectory: context.managed,
+            fileManager: .default,
+            defaults: context.defaults,
+            securityScope: context.securityScope
+        )
+
+        let selected = try XCTUnwrap(relaunched.preset(id: imported.id))
+        XCTAssertEqual(selected.definition, imported.definition)
+        XCTAssertEqual(selected.definition.directives, [.graphic(.init(sourceLine: 1, points: [
+            .init(frequencyHz: 20, gainDB: -2),
+            .init(frequencyHz: 1000, gainDB: 0),
+            .init(frequencyHz: 20000, gainDB: 1)
+        ]))])
+    }
+
     func testInvalidManagedFileIsSkippedAndReported() throws {
         let context = try TestContext()
         let invalid = context.managed.appendingPathComponent("broken.txt")

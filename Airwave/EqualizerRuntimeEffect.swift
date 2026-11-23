@@ -140,6 +140,8 @@ nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
                 line: definition?.filters.filter(\.isEnabled)[safe: index]?.sourceLine,
                 reason: coefficientError.localizedDescription
             )
+        case .invalidGraphicCurve(let line):
+            return .invalidFilter(line: line, reason: error.localizedDescription)
         case .invalidSampleRate:
             return .invalidSampleRate
         case .nonFinitePreamp:

@@ -130,6 +130,77 @@ final class EqualizerSafetySoakTests: XCTestCase {
 }
 
 final class ParametricEqualizerProcessorTests: XCTestCase {
+    func testGraphicEQImpulseMatchesEqualizerAPOReferenceAcrossCallbackBoundaries() throws {
+        let definition = try EqualizerAPOParser.parse(data: Data("""
+        GraphicEQ: 20 0; 45 0; 50 -12; 55 0; 100 0; 400 -6; 1600 -3; 6400 2; 12000 -8
+        """.utf8), filename: "Curve.txt")
+        // Independent reference from Equalizer APO's 16384-tap design,
+        // including its half-bin mirror and cosine window.
+        let indices = [0, 1, 17, 255, 256, 257, 4999]
+        let references: [(rate: Double, taps: [Float])] = [
+            (44_100, [0.57501936, 0.28595823, 0.000403064, -0.000187667, -0.000176473, -0.000194593, 0.000001129]),
+            (48_000, [0.55809546, 0.27237153, 0.008659942, -0.000332404, -0.000331685, -0.000344128, 0.000001433]),
+            (96_000, [0.47136545, 0.14744756, 0.014841376, 0.000128640, 0.000127670, 0.000118924, 0.000058199])
+        ]
+
+        for reference in references {
+            let state = try ParametricEqualizerProcessor.prepare(definition: definition, sampleRate: reference.rate)
+            var left: [Float] = []
+            var right: [Float] = []
+            for size in [1, 27, 228, 513, 4096, 435] {
+                var inputLeft = [Float](repeating: 0, count: size)
+                var inputRight = inputLeft
+                if left.isEmpty { inputLeft[0] = 1 }
+                if left.count == 28 { inputRight[0] = -0.5 }
+                let chunk = process(state, left: inputLeft, right: inputRight)
+                left += chunk.left
+                right += chunk.right
+            }
+            XCTAssertTrue(right.prefix(28).allSatisfy { $0 == 0 })
+            for (index, expected) in zip(indices, reference.taps) {
+                XCTAssertEqual(left[index], expected, accuracy: 0.0000005, "\(reference.rate) Hz, tap \(index)")
+                XCTAssertEqual(right[index + 28], -0.5 * expected, accuracy: 0.0000005)
+            }
+
+            state.reset()
+            let silence = [Float](repeating: 0, count: 777)
+            let resetOutput = process(state, left: silence, right: silence)
+            XCTAssertEqual(resetOutput.left, silence)
+            XCTAssertEqual(resetOutput.right, silence)
+        }
+    }
+
+    func testGraphicEQCombinesWithPreampAndParametricEQAndCrossfadesToBypass() throws {
+        let definition = try EqualizerAPOParser.parse(data: Data("""
+        Preamp: -6.020599913 dB
+        GraphicEQ: 20 -6.020599913; 20000 -6.020599913
+        Filter: ON PK Fc 1000 Hz Gain 3 dB Q 1
+        """.utf8), filename: "Mixed.txt")
+        let parametric = try ParametricEqualizerProcessor.prepare(
+            definition: EqualizerDefinition(filters: definition.filters), sampleRate: 48_000
+        )
+        let mixed = try ParametricEqualizerProcessor.prepare(definition: definition, sampleRate: 48_000)
+        let left = (0..<1024).map { Float(sin(2 * Double.pi * Double($0) / 48)) }
+        let right = left.map { -0.5 * $0 }
+        let expected = process(parametric, left: left, right: right)
+        let actual = process(mixed, left: left, right: right)
+        for index in left.indices {
+            XCTAssertEqual(actual.left[index], 0.25 * expected.left[index], accuracy: 0.000002)
+            XCTAssertEqual(actual.right[index], 0.25 * expected.right[index], accuracy: 0.000002)
+        }
+
+        let processor = try ParametricEqualizerProcessor(sampleRate: 48_000)
+        try processor.setTarget(definition: definition)
+        _ = process(processor, frameCount: 2048, leftValue: 0.5, rightValue: -0.25)
+        processor.drainRetiredStates()
+        XCTAssertFalse(processor.isBypassed)
+        try processor.setTarget(definition: nil)
+        let output = process(processor, frameCount: 2048, leftValue: 0.5, rightValue: -0.25)
+        XCTAssertEqual(output.left.last, 0.5)
+        XCTAssertEqual(output.right.last, -0.25)
+        XCTAssertTrue(processor.isBypassed)
+    }
+
     func testPreampThatOverflowsFloatIsRejectedWithoutFilters() throws {
         XCTAssertThrowsError(try ParametricEqualizerProcessor.prepare(
             definition: EqualizerDefinition(preampDB: 800, filters: []),

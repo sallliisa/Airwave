@@ -53,6 +53,57 @@ final class EqualizerAPOParserTests: XCTestCase {
         XCTAssertEqual(definition.filters[0].gainDB, 2)
     }
 
+    func testGraphicEQOnlyPresetSortsPointsAndKeepsZeroFrequency() throws {
+        let source = "graphicEQ : 1000 -2.5; 0 0; 20 +1.5; "
+        let definition = try EqualizerAPOParser.parse(data: Data(source.utf8), filename: "curve.txt")
+
+        XCTAssertEqual(definition.directives, [.graphic(.init(sourceLine: 1, points: [
+            .init(frequencyHz: 0, gainDB: 0),
+            .init(frequencyHz: 20, gainDB: 1.5),
+            .init(frequencyHz: 1000, gainDB: -2.5)
+        ]))])
+    }
+
+    func testGraphicEQPreservesDirectiveOrderWithPreampAndFilters() throws {
+        let source = """
+        GraphicEQ: 31,5 -2,5
+        Preamp: -3 dB
+        Filter: ON PK Fc 1000 Hz Gain 2 dB Q 1
+        GraphicEQ: 20 0; 20000 -6
+        """
+        let definition = try EqualizerAPOParser.parse(data: Data(source.utf8), filename: "mixed.txt")
+        let filter = try XCTUnwrap(definition.filters.first)
+
+        XCTAssertEqual(definition.directives, [
+            .graphic(.init(sourceLine: 1, points: [.init(frequencyHz: 31.5, gainDB: -2.5)])),
+            .preamp(-3),
+            .parametric(filter),
+            .graphic(.init(sourceLine: 4, points: [
+                .init(frequencyHz: 20, gainDB: 0),
+                .init(frequencyHz: 20000, gainDB: -6)
+            ]))
+        ])
+    }
+
+    func testRejectsMalformedGraphicEQWithSourceLine() throws {
+        for argument in ["", "20", "20 0 30", "20 0;; 30 -3", "-20 0", "20 inf", "20 0; 2e1 -3"] {
+            let error = try parseError("# comment\r\n\r\nGraphicEQ: \(argument)")
+
+            XCTAssertEqual(error.issues.count, 1, argument)
+            XCTAssertEqual(error.issues.first?.lineNumber, 3, argument)
+        }
+    }
+
+    func testRejectsGraphicEQDeclarationsAndPointCountsAboveLimits() throws {
+        let curves = Array(repeating: "GraphicEQ: 20 1", count: EqualizerAPOParser.maximumGraphicCurveCount + 1)
+        let curveError = try parseError(curves.joined(separator: "\n"))
+        XCTAssertEqual(curveError.issues.map(\.lineNumber), [curves.count])
+
+        let points = (1...EqualizerAPOParser.maximumGraphicPointCount + 1).map { "\($0) 1" }
+        let pointError = try parseError("GraphicEQ: " + points.joined(separator: "; "))
+        XCTAssertEqual(pointError.issues.map(\.lineNumber), [1])
+    }
+
     func testMissingPreampDefaultsToZeroAndOFFDoesNotMakeConfigurationEffective() throws {
         let source = "Filter 1: OFF PK Fc 440 Hz Gain 2 dB Q 1"
         let error = try parseError(source)
