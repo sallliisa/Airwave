@@ -2,6 +2,38 @@ import XCTest
 @testable import Airwave
 
 final class AudioEffectGraphTests: XCTestCase {
+    func testPortableConfigReevaluatesAtActualOutputRateAndPreservesLastGoodUpdate() throws {
+        let definition = try EqualizerAPOParser.parse(data: Data("""
+        Device: Test Output
+        Stage: post-mix
+        Eval: gain = -6.020599913
+        If: sampleRate == 48000
+            Preamp: `gain` dB
+        ElseIf: sampleRate == 96000
+            Preamp: `gain * 2` dB
+        Else:
+            Preamp: -3 dB
+        EndIf:
+        """.utf8), filename: "Portable.txt")
+        let graph = AudioEffectGraph(spatial: SpatialEffectSpy(isReady: false, processResult: false),
+                                     equalizer: EqualizerRuntimeEffect(), maxFramesPerCallback: 4096)
+        for (rate, gain) in [(48_000.0, Float(0.5)), (96_000.0, Float(0.25))] {
+            let result = graph.prepare(for: deviceOutput(sampleRate: rate), equalizerDefinition: definition)
+            XCTAssertNil(result.equalizerWarning)
+            let rendered = processConstant(graph, frameCount: 2048, value: 0.4)
+            XCTAssertEqual(rendered.left.last ?? .nan, 0.4 * gain, accuracy: 0.000001)
+            XCTAssertEqual(rendered.right.last ?? .nan, 0.4 * gain, accuracy: 0.000001)
+        }
+
+        let invalid = try EqualizerAPOParser.parse(
+            data: Data("Eval: gain = readRegString(\"Windows\", \"value\")".utf8), filename: "Registry.txt"
+        )
+        let warning = graph.updateEqualizer(definition: invalid).equalizerWarning
+        XCTAssertEqual(warning?.filterLine, 1)
+        XCTAssertTrue(warning?.reason.contains("Windows registry") == true)
+        XCTAssertEqual(processConstant(graph, frameCount: 2048, value: 0.4).left.last ?? .nan, 0.1, accuracy: 0.000001)
+    }
+
     func testBundledPresetSpatialOutputStaysWithinHeadroomAfterWarmup() throws {
         for presetName in ["NeutralSH1.0", "RoomSH1.0", "StageSH1.0"] {
             let spatial = try bundledSpatialEffect(named: presetName)

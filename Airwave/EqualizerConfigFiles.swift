@@ -44,7 +44,7 @@ nonisolated enum EqualizerConfigFiles {
                 let definition = try EqualizerAPOParser.parse(
                     data: data, filename: rootFilename, fileBoundaries: scopeBoundaries, assets: assets
                 )
-                return EqualizerDefinition(directives: definition.directives, sourceLocations: locations)
+                return EqualizerDefinition(directives: definition.directives, sourceLocations: locations, program: definition.program)
             } catch let error as EqualizerParseError {
                 let issues = error.issues.map { issue in
                     guard let line = issue.lineNumber, locations.indices.contains(line - 1) else {

@@ -179,6 +179,20 @@ final class EqualizerLibraryTests: XCTestCase {
         XCTAssertEqual(result.imported.first?.fileURL.lastPathComponent, source.lastPathComponent)
     }
 
+    func testExcludedDeviceDoesNotRunIncludedChildDeviceSelector() throws {
+        let context = try TestContext()
+        let source = context.sourceDirectory
+        try Data("Device: Headphones\nInclude: Child.txt\n".utf8).write(to: source.appendingPathComponent("config.txt"))
+        try Data("Device: all\nPreamp: -6 dB\n".utf8).write(to: source.appendingPathComponent("Child.txt"))
+        let imported = try XCTUnwrap(context.manager.importPresets([source], collisionPolicy: .reject).imported.first)
+        let program = try XCTUnwrap(imported.definition.program)
+
+        let speakers = EqualizerConfigContext(sampleRate: 48_000, inputChannelCount: 2, deviceName: "Speakers", deviceUID: "a")
+        let headphones = EqualizerConfigContext(sampleRate: 48_000, inputChannelCount: 2, deviceName: "Headphones", deviceUID: "b")
+        XCTAssertEqual(try program.resolve(context: speakers).preampDB, 0)
+        XCTAssertEqual(try program.resolve(context: headphones).preampDB, -6)
+    }
+
     func testFolderImportKeepsNestedIncludesInOrderAfterSourceIsRemoved() throws {
         let context = try TestContext()
         let source = context.sourceDirectory

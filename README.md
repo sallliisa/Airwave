@@ -124,6 +124,10 @@ If a config uses `Include` or `Convolution`, select the folder containing `confi
 
 `Convolution` uses WAV impulse responses up to 0.5 seconds long on the selected channels. The WAV sample rate must match the output.
 
+Airwave evaluates `If`, `ElseIf`, `Else`, `EndIf`, `Eval`, and backtick expressions for the active output. Configs can use the output sample rate, captured and rendered channel counts, and device name or UID. For a Windows device selector, replace the Windows name or GUID with the macOS output name or UID. `Stage: post-mix` selects Airwave's playback stage. Sections for `pre-mix` or `capture` are skipped on playback.
+
+`Include` and `Convolution` paths must be literal and available at import, including files mentioned inside conditions. Windows registry functions, Windows VST plugins, and system-volume loudness correction are outside Airwave's current config support.
+
 ![Airwave Equalizer](docs/images/6Equalizer.png)
 
 The HRIR and Equalizer settings are independent. You can use spatial processing, EQ processing, both together, or neither.

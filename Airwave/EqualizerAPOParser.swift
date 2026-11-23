@@ -53,7 +53,7 @@ nonisolated struct EqualizerAPOParser {
 
     static func parse(
         data: Data, filename: String, fileBoundaries: [EqualizerConfigFiles.ScopeBoundary] = [],
-        assets: [Int: EqualizerConvolutionAsset] = [:]
+        assets: [Int: EqualizerConvolutionAsset] = [:], allowDeferred: Bool = true
     ) throws -> EqualizerDefinition {
         guard data.count <= maximumDataSize else {
             throw EqualizerParseError(
@@ -69,6 +69,13 @@ nonisolated struct EqualizerAPOParser {
         }
         if source.first == "\u{FEFF}" {
             source.removeFirst()
+        }
+        if allowDeferred && EqualizerConfigProgram.needsEvaluation(source) {
+            let program = EqualizerConfigProgram(
+                data: Data(source.utf8), filename: filename, fileBoundaries: fileBoundaries, assets: assets
+            )
+            try program.validate()
+            return EqualizerDefinition(directives: [], program: program)
         }
 
         var filterDeclarationCount = 0
@@ -186,7 +193,7 @@ nonisolated struct EqualizerAPOParser {
             directives.append(contentsOf: scopes.map(\.directive))
         }
 
-        if issues.isEmpty && !directives.contains(where: isEffective) {
+        if allowDeferred && issues.isEmpty && !directives.contains(where: isEffective) {
             issues.append(.init(
                 lineNumber: nil,
                 reason: "effective configuration must contain a non-zero preamp, an enabled filter, a GraphicEQ curve, Copy, or Delay"

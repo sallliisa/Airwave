@@ -68,12 +68,16 @@ nonisolated protocol AudioEqualizerEffect: AnyObject {
         frameCount: Int
     )
     func prepare(definition: EqualizerDefinition?, sampleRate: Double) throws
+    func prepare(definition: EqualizerDefinition?, routing: ResolvedOutputRouting) throws
     func setTarget(definition: EqualizerDefinition?) throws
     var isBypassed: Bool { get }
     func cleanupAfterIOStopped()
 }
 
 extension AudioEqualizerEffect {
+    nonisolated func prepare(definition: EqualizerDefinition?, routing: ResolvedOutputRouting) throws {
+        try prepare(definition: definition, sampleRate: routing.sampleRate)
+    }
     nonisolated var isBypassed: Bool { false }
     nonisolated func cleanupAfterIOStopped() {}
 }
@@ -150,7 +154,7 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
         }
 
         do {
-            try equalizer.prepare(definition: equalizerDefinition, sampleRate: routing.sampleRate)
+            try equalizer.prepare(definition: equalizerDefinition, routing: routing)
             equalizerActiveLock.withLock { state in
                 state.generation &+= 1
                 state.active = equalizerDefinition != nil
