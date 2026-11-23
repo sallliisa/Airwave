@@ -9,15 +9,16 @@ nonisolated struct EqualizerParseError: LocalizedError, Equatable {
     let filename: String
     let issues: [EqualizerParseIssue]
 
-    var errorDescription: String? {
-        let details = issues.map { issue in
+    var issueDescription: String {
+        issues.map { issue in
             if let lineNumber = issue.lineNumber {
                 return "line \(lineNumber): \(issue.reason)"
             }
             return issue.reason
         }.joined(separator: "; ")
-        return "Could not read \(filename): \(details)"
     }
+
+    var errorDescription: String? { "Could not read \(filename): \(issueDescription)" }
 }
 
 nonisolated struct EqualizerAPOParser {

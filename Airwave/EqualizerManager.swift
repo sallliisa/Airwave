@@ -35,6 +35,7 @@ nonisolated enum EqualizerImportCollisionPolicy {
 nonisolated struct EqualizerImportFailure: Equatable {
     let filename: String
     let reason: String
+    var folderToChoose: URL? = nil
 }
 
 nonisolated struct EqualizerImportPreflight {
@@ -249,7 +250,7 @@ final class EqualizerManager: ObservableObject {
                     acceptable.append(url)
                 }
             } catch {
-                rejected.append(.init(filename: url.lastPathComponent, reason: reason(for: error)))
+                rejected.append(importFailure(for: url, error: error))
             }
         }
         return .init(acceptable: acceptable, conflicts: conflicts, rejected: rejected)
@@ -311,7 +312,7 @@ final class EqualizerManager: ObservableObject {
                 }
                 imported.append(preset)
             } catch {
-                failures.append(.init(filename: url.lastPathComponent, reason: reason(for: error)))
+                failures.append(importFailure(for: url, error: error))
             }
         }
         return .init(imported: imported, skipped: skipped, failures: failures)
@@ -429,6 +430,20 @@ final class EqualizerManager: ObservableObject {
             return description
         }
         return error.localizedDescription
+    }
+
+    private func importFailure(for url: URL, error: Error) -> EqualizerImportFailure {
+        let filename = url.lastPathComponent
+        if let access = error as? EqualizerConfigFiles.FolderAccessRequired, access.config.lastPathComponent == "config.txt" {
+            return .init(filename: filename, reason: reason(for: access), folderToChoose: access.config.deletingLastPathComponent())
+        }
+        if let dependency = error as? EqualizerConfigFiles.DependencyError {
+            return .init(filename: filename, reason: dependency.description(relativeTo: filename))
+        }
+        if let parse = error as? EqualizerParseError, parse.filename == filename {
+            return .init(filename: filename, reason: parse.issueDescription)
+        }
+        return .init(filename: filename, reason: reason(for: error))
     }
 }
 

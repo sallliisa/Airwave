@@ -119,6 +119,7 @@ Airwave includes five presets.
 Choose **None** to bypass the Equalizer. Use **Import…** to add your own EqualizerAPO preset, **Manage…** to open Airwave's managed preset folder, or **Get more equalizer presets…** to browse [AutoEq](https://autoeq.app/). You can delete imported presets from the library.
 
 If a config uses `Include` or `Convolution`, select the folder containing `config.txt`. Airwave stores the config with its included text and WAV files. Paths are relative to the file that declares them and must stay within the selected folder.
+If you select `config.txt` directly and Airwave needs access to its companion files, use **Choose Folder…** to grant access and continue the import.
 
 `Channel`, `Copy`, and `Delay` run in config order on Airwave's stereo signal after spatial processing. Use `L`, `R`, `1`, or `2` for channel references. `Channel: all` selects both channels. Delay accepts milliseconds or samples.
 

@@ -474,6 +474,31 @@ final class EqualizerLibraryTests: XCTestCase {
         XCTAssertEqual(context.manager.presets.map(\.displayName), ["Valid"])
     }
 
+    func testConfigSelectionWithFileOnlyAccessOffersFolderRecovery() async throws {
+        let context = try TestContext()
+        let folder = context.sourceDirectory
+        let config = folder.appendingPathComponent("config.txt")
+        try Data("Include: Child.txt\n".utf8).write(to: config)
+        _ = try context.writePreset(named: "Child.txt", preamp: -6)
+        let manager = FileManager.default
+        let coordinator = PresetLibraryCoordinator(manager: context.manager, configuration: .equalizer)
+
+        try manager.setAttributes([.posixPermissions: 0o100], ofItemAtPath: folder.path)
+        defer { try? manager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path) }
+        coordinator.receive([config])
+        await coordinator.waitForIdle()
+
+        XCTAssertEqual(coordinator.message?.text, "Choose the folder containing config.txt so Airwave can read its companion files.")
+        XCTAssertEqual(coordinator.message?.folderToChoose?.standardizedFileURL.path, folder.standardizedFileURL.path)
+        XCTAssertTrue(context.manager.presets.isEmpty)
+
+        try manager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path)
+        coordinator.receive([folder])
+        await coordinator.waitForIdle()
+        XCTAssertNil(coordinator.message)
+        XCTAssertEqual(context.manager.presets.first?.definition.preampDB, -6)
+    }
+
     func testCorruptManifestErrorIsPreservedAlongsideValidPresetRows() throws {
         let context = try TestContext()
         let valid = context.managed.appendingPathComponent("Valid.txt")

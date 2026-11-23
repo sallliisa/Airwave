@@ -88,7 +88,36 @@ nonisolated enum EqualizerConfigFiles {
 
     nonisolated private struct FileError: LocalizedError {
         let reason: String
+        var accessDenied = false
         var errorDescription: String? { reason }
+
+        static func opening(_ name: String, code: Int32) -> Self {
+            Self(reason: code == ENOENT ? "\(name) was not found" : "\(name) could not be opened",
+                 accessDenied: code == EACCES || code == EPERM)
+        }
+    }
+
+    nonisolated struct FolderAccessRequired: LocalizedError {
+        let config: URL
+
+        var errorDescription: String? {
+            if config.lastPathComponent == "config.txt" {
+                return "Choose the folder containing config.txt so Airwave can read its companion files."
+            }
+            return "Put this config and its companion files in one folder with config.txt as the entry file, then import the folder."
+        }
+    }
+
+    nonisolated struct DependencyError: LocalizedError {
+        let location: SourceLocation
+        let reason: String
+
+        var errorDescription: String? { description(relativeTo: nil) }
+
+        func description(relativeTo filename: String?) -> String {
+            let file = location.filename == filename ? "" : "\(location.filename), "
+            return "\(file)line \(location.lineNumber): \(reason)"
+        }
     }
 
     static func prepareImport(_ source: URL) throws -> Import {
@@ -109,10 +138,8 @@ nonisolated enum EqualizerConfigFiles {
             }
             do {
                 return try readFile(path, inside: folder, limit: limit)
-            } catch {
-                let detail = error.localizedDescription
-                if isFolder { throw error }
-                throw FileError(reason: "\(detail). Choose the config folder to grant access to its files")
+            } catch let error as FileError where !isFolder && error.accessDenied {
+                throw FolderAccessRequired(config: source)
             }
         }
         let expanded = try expander.run()
@@ -160,7 +187,7 @@ nonisolated enum EqualizerConfigFiles {
     private static func readFile(_ path: String, inside folder: URL, limit: Int) throws -> Data {
         var directory = open(folder.path, O_RDONLY | O_NOFOLLOW | O_DIRECTORY | O_CLOEXEC)
         guard directory >= 0 else {
-            throw FileError(reason: "the config directory could not be opened")
+            throw FileError.opening("The config folder", code: errno)
         }
         defer { _ = close(directory) }
 
@@ -171,14 +198,14 @@ nonisolated enum EqualizerConfigFiles {
         for part in parts.dropLast() {
             let next = openat(directory, String(part), O_RDONLY | O_NOFOLLOW | O_DIRECTORY | O_CLOEXEC)
             guard next >= 0 else {
-                throw FileError(reason: "\(path) could not be opened")
+                throw FileError.opening(path, code: errno)
             }
             _ = close(directory)
             directory = next
         }
         let descriptor = openat(directory, String(filename), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         guard descriptor >= 0 else {
-            throw FileError(reason: "\(path) could not be opened")
+            throw FileError.opening(path, code: errno)
         }
         return try readFile(descriptor, named: path, limit: limit)
     }
@@ -340,8 +367,12 @@ nonisolated enum EqualizerConfigFiles {
                         output.append(line)
                         locations.append(location)
                     }
+                } catch let error as FolderAccessRequired {
+                    throw error
+                } catch let error as DependencyError {
+                    throw error
                 } catch {
-                    throw FileError(reason: "\(location.filename), line \(location.lineNumber): \(error.localizedDescription)")
+                    throw DependencyError(location: location, reason: error.localizedDescription)
                 }
             }
         }
