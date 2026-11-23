@@ -628,6 +628,7 @@ nonisolated private final class EqualizerStereoCompiler {
     private var graphicFilters: [EqualizerStereoConvolver] = []
     private var filterCount = 0
     private var delaySamples = 0
+    private var impulseFrames = 0
 
     init(sampleRate: Double) {
         self.sampleRate = sampleRate
@@ -641,8 +642,11 @@ nonisolated private final class EqualizerStereoCompiler {
             case .parametric(let filter):
                 if filter.isEnabled { try add(filter) }
             case .graphic(let curve):
-                guard let response = GraphicEqualizerImpulseResponse.make(points: curve.points, sampleRate: sampleRate),
-                      let filter = EqualizerStereoConvolver(impulseResponse: response) else {
+                guard let response = GraphicEqualizerImpulseResponse.make(points: curve.points, sampleRate: sampleRate) else {
+                    throw ParametricEqualizerPreparationError.invalidGraphicCurve(line: curve.sourceLine)
+                }
+                try reserveImpulseFrames(response.count, line: curve.sourceLine)
+                guard let filter = EqualizerStereoConvolver(impulseResponse: response) else {
                     throw ParametricEqualizerPreparationError.invalidGraphicCurve(line: curve.sourceLine)
                 }
                 graphicFilters.append(filter)
@@ -715,6 +719,7 @@ nonisolated private final class EqualizerStereoCompiler {
                 reason: "\(asset.filename) sample rate (\(asset.sampleRate) Hz) must match the output rate (\(sampleRate) Hz)."
             )
         }
+        try reserveImpulseFrames(asset.channels.first?.count ?? 0, line: asset.sourceLine)
         let left = channels.contains(.left) ? asset.channels.first : nil
         let rightIndex = left != nil && asset.channels.count > 1 ? 1 : 0
         let right = channels.contains(.right) ? asset.channels.dropFirst(rightIndex).first : nil
@@ -724,6 +729,21 @@ nonisolated private final class EqualizerStereoCompiler {
             )
         }
         stages.append(.convolution(filter))
+    }
+
+    private func reserveImpulseFrames(_ count: Int, line: Int) throws {
+        let limit: Int
+        switch sampleRate {
+        case ...48_000: limit = 96_000
+        case ...96_000: limit = 48_000
+        default: limit = 32_768
+        }
+        guard count <= limit - impulseFrames else {
+            throw ParametricEqualizerPreparationError.invalidStereoOperation(
+                line: line, reason: "Combined GraphicEQ and convolution responses exceed \(limit) frames at this output rate."
+            )
+        }
+        impulseFrames += count
     }
 
     private func flush() throws {

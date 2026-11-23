@@ -123,6 +123,7 @@ If a config uses `Include` or `Convolution`, select the folder containing `confi
 `Channel`, `Copy`, and `Delay` run in config order on Airwave's stereo signal after spatial processing. Use `L`, `R`, `1`, or `2` for channel references. `Channel: all` selects both channels. Delay accepts milliseconds or samples.
 
 `Convolution` uses WAV impulse responses up to 0.5 seconds long on the selected channels. The WAV sample rate must match the output.
+The combined `GraphicEQ` and convolution response limit is 96,000 frames through 48 kHz, 48,000 frames through 96 kHz, and 32,768 frames above 96 kHz.
 
 Airwave evaluates `If`, `ElseIf`, `Else`, `EndIf`, `Eval`, and backtick expressions for the active output. Configs can use the output sample rate, captured and rendered channel counts, and device name or UID. For a Windows device selector, replace the Windows name or GUID with the macOS output name or UID. `Stage: post-mix` selects Airwave's playback stage. Sections for `pre-mix` or `capture` are skipped on playback.
 

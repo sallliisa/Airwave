@@ -164,6 +164,21 @@ final class ParametricEqualizerProcessorTests: XCTestCase {
         }
     }
 
+    func testCombinedImpulseResponseLimitUsesOutputRateAndReportsTheSourceLine() throws {
+        let impulse = [Float](repeating: 0, count: 16_385)
+        let first = EqualizerConvolutionAsset(sourceLine: 1, filename: "First.wav", sampleRate: 192_000, channels: [impulse])
+        let second = EqualizerConvolutionAsset(sourceLine: 2, filename: "Second.wav", sampleRate: 192_000, channels: [impulse])
+        let definition = EqualizerDefinition(directives: [.convolution(first), .convolution(second)])
+        XCTAssertThrowsError(try ParametricEqualizerProcessor.prepare(definition: definition, sampleRate: 192_000)) { error in
+            guard let issue = error as? ParametricEqualizerPreparationError,
+                  case .invalidStereoOperation(let line, let reason) = issue else {
+                return XCTFail("Expected an impulse response limit error, received \(error)")
+            }
+            XCTAssertEqual(line, 2)
+            XCTAssertTrue(reason.contains("32768"))
+        }
+    }
+
     func testShelfCornerConversionCanPutCenterBelowNyquist() throws {
         let definition = try EqualizerAPOParser.parse(data: Data("Filter: ON HS 6dB Fc 25000 Hz Gain 12 dB".utf8),
                                                       filename: "Shelf.txt")
