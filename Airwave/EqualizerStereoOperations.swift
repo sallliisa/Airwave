@@ -187,7 +187,8 @@ nonisolated struct EqualizerStereoCopy {
         }
 
         func sample(left: Float, right: Float) -> Float {
-            Float(leftFactor * Double(left) + rightFactor * Double(right) + constant)
+            let value = Float(leftFactor * Double(left) + rightFactor * Double(right) + constant)
+            return value.isFinite ? value : 0
         }
     }
 }

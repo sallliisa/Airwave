@@ -176,6 +176,16 @@ final class ParametricEqualizerProcessorTests: XCTestCase {
         }
     }
 
+    func testCopyKeepsOutputFiniteWhenAnAssignmentOverflows() throws {
+        let definition = try EqualizerAPOParser.parse(
+            data: Data("Copy: L=3.0e38+3.0e38".utf8), filename: "Copy.txt"
+        )
+        let state = try ParametricEqualizerProcessor.prepare(definition: definition, sampleRate: 48_000)
+        let rendered = process(state, left: [0], right: [0.25])
+        XCTAssertEqual(rendered.left, [0])
+        XCTAssertEqual(rendered.right, [0.25])
+    }
+
     func testChannelSelectionReturnsToParentAfterInclude() throws {
         let parsed = try EqualizerAPOParser.parse(
             data: Data("Channel: L\nChannel: R\nPreamp: -6.020599913 dB\nPreamp: -6.020599913 dB".utf8),
