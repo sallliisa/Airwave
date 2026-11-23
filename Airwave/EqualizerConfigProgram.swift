@@ -60,7 +60,7 @@ nonisolated struct EqualizerConfigProgram: Equatable {
                 for scope in events {
                     switch scope {
                     case .enter:
-                        let enabled = (scopes.last?.enabled ?? true) && deviceMatches && stageMatches && (branches.last?.active ?? true)
+                        let enabled = (scopes.last?.enabled ?? true) && deviceMatches && (branches.last?.active ?? true)
                         scopes.append(Scope(branchCount: branches.count, deviceMatches: deviceMatches,
                                             stageMatches: stageMatches, enabled: enabled))
                     case .leave:

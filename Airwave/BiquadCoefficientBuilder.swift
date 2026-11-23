@@ -54,7 +54,7 @@ nonisolated enum BiquadCoefficientBuilder {
         guard gainDB.isFinite, frequencyHz.isFinite else {
             throw BiquadCoefficientError.nonFiniteInput
         }
-        guard frequencyHz > 0, frequencyHz < sampleRate / 2 else {
+        guard frequencyHz > 0 else {
             throw BiquadCoefficientError.invalidFrequency
         }
         let amplitude = pow(10, gainDB / 40)

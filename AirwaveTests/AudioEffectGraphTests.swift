@@ -2,6 +2,55 @@ import XCTest
 @testable import Airwave
 
 final class AudioEffectGraphTests: XCTestCase {
+    func testDeviceExcludedPresetLeavesPassthroughSamplesUnchanged() throws {
+        let definition = try EqualizerAPOParser.parse(
+            data: Data("Device: Other Output\nPreamp: -6 dB".utf8), filename: "Other.txt"
+        )
+        let graph = AudioEffectGraph(spatial: SpatialEffectSpy(isReady: false, processResult: false),
+                                     equalizer: EqualizerRuntimeEffect(), maxFramesPerCallback: 4096)
+
+        let result = graph.prepare(for: deviceOutput(sampleRate: 48_000), equalizerDefinition: definition)
+        XCTAssertNil(result.equalizerWarning)
+        XCTAssertTrue(result.noEffectCanRun)
+        let rendered = process(graph, left: [1, 0.5], right: [-1, -0.5])
+        XCTAssertEqual(rendered.left, [1, 0.5])
+        XCTAssertEqual(rendered.right, [-1, -0.5])
+    }
+
+    func testConditionalIIRUsesCoefficientsForActiveRate() throws {
+        let definition = try EqualizerAPOParser.parse(data: Data("""
+        If: sampleRate == 48000
+            Filter: ON IIR Order 1 Coefficients 0.5 0 1 0
+        ElseIf: sampleRate == 96000
+            Filter: ON IIR Order 1 Coefficients 0.25 0 1 0
+        EndIf:
+        """.utf8), filename: "Custom.txt")
+        let graph = AudioEffectGraph(spatial: SpatialEffectSpy(isReady: false, processResult: false),
+                                     equalizer: EqualizerRuntimeEffect(), maxFramesPerCallback: 4096)
+        for (rate, gain) in [(48_000.0, Float(0.5)), (96_000.0, Float(0.25))] {
+            let result = graph.prepare(for: deviceOutput(sampleRate: rate), equalizerDefinition: definition)
+            XCTAssertNil(result.equalizerWarning)
+            XCTAssertEqual(processConstant(graph, frameCount: 2048, value: 0.4).left.last ?? .nan,
+                           0.4 * gain, accuracy: 0.000001)
+        }
+    }
+
+    func testPresetPublishedDuringBypassFadeStillPlays() throws {
+        let graph = AudioEffectGraph(spatial: SpatialEffectSpy(isReady: false, processResult: false),
+                                     equalizer: EqualizerRuntimeEffect(), maxFramesPerCallback: 4096)
+        let a = EqualizerDefinition(preampDB: -6.020599913)
+        let b = EqualizerDefinition(preampDB: -12.041199826)
+        _ = graph.prepare(for: deviceOutput(sampleRate: 48_000), equalizerDefinition: a)
+        _ = processConstant(graph, frameCount: 960, value: 0.4)
+        _ = graph.updateEqualizer(definition: nil)
+        _ = processConstant(graph, frameCount: 100, value: 0.4)
+        _ = graph.updateEqualizer(definition: b)
+        _ = processConstant(graph, frameCount: 860, value: 0.4)
+        let rendered = processConstant(graph, frameCount: 960, value: 0.4)
+        XCTAssertEqual(rendered.left.last ?? .nan, 0.1, accuracy: 0.000001)
+        XCTAssertEqual(rendered.right.last ?? .nan, 0.1, accuracy: 0.000001)
+    }
+
     func testPortableConfigReevaluatesAtActualOutputRateAndPreservesLastGoodUpdate() throws {
         let definition = try EqualizerAPOParser.parse(data: Data("""
         Device: Test Output

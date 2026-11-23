@@ -193,6 +193,18 @@ final class EqualizerLibraryTests: XCTestCase {
         XCTAssertEqual(try program.resolve(context: headphones).preampDB, -6)
     }
 
+    func testIncludeCanSelectPlaybackStageAndRestoresParentStage() throws {
+        let context = try TestContext()
+        let source = context.sourceDirectory
+        try Data("Stage: capture\nInclude: Child.txt\nPreamp: 3 dB\n".utf8)
+            .write(to: source.appendingPathComponent("config.txt"))
+        try Data("Stage: post-mix\nPreamp: -6 dB\n".utf8).write(to: source.appendingPathComponent("Child.txt"))
+        let imported = try XCTUnwrap(context.manager.importPresets([source], collisionPolicy: .reject).imported.first)
+        let program = try XCTUnwrap(imported.definition.program)
+        let route = EqualizerConfigContext(sampleRate: 48_000, inputChannelCount: 2, deviceName: "Speakers", deviceUID: "a")
+        XCTAssertEqual(try program.resolve(context: route).preampDB, -6)
+    }
+
     func testFolderImportKeepsNestedIncludesInOrderAfterSourceIsRemoved() throws {
         let context = try TestContext()
         let source = context.sourceDirectory

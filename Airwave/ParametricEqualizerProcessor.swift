@@ -6,6 +6,7 @@ nonisolated final class ParametricEqualizerState {
     static let maximumFilterCount = 64
     let sampleRate: Double
     private let stages: [EqualizerStereoStage]
+    var isUnity: Bool { stages.isEmpty }
 
     #if DEBUG
     var destructionProbe: ParametricEqualizerProcessor.DestructionProbe?
@@ -22,6 +23,7 @@ nonisolated final class ParametricEqualizerState {
             case .linear(let filter): filter.reset()
             case .delay(let delay): delay.reset()
             case .convolution(let filter): filter.reset()
+            case .iir(let filter): filter.reset()
             case .copy: break
             }
         }
@@ -67,6 +69,8 @@ nonisolated final class ParametricEqualizerState {
                 delay.process(left: leftOutput, right: rightOutput, frameCount: frameCount)
             case .convolution(let filter):
                 filter.process(left: leftOutput, right: rightOutput, frameCount: frameCount)
+            case .iir(let filter):
+                filter.process(left: leftOutput, right: rightOutput, frameCount: frameCount)
             }
         }
     }
@@ -78,6 +82,7 @@ nonisolated private enum EqualizerStereoStage {
     case copy(EqualizerStereoCopy)
     case delay(EqualizerStereoDelay)
     case convolution(EqualizerStereoConvolver)
+    case iir(EqualizerCustomIIRFilter)
 }
 
 nonisolated private final class EqualizerStereoFilterStage {
@@ -371,12 +376,17 @@ nonisolated final class ParametricEqualizerProcessor {
     }
     #endif
 
-    func setTarget(definition: EqualizerDefinition?) throws {
+    @discardableResult
+    func setTarget(definition: EqualizerDefinition?) throws -> Bool {
         guard let definition else {
             try publish(unityState)
-            return
+            return false
         }
         let state = try Self.prepare(definition: definition, sampleRate: sampleRate)
+        guard !state.isUnity else {
+            try publish(unityState)
+            return false
+        }
         #if DEBUG
         // Tag the production state too: setTarget publishes fresh states on
         // every call, and the proof must observe their release thread.
@@ -390,6 +400,7 @@ nonisolated final class ParametricEqualizerProcessor {
         }
         #endif
         try publish(state)
+        return true
     }
 
     func reset() {
@@ -550,7 +561,12 @@ nonisolated final class ParametricEqualizerProcessor {
         transitionFrom = nil
         transitionTo = nil
         transitionFrame = 0
-        if to === unityState { bypassLock.withLockIfAvailable { $0 = true } }
+        if to === unityState, pendingTarget == nil {
+            targetLock.withLockIfAvailable { target in
+                guard target === unityState else { return }
+                bypassLock.withLockIfAvailable { $0 = true }
+            }
+        }
         // retire() never reports failure: it holds in pendingRetirement when
         // the shared slot is full, and flushPendingRetirement() moves that
         // hold to control on a later callback. The branch stays explicit so
@@ -634,6 +650,9 @@ nonisolated private final class EqualizerStereoCompiler {
                 try add(command, line: line)
             case .convolution(let asset):
                 try add(asset)
+            case .iir(let coefficients):
+                try flush()
+                stages.append(.iir(EqualizerCustomIIRFilter(coefficients, channels: channels)))
             case .enterInclude:
                 scopes.append(channels)
             case .leaveInclude:

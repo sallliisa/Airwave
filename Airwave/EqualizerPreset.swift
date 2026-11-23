@@ -70,6 +70,7 @@ nonisolated enum EqualizerDirective: Equatable {
     case graphic(EqualizerGraphicCurve)
     case stereo(EqualizerStereoCommand, line: Int)
     case convolution(EqualizerConvolutionAsset)
+    case iir(EqualizerCustomIIR)
     case enterInclude
     case leaveInclude
 }

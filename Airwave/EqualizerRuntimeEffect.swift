@@ -8,6 +8,7 @@ nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
     private var controlProcessor: ParametricEqualizerProcessor?
     private var controlContext: EqualizerConfigContext?
     private var audioThreadProcessor: ParametricEqualizerProcessor?
+    private(set) var hasConfiguredEffect = false
     #if DEBUG
     // No owned probe array. Each ParametricEqualizerProcessor carries its
     // own DEBUG probe (see destructionProbe). Never touch probes here.
@@ -88,7 +89,7 @@ nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
             throw sourceError(line: issue?.lineNumber, reason: issue?.reason ?? error.localizedDescription, definition: definition)
         }
         do {
-            try processor.setTarget(definition: resolved)
+            hasConfiguredEffect = try processor.setTarget(definition: resolved)
         } catch let error as ParametricEqualizerPreparationError {
             throw map(error, definition: resolved)
         }

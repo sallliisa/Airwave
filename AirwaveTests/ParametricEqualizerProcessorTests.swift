@@ -130,6 +130,40 @@ final class EqualizerSafetySoakTests: XCTestCase {
 }
 
 final class ParametricEqualizerProcessorTests: XCTestCase {
+    func testCustomIIRNormalizesCoefficientsAndKeepsHistoryAcrossCallbacks() throws {
+        let definition = try EqualizerAPOParser.parse(data: Data("""
+        Channel: R
+        Filter: ON IIR Order 1 Coefficients 0.25 0 0.5 -0.25
+        """.utf8), filename: "Custom.txt")
+        let state = try ParametricEqualizerProcessor.prepare(definition: definition, sampleRate: 48_000)
+
+        let impulse = process(state, left: [0.25, 0], right: [1, 0])
+        let tail = process(state, left: [0, 0], right: [0, 0])
+        XCTAssertEqual(impulse.left + tail.left, [0.25, 0, 0, 0])
+        XCTAssertEqual(impulse.right + tail.right, [0.5, 0.25, 0.125, 0.0625])
+        state.reset()
+        XCTAssertEqual(process(state, left: [0], right: [0]).right, [0])
+    }
+
+    func testUnstableCustomIIRReportsTheSourceLine() {
+        let invalid = Data("# header\nFilter: ON IIR Order 2 Coefficients 1 0 0 1 0 1.1".utf8)
+        XCTAssertThrowsError(try EqualizerAPOParser.parse(data: invalid, filename: "Unstable.txt")) { error in
+            let issue = (error as? EqualizerParseError)?.issues.first
+            XCTAssertEqual(issue?.lineNumber, 2)
+            XCTAssertTrue(issue?.reason.contains("stable") == true)
+        }
+    }
+
+    func testShelfCornerConversionCanPutCenterBelowNyquist() throws {
+        let definition = try EqualizerAPOParser.parse(data: Data("Filter: ON HS 6dB Fc 25000 Hz Gain 12 dB".utf8),
+                                                      filename: "Shelf.txt")
+        let state = try ParametricEqualizerProcessor.prepare(definition: definition, sampleRate: 48_000)
+        let impulse = process(state, left: [0.1, 0, 0, 0], right: [0.1, 0, 0, 0])
+        XCTAssertEqual(impulse.left, impulse.right)
+        XCTAssertTrue(impulse.left.allSatisfy(\.isFinite))
+        XCTAssertGreaterThan(impulse.left[0], 0.1)
+    }
+
     func testStereoCommandsPreserveCopyOrderAndApplyDelayOnlyToSelectedChannel() throws {
         let definition = try EqualizerAPOParser.parse(data: Data("""
         Channel: L

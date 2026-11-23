@@ -141,6 +141,16 @@ nonisolated struct EqualizerAPOParser {
                 if captures[2].caseInsensitiveCompare("None") == .orderedSame {
                     continue
                 }
+                if captures[2].split(whereSeparator: \.isWhitespace).first?.caseInsensitiveCompare("IIR") == .orderedSame {
+                    if isEnabled {
+                        do {
+                            directives.append(.iir(try EqualizerCustomIIR.parse(captures[2], sourceLine: lineNumber)))
+                        } catch {
+                            issues.append(.init(lineNumber: lineNumber, reason: error.localizedDescription))
+                        }
+                    }
+                    continue
+                }
                 do {
                     let filter = try parseFilter(
                         captures[2], lineNumber: lineNumber, sourceNumber: Int(captures[0]), isEnabled: isEnabled
@@ -209,7 +219,7 @@ nonisolated struct EqualizerAPOParser {
         switch directive {
         case .preamp(let gainDB): gainDB != 0
         case .parametric(let filter): filter.isEnabled
-        case .graphic, .convolution: true
+        case .graphic, .convolution, .iir: true
         case .stereo(.channel, _), .enterInclude, .leaveInclude: false
         case .stereo: true
         }
