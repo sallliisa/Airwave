@@ -2,8 +2,24 @@ import Foundation
 
 nonisolated enum EqualizerFilterType: Equatable {
     case peaking
+    case lowPass
+    case highPass
+    case bandPass
+    case notch
+    case allPass
     case lowShelf
     case highShelf
+}
+
+nonisolated enum EqualizerShelfFrequency: Equatable {
+    case center
+    case corner
+}
+
+nonisolated enum EqualizerFilterShape: Equatable {
+    case q(Double, frequency: EqualizerShelfFrequency = .center)
+    case bandwidthOctaves(Double)
+    case shelfSlope(normalized: Double, frequency: EqualizerShelfFrequency)
 }
 
 nonisolated struct EqualizerFilter: Equatable {
@@ -13,7 +29,29 @@ nonisolated struct EqualizerFilter: Equatable {
     let type: EqualizerFilterType
     let frequencyHz: Double
     let gainDB: Double
-    let q: Double
+    let shape: EqualizerFilterShape
+}
+
+extension EqualizerFilter {
+    init(
+        sourceLine: Int,
+        sourceNumber: Int?,
+        isEnabled: Bool,
+        type: EqualizerFilterType,
+        frequencyHz: Double,
+        gainDB: Double,
+        q: Double
+    ) {
+        self.init(
+            sourceLine: sourceLine,
+            sourceNumber: sourceNumber,
+            isEnabled: isEnabled,
+            type: type,
+            frequencyHz: frequencyHz,
+            gainDB: gainDB,
+            shape: .q(q)
+        )
+    }
 }
 
 nonisolated struct EqualizerGraphicPoint: Equatable {
@@ -36,10 +74,11 @@ nonisolated struct EqualizerDefinition: Equatable {
     let directives: [EqualizerDirective]
 
     var preampDB: Double {
+        var total: Double = 0
         for case let .preamp(gainDB) in directives {
-            return gainDB
+            total += gainDB
         }
-        return 0
+        return total
     }
 
     var filters: [EqualizerFilter] {

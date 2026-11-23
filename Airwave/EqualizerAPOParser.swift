@@ -30,8 +30,12 @@ nonisolated struct EqualizerAPOParser {
         pattern: #"^Preamp\s*:\s*(\S+)\s+dB$"#,
         options: [.caseInsensitive]
     )
-    private static let filterRegex = try! NSRegularExpression(
-        pattern: #"^Filter(?:\s+([0-9]+))?\s*:\s+(ON|OFF)\s+(PK|LSC|HSC)\s+Fc\s+(\S+)\s+Hz\s+Gain\s+(\S+)\s+dB\s+Q\s+(\S+)$"#,
+    private static let filterDirectiveRegex = try! NSRegularExpression(
+        pattern: #"^Filter(?:\s+([0-9]+))?\s*:\s*(ON|OFF)(?:\s+(.*))?$"#,
+        options: [.caseInsensitive]
+    )
+    private static let filterParametersRegex = try! NSRegularExpression(
+        pattern: #"^([a-z]+)(?:\s+(\S+?)\s*dB)?\s+Fc\s*((?:\S|\u00A0)+?)\s*H\s*z(?:\s+Gain\s*(\S+?)\s*dB)?(?:\s+(?:(Q)|(BW\s+Oct))\s*(\S+))?(?:\s+T60\s+target\s+(\S+)\s*ms)?$"#,
         options: [.caseInsensitive]
     )
     private static let graphicRegex = try! NSRegularExpression(
@@ -40,6 +44,10 @@ nonisolated struct EqualizerAPOParser {
     )
 
     private struct GraphicParseError: Error {
+        let reason: String
+    }
+
+    private struct FilterParseError: Error {
         let reason: String
     }
 
@@ -60,7 +68,6 @@ nonisolated struct EqualizerAPOParser {
             source.removeFirst()
         }
 
-        var hasPreamp = false
         var filterDeclarationCount = 0
         var graphicDeclarationCount = 0
         var directives: [EqualizerDirective] = []
@@ -72,16 +79,11 @@ nonisolated struct EqualizerAPOParser {
             guard !line.isEmpty, !line.hasPrefix("#") else { continue }
 
             if let captures = captures(for: preampRegex, in: line) {
-                if hasPreamp {
-                    issues.append(.init(lineNumber: lineNumber, reason: "duplicate Preamp directive"))
-                    continue
-                }
-                guard let value = finiteDouble(captures[0]) else {
+                guard let value = filterNumber(captures[0]) else {
                     issues.append(.init(lineNumber: lineNumber, reason: "Preamp must be a finite number"))
                     continue
                 }
                 directives.append(.preamp(value))
-                hasPreamp = true
                 continue
             }
 
@@ -114,56 +116,25 @@ nonisolated struct EqualizerAPOParser {
                     issues.append(.init(lineNumber: lineNumber, reason: "more than 64 filter declarations are not allowed"))
                     continue
                 }
-                guard let captures = captures(for: filterRegex, in: line) else {
+                guard let captures = captures(for: filterDirectiveRegex, in: line) else {
                     issues.append(.init(lineNumber: lineNumber, reason: "malformed Filter directive"))
                     continue
                 }
 
-                let sourceNumber = captures[0].isEmpty ? nil : Int(captures[0])
                 let isEnabled = captures[1].caseInsensitiveCompare("ON") == .orderedSame
-                let type: EqualizerFilterType
-                switch captures[2].uppercased() {
-                case "PK": type = .peaking
-                case "LSC": type = .lowShelf
-                case "HSC": type = .highShelf
-                default:
-                    issues.append(.init(lineNumber: lineNumber, reason: "unsupported filter type"))
+                if captures[2].caseInsensitiveCompare("None") == .orderedSame {
                     continue
                 }
-
-                let frequencyHz = finiteDouble(captures[3])
-                let gainDB = finiteDouble(captures[4])
-                let q = finiteDouble(captures[5])
-                var numericIssues: [String] = []
-                if let frequencyHz {
-                    if frequencyHz <= 0 { numericIssues.append("frequency must be positive") }
-                } else {
-                    numericIssues.append("frequency must be a finite number")
+                do {
+                    let filter = try parseFilter(
+                        captures[2], lineNumber: lineNumber, sourceNumber: Int(captures[0]), isEnabled: isEnabled
+                    )
+                    directives.append(.parametric(filter))
+                } catch {
+                    if isEnabled {
+                        issues.append(.init(lineNumber: lineNumber, reason: error.reason))
+                    }
                 }
-                if gainDB == nil {
-                    numericIssues.append("gain must be a finite number")
-                }
-                if let q {
-                    if q <= 0 { numericIssues.append("Q must be positive") }
-                } else {
-                    numericIssues.append("Q must be a finite number")
-                }
-                if !numericIssues.isEmpty {
-                    issues.append(contentsOf: numericIssues.map { .init(lineNumber: lineNumber, reason: $0) })
-                    continue
-                }
-
-                guard let frequencyHz, let gainDB, let q else { continue }
-
-                directives.append(.parametric(EqualizerFilter(
-                    sourceLine: lineNumber,
-                    sourceNumber: sourceNumber,
-                    isEnabled: isEnabled,
-                    type: type,
-                    frequencyHz: frequencyHz,
-                    gainDB: gainDB,
-                    q: q
-                )))
                 continue
             }
 
@@ -192,6 +163,88 @@ nonisolated struct EqualizerAPOParser {
         case .parametric(let filter): filter.isEnabled
         case .graphic: true
         }
+    }
+
+    private static func parseFilter(
+        _ argument: String,
+        lineNumber: Int,
+        sourceNumber: Int?,
+        isEnabled: Bool
+    ) throws(FilterParseError) -> EqualizerFilter {
+        guard let fields = captures(for: filterParametersRegex, in: argument) else {
+            throw FilterParseError(reason: "malformed Filter parameters")
+        }
+        let spelling = fields[0].uppercased()
+        let type: EqualizerFilterType
+        switch spelling {
+        case "PK", "PEQ", "MODAL": type = .peaking
+        case "LP", "LPQ": type = .lowPass
+        case "HP", "HPQ": type = .highPass
+        case "BP": type = .bandPass
+        case "NO": type = .notch
+        case "AP": type = .allPass
+        case "LS", "LSC": type = .lowShelf
+        case "HS", "HSC": type = .highShelf
+        default: throw FilterParseError(reason: "unsupported filter type \(fields[0])")
+        }
+
+        let frequency = fields[2].replacingOccurrences(of: "\u{00A0}", with: "")
+        guard let frequencyHz = filterNumber(frequency), frequencyHz > 0 else {
+            throw FilterParseError(reason: "filter frequency must be finite and positive")
+        }
+        let isShelf = type == .lowShelf || type == .highShelf
+        let requiresGain = isShelf || type == .peaking
+        guard let gainDB = fields[3].isEmpty && !requiresGain ? 0 : filterNumber(fields[3]) else {
+            throw FilterParseError(reason: "filter requires a finite gain")
+        }
+        guard fields[7].isEmpty || (spelling == "MODAL" && filterNumber(fields[7]) != nil) else {
+            throw FilterParseError(reason: "malformed Filter parameters")
+        }
+
+        let frequencyReference: EqualizerShelfFrequency = isShelf && !spelling.hasSuffix("C") ? .corner : .center
+        let shape: EqualizerFilterShape
+        if !fields[1].isEmpty {
+            guard isShelf, fields[6].isEmpty,
+                  let slope = filterNumber(fields[1]), slope > 0 else {
+                throw FilterParseError(reason: "shelf slope must be positive and used by itself on a shelf filter")
+            }
+            shape = .shelfSlope(normalized: slope / 12, frequency: frequencyReference)
+        } else if !fields[4].isEmpty {
+            guard let q = filterNumber(fields[6]), q > 0 else {
+                throw FilterParseError(reason: "filter Q must be finite and positive")
+            }
+            shape = .q(q, frequency: frequencyReference)
+        } else if !fields[5].isEmpty {
+            guard !isShelf, let bandwidth = filterNumber(fields[6]), bandwidth > 0 else {
+                throw FilterParseError(reason: "filter octave bandwidth must be positive and used on a non-shelf filter")
+            }
+            shape = .bandwidthOctaves(bandwidth)
+        } else {
+            switch type {
+            case .peaking, .allPass:
+                throw FilterParseError(reason: "filter requires Q or octave bandwidth")
+            case .lowShelf, .highShelf:
+                // Equalizer APO uses a center frequency for a shelf with no explicit slope or Q.
+                shape = .shelfSlope(normalized: 0.9, frequency: .center)
+            case .lowPass, .highPass, .bandPass:
+                shape = .q(sqrt(0.5))
+            case .notch:
+                shape = .q(30)
+            }
+        }
+        return EqualizerFilter(
+            sourceLine: lineNumber,
+            sourceNumber: sourceNumber,
+            isEnabled: isEnabled,
+            type: type,
+            frequencyHz: frequencyHz,
+            gainDB: gainDB,
+            shape: shape
+        )
+    }
+
+    private static func filterNumber(_ value: String) -> Double? {
+        finiteDouble(value.replacingOccurrences(of: ",", with: "."))
     }
 
     private static func parseGraphicPoints(_ argument: String) throws(GraphicParseError) -> [EqualizerGraphicPoint] {

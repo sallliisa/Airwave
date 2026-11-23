@@ -290,6 +290,48 @@ final class ParametricEqualizerProcessorTests: XCTestCase {
         }
     }
 
+    func testImportedParametricFiltersMatchEqualizerAPOImpulseResponses() throws {
+        // Reference samples from Equalizer APO's BiQuad and BiQuadFilter equations.
+        let cases: [(Double, String, [Float])] = [
+            (48_000, "LP Fc 2000 Hz", [0.0144014403, 0.0523203343, 0.0898945693, 0.1106648504]),
+            (48_000, "HPQ Fc 2000 Hz Q 0.5", [0.7808611706, -0.3633706411, -0.2365508288, -0.1490744134]),
+            (48_000, "BP Fc 2500 Hz", [0.1851979976, 0.2857829436, 0.1391983006, 0.0348697533]),
+            (48_000, "NO Fc 2500 Hz", [0.9946712236, -0.0100381801, -0.0083088444, -0.0057207400]),
+            (48_000, "AP Fc 2500 Hz Q 0.8", [0.6654180669, -0.5276472669, -0.2748991716, -0.0824194659]),
+            (48_000, "PEQ Fc 9000 Hz Gain -5 dB BW Oct 1.2", [0.8221676675, -0.0808030994, 0.1744335237, 0.0943969682]),
+            (96_000, "PEQ Fc 9000 Hz Gain -5 dB BW Oct 1.2", [0.8895936079, -0.1372833091, -0.0055938098, 0.0610639478]),
+            (48_000, "LS 6dB Fc 300 Hz Gain 7.2 dB", [1.0248652204, 0.0487725127, 0.0468935606, 0.0450869947]),
+            (48_000, "HS Fc 5000 Hz Gain -6 dB Q 0.8", [0.5699561039, 0.1386934700, 0.1280423321, 0.0994074491]),
+            (48_000, "LS Fc 400 Hz Gain 9 dB", [1.0206968966, 0.0415839443, 0.0419199474, 0.0421697286]),
+            (48_000, "HSC 10.8 dB Fc 6000 Hz Gain 5 dB", [1.5231186084, -0.3857796827, -0.1667669698, -0.0302728733]),
+        ]
+        let input: [Float] = [1, 0, 0, 0]
+        for (sampleRate, filter, expected) in cases {
+            let definition = try EqualizerAPOParser.parse(
+                data: Data("Filter 1: ON \(filter)".utf8),
+                filename: "reference.txt"
+            )
+            let state = try ParametricEqualizerProcessor.prepare(definition: definition, sampleRate: sampleRate)
+            let output = process(state, left: input, right: input)
+            for (index, sample) in expected.enumerated() {
+                XCTAssertEqual(output.left[index], sample, accuracy: 2e-6, filter)
+                XCTAssertEqual(output.right[index], sample, accuracy: 2e-6, filter)
+            }
+        }
+    }
+
+    func testImportedPreampCommandsRenderWithTheirCombinedGain() throws {
+        let definition = try EqualizerAPOParser.parse(
+            data: Data("Preamp: -1 dB\nPreamp: -5 dB".utf8),
+            filename: "preamp.txt"
+        )
+        let state = try ParametricEqualizerProcessor.prepare(definition: definition, sampleRate: 48_000)
+        let output = process(state, left: [1], right: [-1])
+
+        XCTAssertEqual(output.left[0], 0.5011872, accuracy: 2e-6)
+        XCTAssertEqual(output.right[0], -0.5011872, accuracy: 2e-6)
+    }
+
     func testUnityAndPreampOnlyStatesProcessStereoWithoutCrossTalk() throws {
         let unity = try ParametricEqualizerProcessor.prepare(definition: nil, sampleRate: 48_000)
         let preampDefinition = EqualizerDefinition(preampDB: 6, filters: [])

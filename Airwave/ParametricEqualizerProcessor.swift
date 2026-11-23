@@ -243,7 +243,7 @@ nonisolated final class ParametricEqualizerProcessor {
                     type: filter.type,
                     gainDB: filter.gainDB,
                     frequencyHz: filter.frequencyHz,
-                    q: filter.q,
+                    shape: filter.shape,
                     sampleRate: sampleRate
                 ))
             } catch let error as BiquadCoefficientError {

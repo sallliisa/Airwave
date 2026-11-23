@@ -106,7 +106,7 @@ The **Spatial Profile** section is where you choose the HRIR preset for the outp
 
 ### Equalizer
 
-The optional Equalizer imports Equalizer APO `.txt` presets. It supports `Preamp`, `GraphicEQ`, and parametric filters of type `PK`, `LSC`, or `HSC` with an explicit Q value.
+The optional Equalizer imports Equalizer APO `.txt` presets with `Preamp`, `GraphicEQ`, and standard biquad filters. Biquads include peaking, pass, notch, and shelf filters. The importer supports Q, octave bandwidth, and shelf slope where applicable.
 
 Airwave includes five presets.
 
