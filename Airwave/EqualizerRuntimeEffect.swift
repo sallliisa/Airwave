@@ -143,6 +143,8 @@ nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
             )
         case .invalidGraphicCurve(let line):
             return sourceError(line: line, reason: error.localizedDescription, definition: definition)
+        case .invalidStereoOperation(let line, let reason):
+            return sourceError(line: line, reason: reason, definition: definition)
         case .invalidSampleRate:
             return .invalidSampleRate
         case .nonFinitePreamp:

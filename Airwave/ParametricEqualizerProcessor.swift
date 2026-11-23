@@ -5,32 +5,96 @@ import os
 nonisolated final class ParametricEqualizerState {
     static let maximumFilterCount = 64
     let sampleRate: Double
-    let filterCount: Int
-    let preampLinear: Double
+    private let stages: [EqualizerStereoStage]
+
     #if DEBUG
-    // DEBUG-only destruction sentinel. Assigned from control before first
-    // publish; frees on the thread that drops the last state owner, so its
-    // recorder sees audio-thread releases. Never touched in the callback.
     var destructionProbe: ParametricEqualizerProcessor.DestructionProbe?
     #endif
 
+    fileprivate init(sampleRate: Double, stages: [EqualizerStereoStage]) {
+        self.sampleRate = sampleRate
+        self.stages = stages
+    }
+
+    func reset() {
+        for stage in stages {
+            switch stage {
+            case .linear(let filter): filter.reset()
+            case .delay(let delay): delay.reset()
+            case .copy: break
+            }
+        }
+    }
+
+    // BEGIN REALTIME CALLBACK
+    func process(
+        inputLeft: UnsafePointer<Float>,
+        inputRight: UnsafePointer<Float>?,
+        leftOutput: UnsafeMutablePointer<Float>,
+        rightOutput: UnsafeMutablePointer<Float>,
+        frameCount: Int
+    ) {
+        guard frameCount > 0 else { return }
+        let firstProcessed: Int
+        if case .linear(let head)? = stages.first {
+            head.process(
+                inputLeft: inputLeft, inputRight: inputRight,
+                leftOutput: leftOutput, rightOutput: rightOutput, frameCount: frameCount
+            )
+            firstProcessed = 1
+        } else {
+            let right = inputRight ?? inputLeft
+            if right != UnsafePointer(rightOutput) {
+                memcpy(rightOutput, right, frameCount * MemoryLayout<Float>.size)
+            }
+            if inputLeft != UnsafePointer(leftOutput) {
+                memcpy(leftOutput, inputLeft, frameCount * MemoryLayout<Float>.size)
+            }
+            firstProcessed = 0
+        }
+
+        for index in firstProcessed..<stages.count {
+            switch stages[index] {
+            case .linear(let filter):
+                filter.process(
+                    inputLeft: leftOutput, inputRight: rightOutput,
+                    leftOutput: leftOutput, rightOutput: rightOutput, frameCount: frameCount
+                )
+            case .copy(let copy):
+                copy.process(left: leftOutput, right: rightOutput, frameCount: frameCount)
+            case .delay(let delay):
+                delay.process(left: leftOutput, right: rightOutput, frameCount: frameCount)
+            }
+        }
+    }
+    // END REALTIME CALLBACK
+}
+
+nonisolated private enum EqualizerStereoStage {
+    case linear(EqualizerStereoFilterStage)
+    case copy(EqualizerStereoCopy)
+    case delay(EqualizerStereoDelay)
+}
+
+nonisolated private final class EqualizerStereoFilterStage {
     /// nil when there are no filters; that state only applies the preamp.
     private let setup: vDSP_biquadm_Setup?
-    private var preampGain: Float
+    private var leftGain: Float
+    private var rightGain: Float
+    private let channels: EqualizerStereoChannels
     private let inputPointers: UnsafeMutablePointer<UnsafePointer<Float>>
     private let outputPointers: UnsafeMutablePointer<UnsafeMutablePointer<Float>>
     private let graphicFilters: [GraphicEqualizerFilter]
 
     init(
-        sampleRate: Double,
-        preampDB: Double,
+        channels: EqualizerStereoChannels,
+        preampLinear: Double,
         coefficients: [BiquadCoefficients],
         graphicFilters: [GraphicEqualizerFilter] = []
     ) {
-        self.sampleRate = sampleRate
-        self.filterCount = coefficients.count
-        self.preampLinear = pow(10, preampDB / 20)
-        self.preampGain = Float(preampLinear)
+        self.channels = channels
+        self.leftGain = channels.contains(.left) ? Float(preampLinear) : 1
+        self.rightGain = channels.contains(.right) ? Float(preampLinear) : 1
         self.graphicFilters = graphicFilters
         self.inputPointers = UnsafeMutablePointer<UnsafePointer<Float>>.allocate(capacity: 2)
         self.outputPointers = UnsafeMutablePointer<UnsafeMutablePointer<Float>>.allocate(capacity: 2)
@@ -40,15 +104,17 @@ nonisolated final class ParametricEqualizerState {
             return
         }
 
-        // Both channels run the same cascade. vDSP lays coefficients out
-        // section-major: all channels of section 0, then section 1, and so on.
-        // The preamp folds into the first section's feed-forward terms, saving a
-        // separate gain pass on the render thread.
+        // vDSP stores both channels of each section together. An unselected
+        // channel gets an identity section. Fold preamp into the first section.
         var flattened = [Double]()
         flattened.reserveCapacity(2 * coefficients.count * 5)
         for (index, coefficient) in coefficients.enumerated() {
             let gain = index == 0 ? preampLinear : 1
-            for _ in 0..<2 {
+            for channel: EqualizerStereoChannels in [.left, .right] {
+                guard channels.contains(channel) else {
+                    flattened.append(contentsOf: [1, 0, 0, 0, 0])
+                    continue
+                }
                 flattened.append(coefficient.b0 * gain)
                 flattened.append(coefficient.b1 * gain)
                 flattened.append(coefficient.b2 * gain)
@@ -63,7 +129,6 @@ nonisolated final class ParametricEqualizerState {
                 2                                 // channels
             )
         }
-        if setup != nil { self.preampGain = 1 }
     }
 
     deinit {
@@ -111,11 +176,11 @@ nonisolated final class ParametricEqualizerState {
                 vDSP_Length(frameCount)
             )
         } else {
-            vDSP_vsmul(inputLeft, 1, &preampGain, leftOutput, 1, vDSP_Length(frameCount))
-            vDSP_vsmul(right, 1, &preampGain, rightOutput, 1, vDSP_Length(frameCount))
+            vDSP_vsmul(inputLeft, 1, &leftGain, leftOutput, 1, vDSP_Length(frameCount))
+            vDSP_vsmul(right, 1, &rightGain, rightOutput, 1, vDSP_Length(frameCount))
         }
         for filter in graphicFilters {
-            filter.process(left: leftOutput, right: rightOutput, frameCount: frameCount)
+            filter.process(left: leftOutput, right: rightOutput, frameCount: frameCount, channels: channels)
         }
     }
     // END REALTIME CALLBACK
@@ -128,6 +193,7 @@ nonisolated enum ParametricEqualizerPreparationError: Error, Equatable, Localize
     case tooManyFilters(Int)
     case invalidFilter(index: Int, error: BiquadCoefficientError)
     case invalidGraphicCurve(line: Int)
+    case invalidStereoOperation(line: Int, reason: String)
 
     var errorDescription: String? {
         switch self {
@@ -141,6 +207,8 @@ nonisolated enum ParametricEqualizerPreparationError: Error, Equatable, Localize
             return "Equalizer supports at most \(ParametricEqualizerState.maximumFilterCount) filters; received \(count)."
         case .invalidFilter(let index, let error):
             return "Filter \(index + 1) is invalid: \(error.localizedDescription)"
+        case .invalidStereoOperation(_, let reason):
+            return reason
         case .invalidGraphicCurve:
             return "GraphicEQ could not produce a finite impulse response."
         }
@@ -221,61 +289,9 @@ nonisolated final class ParametricEqualizerProcessor {
             throw ParametricEqualizerPreparationError.invalidSampleRate
         }
 
-        let preampDB = definition?.preampDB ?? 0
-        guard preampDB.isFinite else {
-            throw ParametricEqualizerPreparationError.nonFinitePreamp
-        }
-        let preampLinear = pow(10, preampDB / 20)
-        guard preampLinear.isFinite, Float(preampLinear).isFinite else {
-            throw ParametricEqualizerPreparationError.nonFinitePreamp
-        }
 
-        let enabledFilters = definition?.filters.filter(\.isEnabled) ?? []
-        guard enabledFilters.count <= ParametricEqualizerState.maximumFilterCount else {
-            throw ParametricEqualizerPreparationError.tooManyFilters(enabledFilters.count)
-        }
-
-        var coefficients: [BiquadCoefficients] = []
-        coefficients.reserveCapacity(enabledFilters.count)
-        for (index, filter) in enabledFilters.enumerated() {
-            do {
-                coefficients.append(try BiquadCoefficientBuilder.make(
-                    type: filter.type,
-                    gainDB: filter.gainDB,
-                    frequencyHz: filter.frequencyHz,
-                    shape: filter.shape,
-                    sampleRate: sampleRate
-                ))
-            } catch let error as BiquadCoefficientError {
-                throw ParametricEqualizerPreparationError.invalidFilter(index: index, error: error)
-            }
-        }
-
-        guard coefficients.allSatisfy({ coefficient in
-            [coefficient.b0 * preampLinear, coefficient.b1 * preampLinear,
-             coefficient.b2 * preampLinear, coefficient.a1, coefficient.a2].allSatisfy(\.isFinite)
-        }) else {
-            throw ParametricEqualizerPreparationError.nonFiniteCoefficients
-        }
-
-        // This preset subset applies only linear filters and gain to both
-        // channels. Fuse the biquads and retain one FIR per graphic curve.
-        var graphicFilters: [GraphicEqualizerFilter] = []
-        for directive in definition?.directives ?? [] {
-            guard case .graphic(let curve) = directive else { continue }
-            guard let response = GraphicEqualizerImpulseResponse.make(points: curve.points, sampleRate: sampleRate),
-                  let filter = GraphicEqualizerFilter(impulseResponse: response) else {
-                throw ParametricEqualizerPreparationError.invalidGraphicCurve(line: curve.sourceLine)
-            }
-            graphicFilters.append(filter)
-        }
-
-        return ParametricEqualizerState(
-            sampleRate: sampleRate,
-            preampDB: preampDB,
-            coefficients: coefficients,
-            graphicFilters: graphicFilters
-        )
+        let compiler = EqualizerStereoCompiler(sampleRate: sampleRate)
+        return try compiler.prepare(definition?.directives ?? [])
     }
 
     func publish(_ state: ParametricEqualizerState) throws {
@@ -578,5 +594,111 @@ nonisolated final class ParametricEqualizerProcessor {
                 beginTransition(to: pending)
             }
         }
+    }
+}
+
+
+nonisolated private final class EqualizerStereoCompiler {
+    private let sampleRate: Double
+    private var stages: [EqualizerStereoStage] = []
+    private var channels = EqualizerStereoChannels.both
+    private var scopes: [EqualizerStereoChannels] = []
+    private var preamp = 0.0
+    private var coefficients: [BiquadCoefficients] = []
+    private var graphicFilters: [GraphicEqualizerFilter] = []
+    private var filterCount = 0
+    private var delaySamples = 0
+
+    init(sampleRate: Double) {
+        self.sampleRate = sampleRate
+    }
+
+    func prepare(_ directives: [EqualizerDirective]) throws -> ParametricEqualizerState {
+        for directive in directives {
+            switch directive {
+            case .preamp(let gain):
+                preamp += gain
+            case .parametric(let filter):
+                if filter.isEnabled { try add(filter) }
+            case .graphic(let curve):
+                guard let response = GraphicEqualizerImpulseResponse.make(points: curve.points, sampleRate: sampleRate),
+                      let filter = GraphicEqualizerFilter(impulseResponse: response) else {
+                    throw ParametricEqualizerPreparationError.invalidGraphicCurve(line: curve.sourceLine)
+                }
+                graphicFilters.append(filter)
+            case .stereo(let command, let line):
+                try add(command, line: line)
+            case .enterInclude:
+                scopes.append(channels)
+            case .leaveInclude:
+                if let saved = scopes.popLast(), saved != channels {
+                    try flush()
+                    channels = saved
+                }
+            }
+        }
+        try flush()
+        return ParametricEqualizerState(sampleRate: sampleRate, stages: stages)
+    }
+
+    private func add(_ filter: EqualizerFilter) throws {
+        filterCount += 1
+        guard filterCount <= ParametricEqualizerState.maximumFilterCount else {
+            throw ParametricEqualizerPreparationError.tooManyFilters(filterCount)
+        }
+        do {
+            coefficients.append(try BiquadCoefficientBuilder.make(
+                type: filter.type, gainDB: filter.gainDB, frequencyHz: filter.frequencyHz,
+                shape: filter.shape, sampleRate: sampleRate
+            ))
+        } catch let error as BiquadCoefficientError {
+            throw ParametricEqualizerPreparationError.invalidFilter(index: filterCount - 1, error: error)
+        }
+    }
+
+    private func add(_ command: EqualizerStereoCommand, line: Int) throws {
+        if case .channel(let next) = command, next == channels { return }
+        try flush()
+        switch command {
+        case .channel(let next):
+            channels = next
+        case .copy(let assignments):
+            stages.append(.copy(EqualizerStereoCopy(assignments: assignments)))
+        case .delay(let amount):
+            do {
+                let delay = try EqualizerStereoDelay(delay: amount, sampleRate: sampleRate, channels: channels)
+                delaySamples += delay.sampleCount
+                guard delaySamples <= 1_920_000 else {
+                    throw ParametricEqualizerPreparationError.invalidStereoOperation(
+                        line: line, reason: "Total delay exceeds the preset limit."
+                    )
+                }
+                stages.append(.delay(delay))
+            } catch let error as ParametricEqualizerPreparationError {
+                throw error
+            } catch {
+                throw ParametricEqualizerPreparationError.invalidStereoOperation(line: line, reason: error.localizedDescription)
+            }
+        }
+    }
+
+    private func flush() throws {
+        guard preamp != 0 || !coefficients.isEmpty || !graphicFilters.isEmpty else { return }
+        let gain = pow(10, preamp / 20)
+        guard gain.isFinite, Float(gain).isFinite else {
+            throw ParametricEqualizerPreparationError.nonFinitePreamp
+        }
+        guard coefficients.allSatisfy({ coefficient in
+            [coefficient.b0 * gain, coefficient.b1 * gain, coefficient.b2 * gain,
+             coefficient.a1, coefficient.a2].allSatisfy(\.isFinite)
+        }) else {
+            throw ParametricEqualizerPreparationError.nonFiniteCoefficients
+        }
+        stages.append(.linear(EqualizerStereoFilterStage(
+            channels: channels, preampLinear: gain, coefficients: coefficients, graphicFilters: graphicFilters
+        )))
+        preamp = 0
+        coefficients.removeAll(keepingCapacity: true)
+        graphicFilters.removeAll(keepingCapacity: true)
     }
 }

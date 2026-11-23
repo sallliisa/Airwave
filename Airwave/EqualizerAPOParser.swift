@@ -51,7 +51,9 @@ nonisolated struct EqualizerAPOParser {
         let reason: String
     }
 
-    static func parse(data: Data, filename: String) throws -> EqualizerDefinition {
+    static func parse(
+        data: Data, filename: String, fileBoundaries: [EqualizerConfigFiles.ScopeBoundary] = []
+    ) throws -> EqualizerDefinition {
         guard data.count <= maximumDataSize else {
             throw EqualizerParseError(
                 filename: filename,
@@ -70,11 +72,17 @@ nonisolated struct EqualizerAPOParser {
 
         var filterDeclarationCount = 0
         var graphicDeclarationCount = 0
+        var stereoDeclarationCount = 0
         var directives: [EqualizerDirective] = []
         var issues: [EqualizerParseIssue] = []
+        let boundaries = Dictionary(grouping: fileBoundaries, by: \.line)
+        let lines = source.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
 
-        for (index, rawLine) in source.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).enumerated() {
+        for (index, rawLine) in lines.enumerated() {
             let lineNumber = index + 1
+            if let scopes = boundaries[lineNumber] {
+                directives.append(contentsOf: scopes.map(\.directive))
+            }
             let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !line.isEmpty, !line.hasPrefix("#") else { continue }
 
@@ -138,17 +146,40 @@ nonisolated struct EqualizerAPOParser {
                 continue
             }
 
+            let fields = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+            if fields.count == 2 {
+                do {
+                    if let command = try EqualizerStereoCommand.parse(
+                        command: fields[0].trimmingCharacters(in: .whitespaces),
+                        parameters: String(fields[1])
+                    ) {
+                        stereoDeclarationCount += 1
+                        if stereoDeclarationCount > 64 {
+                            issues.append(.init(lineNumber: lineNumber, reason: "more than 64 stereo commands are not allowed"))
+                        } else {
+                            directives.append(.stereo(command, line: lineNumber))
+                        }
+                        continue
+                    }
+                } catch {
+                    issues.append(.init(lineNumber: lineNumber, reason: error.localizedDescription))
+                    continue
+                }
+            }
             if lowercased.hasPrefix("preamp") {
                 issues.append(.init(lineNumber: lineNumber, reason: "malformed Preamp directive"))
             } else {
                 issues.append(.init(lineNumber: lineNumber, reason: "unsupported directive"))
             }
         }
+        if let scopes = boundaries[lines.count + 1] {
+            directives.append(contentsOf: scopes.map(\.directive))
+        }
 
         if issues.isEmpty && !directives.contains(where: isEffective) {
             issues.append(.init(
                 lineNumber: nil,
-                reason: "effective configuration must contain a non-zero preamp, an enabled filter, or a GraphicEQ curve"
+                reason: "effective configuration must contain a non-zero preamp, an enabled filter, a GraphicEQ curve, Copy, or Delay"
             ))
         }
         guard issues.isEmpty else {
@@ -162,6 +193,8 @@ nonisolated struct EqualizerAPOParser {
         case .preamp(let gainDB): gainDB != 0
         case .parametric(let filter): filter.isEnabled
         case .graphic: true
+        case .stereo(.channel, _), .enterInclude, .leaveInclude: false
+        case .stereo: true
         }
     }
 

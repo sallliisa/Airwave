@@ -17,6 +17,19 @@ nonisolated enum EqualizerConfigFiles {
     nonisolated enum ScopeBoundary: Equatable {
         case enter(beforeLine: Int)
         case leave(beforeLine: Int)
+
+        var line: Int {
+            switch self {
+            case .enter(let line), .leave(let line): line
+            }
+        }
+
+        var directive: EqualizerDirective {
+            switch self {
+            case .enter: .enterInclude
+            case .leave: .leaveInclude
+            }
+        }
     }
 
     nonisolated struct Expanded {
@@ -27,7 +40,7 @@ nonisolated enum EqualizerConfigFiles {
 
         func parse() throws -> EqualizerDefinition {
             do {
-                let definition = try EqualizerAPOParser.parse(data: data, filename: rootFilename)
+                let definition = try EqualizerAPOParser.parse(data: data, filename: rootFilename, fileBoundaries: scopeBoundaries)
                 return EqualizerDefinition(directives: definition.directives, sourceLocations: locations)
             } catch let error as EqualizerParseError {
                 let issues = error.issues.map { issue in

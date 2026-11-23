@@ -101,9 +101,12 @@ nonisolated final class GraphicEqualizerFilter {
         self.right = right
     }
 
-    func process(left: UnsafeMutablePointer<Float>, right: UnsafeMutablePointer<Float>, frameCount: Int) {
-        self.left.process(left, frameCount: frameCount)
-        self.right.process(right, frameCount: frameCount)
+    func process(
+        left: UnsafeMutablePointer<Float>, right: UnsafeMutablePointer<Float>, frameCount: Int,
+        channels: EqualizerStereoChannels = .both
+    ) {
+        if channels.contains(.left) { self.left.process(left, frameCount: frameCount) }
+        if channels.contains(.right) { self.right.process(right, frameCount: frameCount) }
     }
 
     func reset() {

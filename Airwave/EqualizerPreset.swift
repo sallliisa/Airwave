@@ -68,6 +68,9 @@ nonisolated enum EqualizerDirective: Equatable {
     case preamp(Double)
     case parametric(EqualizerFilter)
     case graphic(EqualizerGraphicCurve)
+    case stereo(EqualizerStereoCommand, line: Int)
+    case enterInclude
+    case leaveInclude
 }
 
 nonisolated struct EqualizerDefinition: Equatable {

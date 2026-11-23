@@ -120,6 +120,8 @@ Choose **None** to bypass the Equalizer. Use **Import…** to add your own Equal
 
 If a config uses `Include`, select the folder containing `config.txt`. Airwave stores the config and its included files together. Include paths are relative to the file that declares them and must stay within the selected folder.
 
+`Channel`, `Copy`, and `Delay` run in config order on Airwave's stereo signal after spatial processing. Use `L`, `R`, `1`, or `2` for channel references. `Channel: all` selects both channels. Delay accepts milliseconds or samples.
+
 ![Airwave Equalizer](docs/images/6Equalizer.png)
 
 The HRIR and Equalizer settings are independent. You can use spatial processing, EQ processing, both together, or neither.
