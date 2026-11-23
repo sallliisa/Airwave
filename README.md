@@ -106,7 +106,9 @@ The **Spatial Profile** section is where you choose the HRIR preset for the outp
 
 ### Equalizer
 
-The optional Equalizer uses EqualizerAPO-format `.txt` presets. Airwave includes five presets:
+The optional Equalizer imports Equalizer APO `.txt` presets with `Preamp`, `GraphicEQ`, and standard biquad filters. Biquads include peaking, pass, notch, and shelf filters. The importer supports Q, octave bandwidth, and shelf slope where applicable.
+
+Airwave includes five presets.
 
 - Bass Booster
 - Bass Reducer
@@ -115,6 +117,20 @@ The optional Equalizer uses EqualizerAPO-format `.txt` presets. Airwave includes
 - Vocal Booster
 
 Choose **None** to bypass the Equalizer. Use **Import…** to add your own EqualizerAPO preset, **Manage…** to open Airwave's managed preset folder, or **Get more equalizer presets…** to browse [AutoEq](https://autoeq.app/). You can delete imported presets from the library.
+
+If a config uses `Include` or `Convolution`, select the folder containing `config.txt`. Airwave stores the config with its included text and WAV files. Paths are relative to the file that declares them and must stay within the selected folder.
+If you select `config.txt` directly and Airwave needs access to its companion files, use **Choose Folder…** to grant access and continue the import.
+
+`Channel`, `Copy`, and `Delay` run in config order on Airwave's stereo signal after spatial processing. Use `L`, `R`, `1`, or `2` for channel references. `Channel: all` selects both channels. Delay accepts milliseconds or samples.
+
+`Convolution` uses WAV impulse responses up to 0.5 seconds long on the selected channels. The WAV sample rate must match the output.
+The combined `GraphicEQ` and convolution response limit is 96,000 frames through 48 kHz, 48,000 frames through 96 kHz, and 32,768 frames above 96 kHz.
+
+Airwave evaluates `If`, `ElseIf`, `Else`, `EndIf`, `Eval`, and backtick expressions for the active output. Configs can use the output sample rate, captured and rendered channel counts, and device name or UID. For a Windows device selector, replace the Windows name or GUID with the macOS output name or UID. `Stage: post-mix` selects Airwave's playback stage. Sections for `pre-mix` or `capture` are skipped on playback.
+
+Custom `Filter: ON IIR` accepts stable filters of order 1 through 32, with a combined order limit of 512 for the active preset. Use a sample-rate condition to choose the coefficients supplied for each output rate. Enter frequencies as decimal Hz or use an ungrouped integer such as `6000`.
+
+`Include` and `Convolution` paths must be literal and available at import, including files mentioned inside conditions. Windows registry functions, Windows VST plugins, and system-volume loudness correction are outside Airwave's current config support.
 
 ![Airwave Equalizer](docs/images/6Equalizer.png)
 

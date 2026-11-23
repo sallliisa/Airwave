@@ -130,6 +130,203 @@ final class EqualizerSafetySoakTests: XCTestCase {
 }
 
 final class ParametricEqualizerProcessorTests: XCTestCase {
+    func testCustomIIRNormalizesCoefficientsAndKeepsHistoryAcrossCallbacks() throws {
+        let definition = try EqualizerAPOParser.parse(data: Data("""
+        Channel: R
+        Filter: ON IIR Order 1 Coefficients 0.25 0 0.5 -0.25
+        """.utf8), filename: "Custom.txt")
+        let state = try ParametricEqualizerProcessor.prepare(definition: definition, sampleRate: 48_000)
+
+        let impulse = process(state, left: [0.25, 0], right: [1, 0])
+        let tail = process(state, left: [0, 0], right: [0, 0])
+        XCTAssertEqual(impulse.left + tail.left, [0.25, 0, 0, 0])
+        XCTAssertEqual(impulse.right + tail.right, [0.5, 0.25, 0.125, 0.0625])
+        state.reset()
+        XCTAssertEqual(process(state, left: [0], right: [0]).right, [0])
+    }
+
+    func testUnstableCustomIIRReportsTheSourceLine() {
+        let invalid = Data("# header\nFilter: ON IIR Order 2 Coefficients 1 0 0 1 0 1.1".utf8)
+        XCTAssertThrowsError(try EqualizerAPOParser.parse(data: invalid, filename: "Unstable.txt")) { error in
+            let issue = (error as? EqualizerParseError)?.issues.first
+            XCTAssertEqual(issue?.lineNumber, 2)
+            XCTAssertTrue(issue?.reason.contains("stable") == true)
+        }
+    }
+
+    func testCustomIIRCombinedOrderLimitReportsTheFirstExcessLine() throws {
+        let coefficients = ["1"] + [String](repeating: "0", count: 32) + ["1"] + [String](repeating: "0", count: 32)
+        let filter = "Filter: ON IIR Order 32 Coefficients \(coefficients.joined(separator: " "))"
+        let allowed = [String](repeating: filter, count: 16).joined(separator: "\n")
+        XCTAssertNoThrow(try EqualizerAPOParser.parse(data: Data(allowed.utf8), filename: "Budget.txt"))
+        XCTAssertThrowsError(try EqualizerAPOParser.parse(data: Data((allowed + "\n" + filter).utf8), filename: "Budget.txt")) { error in
+            XCTAssertEqual((error as? EqualizerParseError)?.issues.first?.lineNumber, 17)
+        }
+    }
+
+    func testCombinedImpulseResponseLimitUsesOutputRateAndReportsTheSourceLine() throws {
+        let impulse = [Float](repeating: 0, count: 16_385)
+        let first = EqualizerConvolutionAsset(sourceLine: 1, filename: "First.wav", sampleRate: 192_000, channels: [impulse])
+        let second = EqualizerConvolutionAsset(sourceLine: 2, filename: "Second.wav", sampleRate: 192_000, channels: [impulse])
+        let definition = EqualizerDefinition(directives: [.convolution(first), .convolution(second)])
+        XCTAssertThrowsError(try ParametricEqualizerProcessor.prepare(definition: definition, sampleRate: 192_000)) { error in
+            guard let issue = error as? ParametricEqualizerPreparationError,
+                  case .invalidStereoOperation(let line, let reason) = issue else {
+                return XCTFail("Expected an impulse response limit error, received \(error)")
+            }
+            XCTAssertEqual(line, 2)
+            XCTAssertTrue(reason.contains("32768"))
+        }
+    }
+
+    func testShelfCornerConversionCanPutCenterBelowNyquist() throws {
+        let definition = try EqualizerAPOParser.parse(data: Data("Filter: ON HS 6dB Fc 25000 Hz Gain 12 dB".utf8),
+                                                      filename: "Shelf.txt")
+        let state = try ParametricEqualizerProcessor.prepare(definition: definition, sampleRate: 48_000)
+        let impulse = process(state, left: [0.1, 0, 0, 0], right: [0.1, 0, 0, 0])
+        XCTAssertEqual(impulse.left, impulse.right)
+        XCTAssertTrue(impulse.left.allSatisfy(\.isFinite))
+        XCTAssertGreaterThan(impulse.left[0], 0.1)
+    }
+
+    func testStereoCommandsPreserveCopyOrderAndApplyDelayOnlyToSelectedChannel() throws {
+        let definition = try EqualizerAPOParser.parse(data: Data("""
+        Channel: L
+        Preamp: -6.020599913 dB
+        Copy: L=R R=L
+        Delay: 1 samples
+        Channel: all
+        Preamp: -6.020599913 dB
+        """.utf8), filename: "Stereo.txt")
+        let state = try ParametricEqualizerProcessor.prepare(definition: definition, sampleRate: 48_000)
+
+        let first = process(state, left: [0.8, 0.4], right: [0.4, 0.2])
+        let second = process(state, left: [-0.2, 0], right: [0.1, -0.1])
+        XCTAssertEqual(first.left + second.left, [0, 0.2, 0.1, 0.05])
+        XCTAssertEqual(first.right + second.right, [0.2, 0.1, -0.05, 0])
+    }
+
+    func testMillisecondDelayRecomputesAtOutputRate() throws {
+        let definition = try EqualizerAPOParser.parse(
+            data: Data("Channel: 2\nDelay: 0.03125 ms".utf8), filename: "Delay.txt"
+        )
+        for (rate, sample) in [(48_000.0, 2), (96_000.0, 3)] {
+            let state = try ParametricEqualizerProcessor.prepare(definition: definition, sampleRate: rate)
+            let rendered = process(state, left: [1, 0, 0, 0], right: [-0.5, 0, 0, 0])
+            var expectedRight: [Float] = [0, 0, 0, 0]
+            expectedRight[sample] = -0.5
+            XCTAssertEqual(rendered.left, [1, 0, 0, 0])
+            XCTAssertEqual(rendered.right, expectedRight)
+        }
+    }
+
+    func testChannelSelectionAppliesFilterAndCrossfeedIndependently() throws {
+        let definition = try EqualizerAPOParser.parse(data: Data("""
+        Channel: R
+        Filter: ON LP Fc 1000 Hz
+        Copy: L=L+0.5*R
+        """.utf8), filename: "Crossfeed.txt")
+        let state = try ParametricEqualizerProcessor.prepare(definition: definition, sampleRate: 48_000)
+        let left: [Float] = [0.2, 0, 0, 0]
+        let rendered = process(state, left: left, right: [1, 0, 0, 0])
+        XCTAssertEqual(rendered.right[0], 0.0039161, accuracy: 0.000001)
+        for index in left.indices {
+            XCTAssertEqual(rendered.left[index], left[index] + 0.5 * rendered.right[index], accuracy: 0.000001)
+        }
+    }
+
+    func testCopyKeepsOutputFiniteWhenAnAssignmentOverflows() throws {
+        let definition = try EqualizerAPOParser.parse(
+            data: Data("Copy: L=3.0e38+3.0e38".utf8), filename: "Copy.txt"
+        )
+        let state = try ParametricEqualizerProcessor.prepare(definition: definition, sampleRate: 48_000)
+        let rendered = process(state, left: [0], right: [0.25])
+        XCTAssertEqual(rendered.left, [0])
+        XCTAssertEqual(rendered.right, [0.25])
+    }
+
+    func testChannelSelectionReturnsToParentAfterInclude() throws {
+        let parsed = try EqualizerAPOParser.parse(
+            data: Data("Channel: L\nChannel: R\nPreamp: -6.020599913 dB\nPreamp: -6.020599913 dB".utf8),
+            filename: "config.txt", fileBoundaries: [.enter(beforeLine: 2), .leave(beforeLine: 4)]
+        )
+        let state = try ParametricEqualizerProcessor.prepare(definition: parsed, sampleRate: 48_000)
+        let rendered = process(state, left: [0.8], right: [-0.6])
+        XCTAssertEqual(rendered.left, [0.4])
+        XCTAssertEqual(rendered.right, [-0.3])
+    }
+
+    func testGraphicEQImpulseMatchesEqualizerAPOReferenceAcrossCallbackBoundaries() throws {
+        let definition = try EqualizerAPOParser.parse(data: Data("""
+        GraphicEQ: 20 0; 45 0; 50 -12; 55 0; 100 0; 400 -6; 1600 -3; 6400 2; 12000 -8
+        """.utf8), filename: "Curve.txt")
+        // Independent reference from Equalizer APO's 16384-tap design,
+        // including its half-bin mirror and cosine window.
+        let indices = [0, 1, 17, 255, 256, 257, 4999]
+        let references: [(rate: Double, taps: [Float])] = [
+            (44_100, [0.57501936, 0.28595823, 0.000403064, -0.000187667, -0.000176473, -0.000194593, 0.000001129]),
+            (48_000, [0.55809546, 0.27237153, 0.008659942, -0.000332404, -0.000331685, -0.000344128, 0.000001433]),
+            (96_000, [0.47136545, 0.14744756, 0.014841376, 0.000128640, 0.000127670, 0.000118924, 0.000058199])
+        ]
+
+        for reference in references {
+            let state = try ParametricEqualizerProcessor.prepare(definition: definition, sampleRate: reference.rate)
+            var left: [Float] = []
+            var right: [Float] = []
+            for size in [1, 27, 228, 513, 4096, 435] {
+                var inputLeft = [Float](repeating: 0, count: size)
+                var inputRight = inputLeft
+                if left.isEmpty { inputLeft[0] = 1 }
+                if left.count == 28 { inputRight[0] = -0.5 }
+                let chunk = process(state, left: inputLeft, right: inputRight)
+                left += chunk.left
+                right += chunk.right
+            }
+            XCTAssertTrue(right.prefix(28).allSatisfy { $0 == 0 })
+            for (index, expected) in zip(indices, reference.taps) {
+                XCTAssertEqual(left[index], expected, accuracy: 0.0000005, "\(reference.rate) Hz, tap \(index)")
+                XCTAssertEqual(right[index + 28], -0.5 * expected, accuracy: 0.0000005)
+            }
+
+            state.reset()
+            let silence = [Float](repeating: 0, count: 777)
+            let resetOutput = process(state, left: silence, right: silence)
+            XCTAssertEqual(resetOutput.left, silence)
+            XCTAssertEqual(resetOutput.right, silence)
+        }
+    }
+
+    func testGraphicEQCombinesWithPreampAndParametricEQAndCrossfadesToBypass() throws {
+        let definition = try EqualizerAPOParser.parse(data: Data("""
+        Preamp: -6.020599913 dB
+        GraphicEQ: 20 -6.020599913; 20000 -6.020599913
+        Filter: ON PK Fc 1000 Hz Gain 3 dB Q 1
+        """.utf8), filename: "Mixed.txt")
+        let parametric = try ParametricEqualizerProcessor.prepare(
+            definition: EqualizerDefinition(filters: definition.filters), sampleRate: 48_000
+        )
+        let mixed = try ParametricEqualizerProcessor.prepare(definition: definition, sampleRate: 48_000)
+        let left = (0..<1024).map { Float(sin(2 * Double.pi * Double($0) / 48)) }
+        let right = left.map { -0.5 * $0 }
+        let expected = process(parametric, left: left, right: right)
+        let actual = process(mixed, left: left, right: right)
+        for index in left.indices {
+            XCTAssertEqual(actual.left[index], 0.25 * expected.left[index], accuracy: 0.000002)
+            XCTAssertEqual(actual.right[index], 0.25 * expected.right[index], accuracy: 0.000002)
+        }
+
+        let processor = try ParametricEqualizerProcessor(sampleRate: 48_000)
+        try processor.setTarget(definition: definition)
+        _ = process(processor, frameCount: 2048, leftValue: 0.5, rightValue: -0.25)
+        processor.drainRetiredStates()
+        XCTAssertFalse(processor.isBypassed)
+        try processor.setTarget(definition: nil)
+        let output = process(processor, frameCount: 2048, leftValue: 0.5, rightValue: -0.25)
+        XCTAssertEqual(output.left.last, 0.5)
+        XCTAssertEqual(output.right.last, -0.25)
+        XCTAssertTrue(processor.isBypassed)
+    }
+
     func testPreampThatOverflowsFloatIsRejectedWithoutFilters() throws {
         XCTAssertThrowsError(try ParametricEqualizerProcessor.prepare(
             definition: EqualizerDefinition(preampDB: 800, filters: []),
@@ -217,6 +414,48 @@ final class ParametricEqualizerProcessorTests: XCTestCase {
                 )
             }
         }
+    }
+
+    func testImportedParametricFiltersMatchEqualizerAPOImpulseResponses() throws {
+        // Reference samples from Equalizer APO's BiQuad and BiQuadFilter equations.
+        let cases: [(Double, String, [Float])] = [
+            (48_000, "LP Fc 2000 Hz", [0.0144014403, 0.0523203343, 0.0898945693, 0.1106648504]),
+            (48_000, "HPQ Fc 2000 Hz Q 0.5", [0.7808611706, -0.3633706411, -0.2365508288, -0.1490744134]),
+            (48_000, "BP Fc 2500 Hz", [0.1851979976, 0.2857829436, 0.1391983006, 0.0348697533]),
+            (48_000, "NO Fc 2500 Hz", [0.9946712236, -0.0100381801, -0.0083088444, -0.0057207400]),
+            (48_000, "AP Fc 2500 Hz Q 0.8", [0.6654180669, -0.5276472669, -0.2748991716, -0.0824194659]),
+            (48_000, "PEQ Fc 9000 Hz Gain -5 dB BW Oct 1.2", [0.8221676675, -0.0808030994, 0.1744335237, 0.0943969682]),
+            (96_000, "PEQ Fc 9000 Hz Gain -5 dB BW Oct 1.2", [0.8895936079, -0.1372833091, -0.0055938098, 0.0610639478]),
+            (48_000, "LS 6dB Fc 300 Hz Gain 7.2 dB", [1.0248652204, 0.0487725127, 0.0468935606, 0.0450869947]),
+            (48_000, "HS Fc 5000 Hz Gain -6 dB Q 0.8", [0.5699561039, 0.1386934700, 0.1280423321, 0.0994074491]),
+            (48_000, "LS Fc 400 Hz Gain 9 dB", [1.0206968966, 0.0415839443, 0.0419199474, 0.0421697286]),
+            (48_000, "HSC 10.8 dB Fc 6000 Hz Gain 5 dB", [1.5231186084, -0.3857796827, -0.1667669698, -0.0302728733]),
+        ]
+        let input: [Float] = [1, 0, 0, 0]
+        for (sampleRate, filter, expected) in cases {
+            let definition = try EqualizerAPOParser.parse(
+                data: Data("Filter 1: ON \(filter)".utf8),
+                filename: "reference.txt"
+            )
+            let state = try ParametricEqualizerProcessor.prepare(definition: definition, sampleRate: sampleRate)
+            let output = process(state, left: input, right: input)
+            for (index, sample) in expected.enumerated() {
+                XCTAssertEqual(output.left[index], sample, accuracy: 2e-6, filter)
+                XCTAssertEqual(output.right[index], sample, accuracy: 2e-6, filter)
+            }
+        }
+    }
+
+    func testImportedPreampCommandsRenderWithTheirCombinedGain() throws {
+        let definition = try EqualizerAPOParser.parse(
+            data: Data("Preamp: -1 dB\nPreamp: -5 dB".utf8),
+            filename: "preamp.txt"
+        )
+        let state = try ParametricEqualizerProcessor.prepare(definition: definition, sampleRate: 48_000)
+        let output = process(state, left: [1], right: [-1])
+
+        XCTAssertEqual(output.left[0], 0.5011872, accuracy: 2e-6)
+        XCTAssertEqual(output.right[0], -0.5011872, accuracy: 2e-6)
     }
 
     func testUnityAndPreampOnlyStatesProcessStereoWithoutCrossTalk() throws {

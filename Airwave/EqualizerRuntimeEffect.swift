@@ -6,7 +6,9 @@ nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
     private let processorLock = OSAllocatedUnfairLock<ParametricEqualizerProcessor?>(initialState: nil)
     private let retiredProcessorLock = OSAllocatedUnfairLock<ParametricEqualizerProcessor?>(initialState: nil)
     private var controlProcessor: ParametricEqualizerProcessor?
+    private var controlContext: EqualizerConfigContext?
     private var audioThreadProcessor: ParametricEqualizerProcessor?
+    private(set) var hasConfiguredEffect = false
     #if DEBUG
     // No owned probe array. Each ParametricEqualizerProcessor carries its
     // own DEBUG probe (see destructionProbe). Never touch probes here.
@@ -21,10 +23,25 @@ nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
     }
 
     func prepare(definition: EqualizerDefinition?, sampleRate: Double) throws {
+        try prepare(definition: definition, context: EqualizerConfigContext(
+            sampleRate: sampleRate, inputChannelCount: 2, deviceName: "", deviceUID: ""
+        ))
+    }
+
+    func prepare(definition: EqualizerDefinition?, routing: ResolvedOutputRouting) throws {
+        try prepare(definition: definition, context: EqualizerConfigContext(
+            sampleRate: routing.sampleRate, inputChannelCount: routing.inputLayout.channels.count,
+            deviceName: routing.device.name, deviceUID: routing.device.uid
+        ))
+    }
+
+    private func prepare(definition: EqualizerDefinition?, context: EqualizerConfigContext) throws {
+        let sampleRate = context.sampleRate
         retiredProcessorLock.withLock { $0 = nil }
         guard sampleRate.isFinite, sampleRate > 0 else {
             throw EqualizerAudioEffectError.invalidSampleRate
         }
+        controlContext = context
 
         let processor: ParametricEqualizerProcessor
         if let controlProcessor, controlProcessor.sampleRate == sampleRate {
@@ -45,25 +62,36 @@ nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
             }
         }
 
-        do {
-            try processor.setTarget(definition: definition)
-            processor.drainRetiredStates()
-        } catch let error as ParametricEqualizerPreparationError {
-            processor.drainRetiredStates()
-            throw map(error, definition: definition)
-        }
+        try publish(definition: definition, to: processor, context: context)
     }
 
     func setTarget(definition: EqualizerDefinition?) throws {
-        guard let processor = controlProcessor else {
+        guard let processor = controlProcessor, let context = controlContext else {
             throw EqualizerAudioEffectError.unavailable("Equalizer has not been prepared for an output.")
         }
+        try publish(definition: definition, to: processor, context: context)
+    }
+
+    private func publish(
+        definition: EqualizerDefinition?, to processor: ParametricEqualizerProcessor, context: EqualizerConfigContext
+    ) throws {
+        defer { processor.drainRetiredStates() }
+        let resolved: EqualizerDefinition?
         do {
-            try processor.setTarget(definition: definition)
-            processor.drainRetiredStates()
+            if let definition, let program = definition.program {
+                let result = try program.resolve(context: context)
+                resolved = EqualizerDefinition(directives: result.directives, sourceLocations: definition.sourceLocations)
+            } else {
+                resolved = definition
+            }
+        } catch let error as EqualizerParseError {
+            let issue = error.issues.first
+            throw sourceError(line: issue?.lineNumber, reason: issue?.reason ?? error.localizedDescription, definition: definition)
+        }
+        do {
+            hasConfiguredEffect = try processor.setTarget(definition: resolved)
         } catch let error as ParametricEqualizerPreparationError {
-            processor.drainRetiredStates()
-            throw map(error, definition: definition)
+            throw map(error, definition: resolved)
         }
     }
 
@@ -136,10 +164,15 @@ nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
     ) -> EqualizerAudioEffectError {
         switch error {
         case .invalidFilter(let index, let coefficientError):
-            return .invalidFilter(
+            return sourceError(
                 line: definition?.filters.filter(\.isEnabled)[safe: index]?.sourceLine,
-                reason: coefficientError.localizedDescription
+                reason: coefficientError.localizedDescription,
+                definition: definition
             )
+        case .invalidGraphicCurve(let line):
+            return sourceError(line: line, reason: error.localizedDescription, definition: definition)
+        case .invalidStereoOperation(let line, let reason):
+            return sourceError(line: line, reason: reason, definition: definition)
         case .invalidSampleRate:
             return .invalidSampleRate
         case .nonFinitePreamp:
@@ -152,6 +185,13 @@ nonisolated final class EqualizerRuntimeEffect: AudioEqualizerEffect {
                 reason: "Equalizer supports at most \(ParametricEqualizerState.maximumFilterCount) filters; received \(count)."
             )
         }
+    }
+
+    private func sourceError(line: Int?, reason: String, definition: EqualizerDefinition?) -> EqualizerAudioEffectError {
+        if let line, let location = definition?.sourceLocations[safe: line - 1] {
+            return .invalidFilter(line: location.lineNumber, reason: "\(location.filename): \(reason)")
+        }
+        return .invalidFilter(line: line, reason: reason)
     }
 }
 
