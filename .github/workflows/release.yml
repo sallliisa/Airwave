@@ -113,7 +113,13 @@ jobs:
           test "$(defaults read "$app/Contents/Info.plist" SUPublicEDKey)" = 't7ScyDMhT5qnuQx9OROZBaprpFgmZKXS7hbsm9FVvRY='
           test "$(defaults read "$app/Contents/Info.plist" SUAutomaticallyUpdate)" = 0
           test "$(defaults read "$app/Contents/Info.plist" LSMinimumSystemVersion)" = 15.0
-          lipo "$app/Contents/MacOS/Airwave" -verify_arch arm64 x86_64
+          architectures=$(lipo -archs "$app/Contents/MacOS/Airwave")
+          for architecture in arm64 x86_64; do
+            [[ " $architectures " == *" $architecture "* ]] || {
+              echo "Missing $architecture slice. Found: $architectures" >&2
+              exit 1
+            }
+          done
           codesign --verify --strict --verbose=2 "$app"
           test -f "$app/Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle"
           scripts/verify-bundled-presets.sh "$app"
