@@ -154,6 +154,16 @@ final class ParametricEqualizerProcessorTests: XCTestCase {
         }
     }
 
+    func testCustomIIRCombinedOrderLimitReportsTheFirstExcessLine() throws {
+        let coefficients = ["1"] + [String](repeating: "0", count: 32) + ["1"] + [String](repeating: "0", count: 32)
+        let filter = "Filter: ON IIR Order 32 Coefficients \(coefficients.joined(separator: " "))"
+        let allowed = [String](repeating: filter, count: 16).joined(separator: "\n")
+        XCTAssertNoThrow(try EqualizerAPOParser.parse(data: Data(allowed.utf8), filename: "Budget.txt"))
+        XCTAssertThrowsError(try EqualizerAPOParser.parse(data: Data((allowed + "\n" + filter).utf8), filename: "Budget.txt")) { error in
+            XCTAssertEqual((error as? EqualizerParseError)?.issues.first?.lineNumber, 17)
+        }
+    }
+
     func testShelfCornerConversionCanPutCenterBelowNyquist() throws {
         let definition = try EqualizerAPOParser.parse(data: Data("Filter: ON HS 6dB Fc 25000 Hz Gain 12 dB".utf8),
                                                       filename: "Shelf.txt")

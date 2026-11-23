@@ -126,7 +126,7 @@ If a config uses `Include` or `Convolution`, select the folder containing `confi
 
 Airwave evaluates `If`, `ElseIf`, `Else`, `EndIf`, `Eval`, and backtick expressions for the active output. Configs can use the output sample rate, captured and rendered channel counts, and device name or UID. For a Windows device selector, replace the Windows name or GUID with the macOS output name or UID. `Stage: post-mix` selects Airwave's playback stage. Sections for `pre-mix` or `capture` are skipped on playback.
 
-Custom `Filter: ON IIR` accepts stable filters of order 1 through 32. Use a sample-rate condition to choose the coefficients supplied for each output rate. Enter frequencies as decimal Hz or use an ungrouped integer such as `6000`.
+Custom `Filter: ON IIR` accepts stable filters of order 1 through 32, with a combined order limit of 512 for the active preset. Use a sample-rate condition to choose the coefficients supplied for each output rate. Enter frequencies as decimal Hz or use an ungrouped integer such as `6000`.
 
 `Include` and `Convolution` paths must be literal and available at import, including files mentioned inside conditions. Windows registry functions, Windows VST plugins, and system-volume loudness correction are outside Airwave's current config support.
 

@@ -2,6 +2,7 @@ import Foundation
 
 nonisolated struct EqualizerCustomIIR: Equatable {
     static let maximumOrder = 32
+    static let maximumCombinedOrder = 512
     let sourceLine: Int
     let feedforward: [Double]
     let feedback: [Double]

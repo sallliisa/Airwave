@@ -79,6 +79,7 @@ nonisolated struct EqualizerAPOParser {
         }
 
         var filterDeclarationCount = 0
+        var iirOrder = 0
         var graphicDeclarationCount = 0
         var stereoDeclarationCount = 0
         var directives: [EqualizerDirective] = []
@@ -144,7 +145,13 @@ nonisolated struct EqualizerAPOParser {
                 if captures[2].split(whereSeparator: \.isWhitespace).first?.caseInsensitiveCompare("IIR") == .orderedSame {
                     if isEnabled {
                         do {
-                            directives.append(.iir(try EqualizerCustomIIR.parse(captures[2], sourceLine: lineNumber)))
+                            let filter = try EqualizerCustomIIR.parse(captures[2], sourceLine: lineNumber)
+                            iirOrder += filter.feedback.count
+                            if iirOrder <= EqualizerCustomIIR.maximumCombinedOrder {
+                                directives.append(.iir(filter))
+                            } else {
+                                issues.append(.init(lineNumber: lineNumber, reason: "combined custom IIR order exceeds \(EqualizerCustomIIR.maximumCombinedOrder)"))
+                            }
                         } catch {
                             issues.append(.init(lineNumber: lineNumber, reason: error.localizedDescription))
                         }
