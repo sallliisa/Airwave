@@ -24,7 +24,7 @@ nonisolated struct PresetLibraryChrome {
     )
 
     static let equalizer = PresetLibraryChrome(
-        dropLabel: "Drop EqualizerAPO .txt presets",
+        dropLabel: "Drop EQ presets or config folders",
         manageHelp: "Reveal the managed Equalizer Presets folder",
         linkTitle: "Get more equalizer presets…",
         linkDestination: AirwaveResourceLinks.equalizer,
@@ -35,8 +35,8 @@ nonisolated struct PresetLibraryChrome {
     )
 }
 
-/// Drop target, import/manage/delete footer, conflict and deletion dialogs, and
-/// the message footer — shared by every preset library. The row list and the
+/// Drop target, import/manage/delete footer, and dialogs shared by every preset
+/// library. The row list and the
 /// selection semantics stay with the caller.
 struct PresetLibraryView<Preset: Identifiable & Equatable, Rows: View>: View {
     @ObservedObject var coordinator: PresetLibraryCoordinator
@@ -118,22 +118,21 @@ struct PresetLibraryView<Preset: Identifiable & Equatable, Rows: View>: View {
             } message: { preset in
                 Text("This deletes the managed copy of \(presetName(preset)) from Airwave’s \(chrome.libraryFolderName) folder.")
             }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if let message = coordinator.message {
-                    HStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                        Text(message.text).font(.caption).foregroundStyle(.secondary)
-                        Spacer(minLength: 0)
-                        Button("Dismiss") { coordinator.dismissMessage() }
-                            .buttonStyle(.plain)
-                            .font(.caption)
-                    }
-                    .padding(8)
-                    .background(AirwavePalette.raised)
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel(message.text)
-                    .accessibilityAddTraits(.updatesFrequently)
+            .confirmationDialog(
+                coordinator.message?.title ?? "Preset library",
+                isPresented: Binding(
+                    get: { coordinator.message != nil },
+                    set: { if !$0 { coordinator.dismissMessage() } }
+                ),
+                titleVisibility: .visible,
+                presenting: coordinator.message
+            ) { message in
+                if let folder = message.folderToChoose {
+                    Button("Choose Folder…") { coordinator.presentImportPanel(folderToChoose: folder) }
                 }
+                Button(message.folderToChoose == nil ? "OK" : "Cancel", role: .cancel) { coordinator.dismissMessage() }
+            } message: { message in
+                Text(message.text)
             }
     }
 

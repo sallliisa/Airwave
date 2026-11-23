@@ -68,13 +68,19 @@ nonisolated protocol AudioEqualizerEffect: AnyObject {
         frameCount: Int
     )
     func prepare(definition: EqualizerDefinition?, sampleRate: Double) throws
+    func prepare(definition: EqualizerDefinition?, routing: ResolvedOutputRouting) throws
     func setTarget(definition: EqualizerDefinition?) throws
+    var hasConfiguredEffect: Bool { get }
     var isBypassed: Bool { get }
     func cleanupAfterIOStopped()
 }
 
 extension AudioEqualizerEffect {
+    nonisolated func prepare(definition: EqualizerDefinition?, routing: ResolvedOutputRouting) throws {
+        try prepare(definition: definition, sampleRate: routing.sampleRate)
+    }
     nonisolated var isBypassed: Bool { false }
+    nonisolated var hasConfiguredEffect: Bool { true }
     nonisolated func cleanupAfterIOStopped() {}
 }
 
@@ -150,12 +156,13 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
         }
 
         do {
-            try equalizer.prepare(definition: equalizerDefinition, sampleRate: routing.sampleRate)
+            try equalizer.prepare(definition: equalizerDefinition, routing: routing)
+            let hasEqualizer = equalizerDefinition != nil && equalizer.hasConfiguredEffect
             equalizerActiveLock.withLock { state in
                 state.generation &+= 1
-                state.active = equalizerDefinition != nil
+                state.active = hasEqualizer
             }
-            if equalizerDefinition != nil {
+            if hasEqualizer {
                 runnableEffects.insert(.equalizer)
             }
             return AudioEffectPreparationResult(
@@ -202,7 +209,7 @@ nonisolated final class AudioEffectGraph: StereoAudioProcessing, AudioEffectGrap
                 state.generation &+= 1
                 state.active = true
             }
-            if definition != nil {
+            if definition != nil && equalizer.hasConfiguredEffect {
                 runnableEffects.insert(.equalizer)
             }
             return AudioEffectPreparationResult(runnableEffects: runnableEffects, equalizerWarning: nil)

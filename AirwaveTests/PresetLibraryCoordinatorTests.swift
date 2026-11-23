@@ -1,3 +1,4 @@
+import UniformTypeIdentifiers
 import XCTest
 @testable import Airwave
 
@@ -24,10 +25,26 @@ final class PresetLibraryCoordinatorTests: XCTestCase {
         coordinator.receive([broken])
         await coordinator.waitForIdle()
 
-        XCTAssertEqual(coordinator.message?.text, "broken.txt: unsupported directive")
+        XCTAssertEqual(coordinator.message?.title, "Couldn’t import preset")
+        XCTAssertEqual(coordinator.message?.text, "broken.txt\nunsupported directive")
         XCTAssertEqual(manager.importCalls.count, 1)
         XCTAssertEqual(manager.importCalls.first?.urls, [])
         XCTAssertTrue(coordinator.conflicts.isEmpty)
+    }
+
+    func testEqualizerPickerAllowsTextFilesAndConfigFolders() {
+        let coordinator = makeCoordinator(PresetLibraryManagerFake())
+        let panel = coordinator.makeImportPanel()
+        XCTAssertTrue(panel.canChooseFiles)
+        XCTAssertTrue(panel.canChooseDirectories)
+        XCTAssertTrue(panel.allowedContentTypes.contains(.folder))
+        XCTAssertTrue(panel.allowedContentTypes.contains(.plainText))
+
+        let recovery = coordinator.makeImportPanel(folderToChoose: url("Example"))
+        XCTAssertFalse(recovery.canChooseFiles)
+        XCTAssertTrue(recovery.canChooseDirectories)
+        XCTAssertFalse(recovery.allowsMultipleSelection)
+        XCTAssertEqual(recovery.allowedContentTypes, [.folder])
     }
 
     func testConflictReplaceImportsWithReplacement() async {
@@ -80,7 +97,7 @@ final class PresetLibraryCoordinatorTests: XCTestCase {
         coordinator.resolveConflicts(.cancel)
 
         XCTAssertTrue(manager.importCalls.isEmpty)
-        XCTAssertEqual(coordinator.message?.text, "broken.txt: unsupported directive")
+        XCTAssertEqual(coordinator.message?.text, "broken.txt\nunsupported directive")
         XCTAssertTrue(coordinator.conflicts.isEmpty)
     }
 
@@ -116,7 +133,7 @@ final class PresetLibraryCoordinatorTests: XCTestCase {
         XCTAssertFalse(coordinator.delete(manager.libraryDeletion(for: preset), decision: .confirm))
         XCTAssertEqual(
             coordinator.message?.text,
-            "Could not delete Curve.txt: the managed file could not be read"
+            "Curve.txt: the managed file could not be read"
         )
 
         manager.failureDetail = nil

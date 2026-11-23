@@ -113,20 +113,31 @@ jobs:
           test "$(defaults read "$app/Contents/Info.plist" SUPublicEDKey)" = 't7ScyDMhT5qnuQx9OROZBaprpFgmZKXS7hbsm9FVvRY='
           test "$(defaults read "$app/Contents/Info.plist" SUAutomaticallyUpdate)" = 0
           test "$(defaults read "$app/Contents/Info.plist" LSMinimumSystemVersion)" = 15.0
-          lipo "$app/Contents/MacOS/Airwave" -verify_arch arm64 x86_64
+          architectures=$(lipo -archs "$app/Contents/MacOS/Airwave")
+          for architecture in arm64 x86_64; do
+            [[ " $architectures " == *" $architecture "* ]] || {
+              echo "Missing $architecture slice. Found: $architectures" >&2
+              exit 1
+            }
+          done
           codesign --verify --strict --verbose=2 "$app"
           test -f "$app/Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle"
           scripts/verify-bundled-presets.sh "$app"
 
-      - name: Generate release notes
+      - name: Prepare release notes
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.TAG }}
         run: |
-          gh api --method POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
-            -f tag_name="$TAG" \
-            -f target_commitish="${{ steps.version.outputs.COMMIT_SHA }}" \
-            --jq .body > build/release-notes.md
+          notes="docs/release-notes/$TAG.md"
+          if [ -s "$notes" ]; then
+            cp "$notes" build/release-notes.md
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+              -f tag_name="$TAG" \
+              -f target_commitish="${{ steps.version.outputs.COMMIT_SHA }}" \
+              --jq .body > build/release-notes.md
+          fi
 
       - name: Package and sign update
         env:

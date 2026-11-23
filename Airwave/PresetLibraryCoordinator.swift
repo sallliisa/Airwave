@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 nonisolated struct PresetLibraryFailure: Equatable {
     let filename: String
     let reason: String
+    var folderToChoose: URL? = nil
 }
 
 nonisolated struct PresetLibraryPreflight {
@@ -61,7 +62,9 @@ nonisolated enum PresetLibraryDeletionDecision {
 }
 
 nonisolated struct PresetLibraryMessage: Equatable {
+    let title: String
     let text: String
+    var folderToChoose: URL? = nil
 }
 
 /// What one preset library needs to expose for the shared import/delete flow.
@@ -80,12 +83,14 @@ protocol PresetLibraryManaging: AnyObject {
 /// The per-feature strings and file types; everything else is shared.
 nonisolated struct PresetLibraryConfiguration {
     let contentType: UTType
+    let canChooseDirectories: Bool
     let panelTitle: String
     let panelMessage: String
     let deletionFailureFallback: String
 
     static let hrir = PresetLibraryConfiguration(
         contentType: UTType(filenameExtension: "wav") ?? .audio,
+        canChooseDirectories: false,
         panelTitle: "Import HRIR Presets",
         panelMessage: "Choose one or more compatible HRIR WAV files.",
         deletionFailureFallback: "Could not delete the managed HRIR preset."
@@ -93,8 +98,9 @@ nonisolated struct PresetLibraryConfiguration {
 
     static let equalizer = PresetLibraryConfiguration(
         contentType: UTType(filenameExtension: "txt") ?? .plainText,
+        canChooseDirectories: true,
         panelTitle: "Import Equalizer Presets",
-        panelMessage: "Choose one or more EqualizerAPO .txt preset files.",
+        panelMessage: "Choose .txt presets or folders containing config.txt.",
         deletionFailureFallback: "Could not delete the managed preset."
     )
 }
@@ -180,15 +186,34 @@ final class PresetLibraryCoordinator: ObservableObject {
         message = nil
     }
 
-    func presentImportPanel() {
+    func makeImportPanel(folderToChoose: URL? = nil) -> NSOpenPanel {
         let panel = NSOpenPanel()
+        if let folderToChoose {
+            panel.canChooseFiles = false
+            panel.canChooseDirectories = true
+            panel.allowsMultipleSelection = false
+            panel.allowedContentTypes = [.folder]
+            panel.directoryURL = folderToChoose.deletingLastPathComponent()
+            panel.title = "Choose Config Folder"
+            panel.message = "Choose the folder containing config.txt and its companion files."
+            panel.prompt = "Import"
+            return panel
+        }
         panel.allowsMultipleSelection = true
         panel.canChooseFiles = true
-        panel.canChooseDirectories = false
+        panel.canChooseDirectories = configuration.canChooseDirectories
         panel.allowsOtherFileTypes = false
         panel.allowedContentTypes = [configuration.contentType]
+        if configuration.canChooseDirectories {
+            panel.allowedContentTypes.append(.folder)
+        }
         panel.title = configuration.panelTitle
         panel.message = configuration.panelMessage
+        return panel
+    }
+
+    func presentImportPanel(folderToChoose: URL? = nil) {
+        let panel = makeImportPanel(folderToChoose: folderToChoose)
         // Non-modal: the settings window keeps drawing while the panel is up.
         panel.begin { [weak self] response in
             guard response == .OK else { return }
@@ -208,8 +233,8 @@ final class PresetLibraryCoordinator: ObservableObject {
         guard decision == .confirm else { return false }
         guard deletion.perform() else {
             message = PresetLibraryMessage(
-                text: deletion.failureDetail().map { "Could not delete \($0)" }
-                    ?? configuration.deletionFailureFallback
+                title: "Couldn’t delete preset",
+                text: deletion.failureDetail() ?? configuration.deletionFailureFallback
             )
             return false
         }
@@ -243,9 +268,14 @@ final class PresetLibraryCoordinator: ObservableObject {
     }
 
     private func makeMessage(failures: [PresetLibraryFailure]) -> PresetLibraryMessage? {
-        guard !failures.isEmpty else { return nil }
+        guard let first = failures.first else { return nil }
+        if failures.count == 1, let folder = first.folderToChoose {
+            return PresetLibraryMessage(title: "Choose the config folder", text: first.reason, folderToChoose: folder)
+        }
         return PresetLibraryMessage(
-            text: failures.map { "\($0.filename): \($0.reason)" }.joined(separator: " • ")
+            title: failures.count == 1 ? "Couldn’t import preset" : "Some presets couldn’t be imported",
+            text: failures.map { "\($0.filename)\n\($0.reason)" }.joined(separator: "\n\n"),
+            folderToChoose: failures.compactMap(\.folderToChoose).first
         )
     }
 }
@@ -297,14 +327,14 @@ extension EqualizerManager: PresetLibraryManaging {
         return PresetLibraryPreflight(
             acceptable: preflight.acceptable,
             conflicts: preflight.conflicts,
-            rejected: preflight.rejected.map { .init(filename: $0.filename, reason: $0.reason) }
+            rejected: preflight.rejected.map { .init(filename: $0.filename, reason: $0.reason, folderToChoose: $0.folderToChoose) }
         )
     }
 
     func importLibraryPresets(_ urls: [URL], replacingConflicts: Bool) async -> [PresetLibraryFailure] {
         importPresets(urls, collisionPolicy: replacingConflicts ? .replace : .reject)
             .failures
-            .map { .init(filename: $0.filename, reason: $0.reason) }
+            .map { .init(filename: $0.filename, reason: $0.reason, folderToChoose: $0.folderToChoose) }
     }
 
     func deleteLibraryPreset(_ preset: EqualizerPreset) -> Bool { delete(preset) }
