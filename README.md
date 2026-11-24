@@ -102,6 +102,8 @@ In a mixer with output effects, add **Airwave Spatial** to the output chain afte
 
 The plugin starts with the bundled **Neutral** preset. Use the **HRIR preset** menu to import a compatible HeSuVi WAV or select Neutral. Use **Bypass** to compare the stereo signal with and without the effect. The host can save the imported WAV and bypass setting with that plugin instance.
 
+[Read the Airwave Spatial guide](docs/airwave-spatial-audio-unit.md) for setup, a REAPER walkthrough, and troubleshooting.
+
 ## Settings
 
 Settings shows the current supported output at the top. Airwave remembers a separate profile for each output it sees, so a pair of headphones can keep its own HRIR and EQ choices when you switch between devices.
