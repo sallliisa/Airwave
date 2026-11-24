@@ -17,13 +17,16 @@ concurrency:
 
 jobs:
   release:
+    if: github.ref == 'refs/heads/main'
     runs-on: macos-26
     timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
     steps:
       - name: Check out main
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Validate version
@@ -65,7 +68,7 @@ jobs:
         run: xcodebuild -resolvePackageDependencies -project Airwave.xcodeproj -scheme Airwave
 
       - name: Test
-        run: xcodebuild -project Airwave.xcodeproj -scheme Airwave -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO test
+        run: xcodebuild -project Airwave.xcodeproj -scheme Airwave -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO test
 
       - name: Analyze
         run: xcodebuild -project Airwave.xcodeproj -scheme Airwave -configuration Release -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO analyze
@@ -166,6 +169,12 @@ jobs:
           shasum -a 256 "build/update/Airwave_v$VERSION.zip" \
             > "build/update/Airwave_v$VERSION.zip.sha256"
           rm -f "$RUNNER_TEMP/sparkle-private-key"
+
+      - name: Verify Audio Unit in release ZIP
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          BUILD_NUMBER: ${{ steps.version.outputs.BUILD_NUMBER }}
+        run: scripts/verify-release-audio-unit.sh "build/update/Airwave_v$VERSION.zip" "$VERSION" "$BUILD_NUMBER"
 
       - name: Publish tag and release
         env:
