@@ -5,7 +5,7 @@ final class RealtimeAudioProcessorTests: XCTestCase {
     private let blockSize = 512
     private let maxFrames = 4096
 
-    private func makeProcessor(rendererCount: Int = 2) -> RealtimeAudioProcessor {
+    private func makeProcessor(rendererCount: Int = 2, fixedLatency: Bool = false) -> RealtimeAudioProcessor {
         let renderers = (0..<rendererCount).map { index in
             let convolver = try! XCTUnwrap(StereoConvolutionEngine(
                 leftEarHRIR: [Float(index + 1)],
@@ -22,7 +22,8 @@ final class RealtimeAudioProcessorTests: XCTestCase {
             inputChannelCount: 2,
             fallbackSpeakers: [.FL, .FR],
             blockSize: blockSize,
-            maxFramesPerCallback: maxFrames
+            maxFramesPerCallback: maxFrames,
+            fixedLatency: fixedLatency
         )
     }
 
@@ -78,6 +79,27 @@ final class RealtimeAudioProcessorTests: XCTestCase {
         XCTAssertEqual(output.count, 6913)
         XCTAssertTrue(output.prefix(384).allSatisfy { $0 == 0 })
         XCTAssertTrue(output.dropFirst(384).allSatisfy { abs($0 - 1) < 0.0001 })
+    }
+
+    func testFixedLatencyDelaysBothEarsByOneBlockAcrossHostCallbackSizesAndReset() {
+        let schedules = [[512, 512, 4096], [128, 513, 7, 97, 4096], [127, 383, 17, 64, 4096]]
+        let processor = makeProcessor(rendererCount: 1, fixedLatency: true)
+
+        for schedule in schedules {
+            processor.reset()
+            var left: [Float] = []
+            var right: [Float] = []
+            for size in schedule {
+                let (outputLeft, outputRight) = process(processor, size: size, rightValue: 0)
+                left += outputLeft
+                right += outputRight
+            }
+
+            for ear in [left, right] {
+                XCTAssertEqual(Array(ear.prefix(blockSize)), [Float](repeating: 0, count: blockSize))
+                XCTAssertTrue(ear.dropFirst(blockSize).allSatisfy { abs($0 - 1) < 0.0001 }, "schedule \(schedule)")
+            }
+        }
     }
 
     func testResetClearsPendingInputAndQueuedOutput() {

@@ -1,9 +1,9 @@
 import AVFoundation
 import Foundation
 
-enum ResamplerError: Error { case invalidRate, outputTooLarge, conversionFailed }
+nonisolated enum ResamplerError: Error { case invalidRate, outputTooLarge, conversionFailed }
 
-enum Resampler {
+nonisolated enum Resampler {
     static let maximumOutputFrames = 96_000
 
     static func resample(input: [Float], fromRate: Double, toRate: Double) throws -> [Float] {

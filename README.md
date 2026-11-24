@@ -94,6 +94,14 @@ Changing the HRIR preset takes effect while audio is playing. When no HRIR prese
 
 Closing the Settings window does not quit Airwave. To stop audio processing and exit Airwave completely, use the power button in Settings or choose **Quit Airwave** from the menu bar menu.
 
+## Airwave Spatial Audio Unit
+
+The Airwave app includes **Airwave Spatial**, a stereo Audio Unit for compatible macOS hosts. Install Airwave in Applications and open it once so macOS can register the effect. If your host is already open, rescan its Audio Units or relaunch it.
+
+In a mixer with output effects, add **Airwave Spatial** to the output chain after per-app volume. Quit the standalone Airwave app while using the plugin for the same output. The host handles audio capture and routing.
+
+The plugin starts with the bundled **Neutral** preset. Use the **HRIR preset** menu to import a compatible HeSuVi WAV or select Neutral. Use **Bypass** to compare the stereo signal with and without the effect. The host can save the imported WAV and bypass setting with that plugin instance.
+
 ## Settings
 
 Settings shows the current supported output at the top. Airwave remembers a separate profile for each output it sees, so a pair of headphones can keep its own HRIR and EQ choices when you switch between devices.
