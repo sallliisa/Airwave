@@ -7,6 +7,17 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A02000000000000000000001 /* AirwaveSpatialAU.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = A02000000000000000000002 /* AirwaveSpatialAU.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		A02000000000000000000003 /* NeutralSH1.0.wav in Resources */ = {isa = PBXBuildFile; fileRef = A02000000000000000000004 /* NeutralSH1.0.wav */; };
+		A02000000000000000000030 /* ConvolutionEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02000000000000000000020 /* ConvolutionEngine.swift */; };
+		A02000000000000000000031 /* FFTSetupManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02000000000000000000021 /* FFTSetupManager.swift */; };
+		A02000000000000000000032 /* HRIRRenderPlan.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02000000000000000000022 /* HRIRRenderPlan.swift */; };
+		A02000000000000000000033 /* InputLayoutResolution.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02000000000000000000023 /* InputLayoutResolution.swift */; };
+		A02000000000000000000034 /* Logger.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02000000000000000000024 /* Logger.swift */; };
+		A02000000000000000000035 /* RealtimeAudioProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02000000000000000000025 /* RealtimeAudioProcessor.swift */; };
+		A02000000000000000000036 /* Resampler.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02000000000000000000026 /* Resampler.swift */; };
+		A02000000000000000000037 /* VirtualSpeaker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02000000000000000000027 /* VirtualSpeaker.swift */; };
+		A02000000000000000000038 /* WAVLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02000000000000000000028 /* WAVLoader.swift */; };
 		A01500000000000000000001 /* assets in Resources */ = {isa = PBXBuildFile; fileRef = A01500000000000000000002 /* assets */; };
 		A00100000000000000000011 /* ConvolutionEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00100000000000000000002 /* ConvolutionEngineTests.swift */; };
 		A00100000000000000000012 /* RealtimeAudioProcessorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00100000000000000000003 /* RealtimeAudioProcessorTests.swift */; };
@@ -32,6 +43,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		A02000000000000000000005 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 25B21E762ECCDD9B00FE4B05 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A02000000000000000000006;
+			remoteInfo = AirwaveSpatialAU;
+		};
 		A00100000000000000000040 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 25B21E762ECCDD9B00FE4B05 /* Project object */;
@@ -41,7 +59,32 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		A02000000000000000000007 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				A02000000000000000000001 /* AirwaveSpatialAU.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
+		A02000000000000000000002 /* AirwaveSpatialAU.appex */ = {isa = PBXFileReference; explicitFileType = wrapper.app-extension; includeInIndex = 0; path = AirwaveSpatialAU.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		A02000000000000000000004 /* NeutralSH1.0.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = NeutralSH1.0.wav; path = assets/hrtf/NeutralSH1.0.wav; sourceTree = SOURCE_ROOT; };
+		A02000000000000000000020 /* ConvolutionEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ConvolutionEngine.swift; path = Airwave/ConvolutionEngine.swift; sourceTree = SOURCE_ROOT; };
+		A02000000000000000000021 /* FFTSetupManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = FFTSetupManager.swift; path = Airwave/FFTSetupManager.swift; sourceTree = SOURCE_ROOT; };
+		A02000000000000000000022 /* HRIRRenderPlan.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = HRIRRenderPlan.swift; path = Airwave/HRIRRenderPlan.swift; sourceTree = SOURCE_ROOT; };
+		A02000000000000000000023 /* InputLayoutResolution.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = InputLayoutResolution.swift; path = Airwave/InputLayoutResolution.swift; sourceTree = SOURCE_ROOT; };
+		A02000000000000000000024 /* Logger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Logger.swift; path = Airwave/Logger.swift; sourceTree = SOURCE_ROOT; };
+		A02000000000000000000025 /* RealtimeAudioProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RealtimeAudioProcessor.swift; path = Airwave/RealtimeAudioProcessor.swift; sourceTree = SOURCE_ROOT; };
+		A02000000000000000000026 /* Resampler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Resampler.swift; path = Airwave/Resampler.swift; sourceTree = SOURCE_ROOT; };
+		A02000000000000000000027 /* VirtualSpeaker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = VirtualSpeaker.swift; path = Airwave/VirtualSpeaker.swift; sourceTree = SOURCE_ROOT; };
+		A02000000000000000000028 /* WAVLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = WAVLoader.swift; path = Airwave/WAVLoader.swift; sourceTree = SOURCE_ROOT; };
 		A01500000000000000000002 /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = assets; sourceTree = "<group>"; };
 		25B21E7E2ECCDD9B00FE4B05 /* Airwave.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Airwave.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A00100000000000000000001 /* AirwaveTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AirwaveTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -68,6 +111,11 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		A02000000000000000000008 /* Exceptions for AirwaveSpatialAU */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (AirwaveSpatialAU.entitlements, Info.plist, );
+			target = A02000000000000000000006 /* AirwaveSpatialAU */;
+		};
 		A00200000000000000000006 /* Exceptions for "Airwave" folder in "Airwave" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -78,6 +126,12 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		A02000000000000000000009 /* AirwaveSpatialAU */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (A02000000000000000000008 /* Exceptions for AirwaveSpatialAU */, );
+			path = AirwaveSpatialAU;
+			sourceTree = "<group>";
+		};
 		25B21E802ECCDD9B00FE4B05 /* Airwave */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
@@ -107,10 +161,29 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		A0200000000000000000000A /* Shared HRIR sources */ = {
+			isa = PBXGroup;
+			children = (
+				A02000000000000000000020 /* ConvolutionEngine.swift */,
+				A02000000000000000000021 /* FFTSetupManager.swift */,
+				A02000000000000000000022 /* HRIRRenderPlan.swift */,
+				A02000000000000000000023 /* InputLayoutResolution.swift */,
+				A02000000000000000000024 /* Logger.swift */,
+				A02000000000000000000025 /* RealtimeAudioProcessor.swift */,
+				A02000000000000000000026 /* Resampler.swift */,
+				A02000000000000000000027 /* VirtualSpeaker.swift */,
+				A02000000000000000000028 /* WAVLoader.swift */,
+				A02000000000000000000004 /* NeutralSH1.0.wav */,
+			);
+			name = "Shared HRIR sources";
+			sourceTree = "<group>";
+		};
 		25B21E752ECCDD9B00FE4B05 = {
 			isa = PBXGroup;
 			children = (
 				A01500000000000000000002 /* assets */,
+				A02000000000000000000009 /* AirwaveSpatialAU */,
+				A0200000000000000000000A /* Shared HRIR sources */,
 				25B21E802ECCDD9B00FE4B05 /* Airwave */,
 				A00100000000000000000020 /* AirwaveTests */,
 				25B21E7F2ECCDD9B00FE4B05 /* Products */,
@@ -121,6 +194,7 @@
 			isa = PBXGroup;
 			children = (
 				25B21E7E2ECCDD9B00FE4B05 /* Airwave.app */,
+				A02000000000000000000002 /* AirwaveSpatialAU.appex */,
 				A00100000000000000000001 /* AirwaveTests.xctest */,
 			);
 			name = Products;
@@ -156,6 +230,21 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		A02000000000000000000006 /* AirwaveSpatialAU */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A0200000000000000000000B /* Build configuration list for AirwaveSpatialAU */;
+			buildPhases = (
+				A0200000000000000000000C /* Sources */,
+				A0200000000000000000000D /* Resources */,
+			);
+			buildRules = ();
+			dependencies = ();
+			fileSystemSynchronizedGroups = (A02000000000000000000009 /* AirwaveSpatialAU */, );
+			name = AirwaveSpatialAU;
+			productName = AirwaveSpatialAU;
+			productReference = A02000000000000000000002 /* AirwaveSpatialAU.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		25B21E7D2ECCDD9B00FE4B05 /* Airwave */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 25B21E892ECCDD9C00FE4B05 /* Build configuration list for PBXNativeTarget "Airwave" */;
@@ -163,10 +252,12 @@
 				25B21E7A2ECCDD9B00FE4B05 /* Sources */,
 				25B21E7B2ECCDD9B00FE4B05 /* Frameworks */,
 				25B21E7C2ECCDD9B00FE4B05 /* Resources */,
+				A02000000000000000000007 /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				A0200000000000000000000E /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				25B21E802ECCDD9B00FE4B05 /* Airwave */,
@@ -235,11 +326,18 @@
 			targets = (
 				25B21E7D2ECCDD9B00FE4B05 /* Airwave */,
 				A00100000000000000000050 /* AirwaveTests */,
+				A02000000000000000000006 /* AirwaveSpatialAU */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		A0200000000000000000000D /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (A02000000000000000000003 /* NeutralSH1.0.wav in Resources */, );
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		25B21E7C2ECCDD9B00FE4B05 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -258,6 +356,22 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		A0200000000000000000000C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A02000000000000000000030 /* ConvolutionEngine.swift in Sources */,
+				A02000000000000000000031 /* FFTSetupManager.swift in Sources */,
+				A02000000000000000000032 /* HRIRRenderPlan.swift in Sources */,
+				A02000000000000000000033 /* InputLayoutResolution.swift in Sources */,
+				A02000000000000000000034 /* Logger.swift in Sources */,
+				A02000000000000000000035 /* RealtimeAudioProcessor.swift in Sources */,
+				A02000000000000000000036 /* Resampler.swift in Sources */,
+				A02000000000000000000037 /* VirtualSpeaker.swift in Sources */,
+				A02000000000000000000038 /* WAVLoader.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		25B21E7A2ECCDD9B00FE4B05 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -295,6 +409,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		A0200000000000000000000E /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A02000000000000000000006 /* AirwaveSpatialAU */;
+			targetProxy = A02000000000000000000005 /* PBXContainerItemProxy */;
+		};
 		A00100000000000000000041 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 25B21E7D2ECCDD9B00FE4B05 /* Airwave */;
@@ -303,6 +422,50 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		A0200000000000000000000F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = AirwaveSpatialAU/AirwaveSpatialAU.entitlements;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2000000;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				INFOPLIST_FILE = AirwaveSpatialAU/Info.plist;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 2.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.southneuhof.Airwave.Spatial;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		A02000000000000000000010 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = AirwaveSpatialAU/AirwaveSpatialAU.entitlements;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2000000;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				INFOPLIST_FILE = AirwaveSpatialAU/Info.plist;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 2.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.southneuhof.Airwave.Spatial;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 		25B21E872ECCDD9C00FE4B05 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -578,6 +741,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		A0200000000000000000000B /* Build configuration list for AirwaveSpatialAU */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A0200000000000000000000F /* Debug */,
+				A02000000000000000000010 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		25B21E792ECCDD9B00FE4B05 /* Build configuration list for PBXProject "Airwave" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

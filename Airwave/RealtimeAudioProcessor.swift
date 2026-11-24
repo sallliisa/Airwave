@@ -32,6 +32,7 @@ nonisolated final class RealtimeAudioProcessor {
     private let fifoLeft: UnsafeMutablePointer<Float>
     private let fifoRight: UnsafeMutablePointer<Float>
     private let fifoCapacity: Int
+    private let fixedLatency: Bool
 
     private var pendingCount = 0
     private var fifoReadIndex = 0
@@ -46,7 +47,8 @@ nonisolated final class RealtimeAudioProcessor {
         inputChannelCount: Int,
         fallbackSpeakers: [VirtualSpeaker],
         blockSize: Int = 512,
-        maxFramesPerCallback: Int = 4096
+        maxFramesPerCallback: Int = 4096,
+        fixedLatency: Bool = false
     ) {
         precondition(blockSize > 0)
         precondition(maxFramesPerCallback > 0)
@@ -62,6 +64,7 @@ nonisolated final class RealtimeAudioProcessor {
         self.blockSize = blockSize
         self.maxFramesPerCallback = maxFramesPerCallback
         self.fifoCapacity = maxFramesPerCallback + blockSize
+        self.fixedLatency = fixedLatency
 
         pendingInputs = (0..<max(feedCount, inputChannelCount)).map { _ in
             UnsafeMutablePointer<Float>.allocate(capacity: blockSize)
@@ -149,7 +152,7 @@ nonisolated final class RealtimeAudioProcessor {
         memset(fifoRight, 0, fifoCapacity * MemoryLayout<Float>.size)
         pendingCount = 0
         fifoReadIndex = 0
-        fifoCount = 0
+        fifoCount = fixedLatency ? blockSize : 0
         hasProducedBlock = false
         primingRemaining = 0
         hasArmedCushion = false

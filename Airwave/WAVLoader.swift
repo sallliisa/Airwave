@@ -9,7 +9,7 @@ import Foundation
 import AVFoundation
 
 /// Represents loaded WAV file data
-struct WAVData {
+nonisolated struct WAVData {
     let sampleRate: Double
     let channelCount: Int
     let frameCount: Int
@@ -17,7 +17,7 @@ struct WAVData {
 }
 
 /// Metadata read from a WAV header without decoding samples.
-struct WAVHeaderInfo: Equatable {
+nonisolated struct WAVHeaderInfo: Equatable {
     let channelCount: Int
     let sampleRate: Double
     let frameCount: Int
@@ -26,7 +26,7 @@ struct WAVHeaderInfo: Equatable {
 }
 
 /// Loads and parses WAV files
-class WAVLoader {
+nonisolated class WAVLoader {
     static let maximumFileSize = 64 * 1_024 * 1_024
     static let maximumChannelCount = 32
     static let maximumDuration = 0.5
@@ -279,7 +279,7 @@ class WAVLoader {
 
 // MARK: - Error Types
 
-enum WAVError: LocalizedError {
+nonisolated enum WAVError: LocalizedError {
     case fileReadError(String)
     case invalidChannelCount(Int)
     case emptyFile

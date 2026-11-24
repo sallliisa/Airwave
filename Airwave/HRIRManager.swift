@@ -5,7 +5,6 @@
 //  Manages HRIR presets and multi-channel convolution processing
 //
 
-import Accelerate
 import Foundation
 import Combine
 
@@ -128,12 +127,6 @@ final class ActivationCancellationToken {
         cancelled = true
         lock.unlock()
     }
-}
-
-/// Renders a single virtual speaker to binaural output
-nonisolated struct VirtualSpeakerRenderer {
-    let speaker: VirtualSpeaker
-    let convolver: StereoConvolutionEngine
 }
 
 /// Manages HRIR presets and multi-channel convolution processing
@@ -763,7 +756,7 @@ class HRIRManager: ObservableObject {
         set { stateLock.withLock { $0 = newValue } }
     }
     
-    nonisolated static let processingBlockSize: Int = 512  // Balance between latency (~10.7ms @ 48kHz) and CPU efficiency
+    nonisolated static let processingBlockSize = HRIRRenderPlan.blockSize  // Balance between latency (~10.7ms @ 48kHz) and CPU efficiency
 
     private let presetsDirectory: URL
     private let fileManager: FileManager
@@ -1401,87 +1394,15 @@ class HRIRManager: ObservableObject {
         activationCancellationToken = cancellationToken
         activationCompletion = completion
 
-        let log2n = vDSP_Length(log2(Double(blockSize * 2)))
-        let sharedFFTSetup = FFTSetupManager.shared.getSetup(log2n: log2n)
-
         let task = DispatchWorkItem { [weak self] in
             do {
-                let wavData = try WAVLoader.load(from: preset.fileURL)
-                guard !cancellationToken.isCancelled else { return }
-
-                let speakers = inputLayout.channels
-                let channelMap: HRIRChannelMap
-                
-                if wavData.channelCount == 7 {
-                    channelMap = HRIRChannelMap.hesuvi7Channel(speakers: Array(speakers))
-                } else {
-                    // Default to HeSuVi 14-channel mapping
-                    channelMap = HRIRChannelMap.hesuvi14Channel(speakers: Array(speakers))
-                }
-
-                // Build renderers for each input channel
-                var newRenderers: [VirtualSpeakerRenderer] = []
-                newRenderers.reserveCapacity(speakers.count)
-                
-                for (_, speaker) in inputLayout.channels.enumerated() {
-                    guard !cancellationToken.isCancelled else { return }
-
-                    // Look up HRIR indices for this speaker
-                    guard let (leftEarIdx, rightEarIdx) = channelMap.getIndices(for: speaker) else {
-                        continue
-                    }
-                    
-                    // Validate indices
-                    guard leftEarIdx < wavData.channelCount && rightEarIdx < wavData.channelCount else {
-                        throw HRIRError.invalidChannelMapping(
-                            "HRIR indices (\(leftEarIdx), \(rightEarIdx)) out of range for \(wavData.channelCount) channels"
-                        )
-                    }
-                    
-                    // Get HRIR data
-                    let leftEarIR = wavData.audioData[leftEarIdx]
-                    let rightEarIR = wavData.audioData[rightEarIdx]
-                    
-                    // Resample if needed
-                    let resampledLeft: [Float]
-                    let resampledRight: [Float]
-                    
-                    if abs(wavData.sampleRate - targetSampleRate) > 0.01 {
-                        resampledLeft = try Resampler.resampleHighQuality(
-                            input: leftEarIR,
-                            fromRate: wavData.sampleRate,
-                            toRate: targetSampleRate
-                        )
-                        resampledRight = try Resampler.resampleHighQuality(
-                            input: rightEarIR,
-                            fromRate: wavData.sampleRate,
-                            toRate: targetSampleRate
-                        )
-                    } else {
-                        resampledLeft = leftEarIR
-                        resampledRight = rightEarIR
-                    }
-                    
-                    // Create convolution engines off the render thread. Both ears
-                    // share one input FFT, one FDL, and one cached FFT setup.
-                    guard let engine = StereoConvolutionEngine(
-                        leftEarHRIR: resampledLeft,
-                        rightEarHRIR: resampledRight,
-                        blockSize: blockSize,
-                        sharedFFTSetup: sharedFFTSetup
-                    ) else {
-                        throw HRIRError.convolutionSetupFailed("Failed to create engines for \(speaker.displayName)")
-                    }
-
-                    let renderer = VirtualSpeakerRenderer(speaker: speaker, convolver: engine)
-                    
-                    newRenderers.append(renderer)
-                }
-                
-                guard !newRenderers.isEmpty else {
-                    throw HRIRError.convolutionSetupFailed("No valid renderers created")
-                }
-
+                let plan = try HRIRRenderPlan.prepare(
+                    url: preset.fileURL,
+                    inputLayout: inputLayout,
+                    sampleRate: targetSampleRate,
+                    blockSize: blockSize,
+                    isCancelled: { cancellationToken.isCancelled }
+                )
                 guard !cancellationToken.isCancelled else { return }
                 DispatchQueue.main.async {
                     self?.publishActivation(
@@ -1489,8 +1410,8 @@ class HRIRManager: ObservableObject {
                         key: activationKey,
                         preset: preset,
                         inputLayout: inputLayout,
-                        channelMap: channelMap,
-                        renderers: newRenderers,
+                        channelMap: plan.channelMap,
+                        renderers: plan.renderers,
                         completion: self?.activationCompletion
                     )
                 }
@@ -1993,30 +1914,5 @@ class HRIRManager: ObservableObject {
         }
 
         try? data.write(to: metadataURL)
-    }
-}
-
-// MARK: - Error Types
-
-enum HRIRError: LocalizedError {
-    case invalidChannelCount(Int)
-    case emptyFile
-    case convolutionSetupFailed(String)
-    case invalidChannelMapping(String)
-    case batchImportFailed(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .invalidChannelCount(let count):
-            return "Invalid HRIR channel count: \(count). Must have at least 2 channels."
-        case .emptyFile:
-            return "HRIR file is empty"
-        case .convolutionSetupFailed(let detail):
-            return "Failed to set up convolution: \(detail)"
-        case .invalidChannelMapping(let detail):
-            return "Invalid channel mapping: \(detail)"
-        case .batchImportFailed(let detail):
-            return "Batch import failed: \(detail)"
-        }
     }
 }

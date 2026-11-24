@@ -100,7 +100,7 @@ nonisolated struct InputLayout: Equatable, Sendable, Codable {
 }
 
 /// Maps virtual speakers to HRIR channel indices
-struct HRIRChannelMap {
+nonisolated struct HRIRChannelMap {
     // Key: Virtual Speaker
     // Value: (Left Ear HRIR Index, Right Ear HRIR Index)
     private var mapping: [VirtualSpeaker: (leftEar: Int, rightEar: Int)] = [:]
