@@ -244,7 +244,7 @@ final class Airwave3UITests: XCTestCase {
             XCTAssertFalse(app.windows["AULowpass"].exists)
 
             let more = app.descendants(matching: .any).matching(identifier: "effect-actions").firstMatch
-            more.click()
+            more.coordinate(withNormalizedOffset: CGVector(dx: 0.18, dy: 0.22)).click()
             XCTAssertTrue(app.menuItems["Move Down"].waitForExistence(timeout: 4))
             app.typeKey(.escape, modifierFlags: [])
             XCTAssertFalse(app.windows["AULowpass"].exists)

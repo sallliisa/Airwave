@@ -912,6 +912,7 @@ private struct HostSettingsPage: View {
                 }
                 .frame(maxWidth: 520)
                 .frame(maxWidth: .infinity)
+                .padding(.top, 4)
             }
         }
     }
@@ -1503,9 +1504,13 @@ private struct EffectRow: View {
             Divider()
             Button("Remove Effect", role: .destructive, action: remove)
         } label: {
-            Image(systemName: "ellipsis")
-                .font(.system(size: 12, weight: .medium))
-                .frame(width: EffectActionAppearance.size, height: EffectActionAppearance.size)
+            ZStack {
+                Color.clear
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .frame(width: EffectActionAppearance.size, height: EffectActionAppearance.size)
+            .contentShape(.rect)
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
