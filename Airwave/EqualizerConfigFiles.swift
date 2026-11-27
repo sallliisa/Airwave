@@ -167,13 +167,19 @@ nonisolated enum EqualizerConfigFiles {
     }
 
     static func readManagedDefinition(at url: URL) throws -> EqualizerDefinition {
-        if isArchive(url) {
-            let data = try readFile(at: url, limit: maximumArchiveSize)
+        let data = try readFile(at: url, limit: isArchive(url) ? maximumArchiveSize : EqualizerAPOParser.maximumDataSize)
+        return try parseManagedDefinition(data: data, filename: url.lastPathComponent)
+    }
+
+    static func parseManagedDefinition(data: Data, filename: String) throws -> EqualizerDefinition {
+        if (filename as NSString).pathExtension.caseInsensitiveCompare(archiveExtension) == .orderedSame {
+            guard data.count <= maximumArchiveSize else {
+                throw FileError(reason: "the managed config exceeds the archive size limit")
+            }
             let snapshot = try JSONDecoder().decode(Snapshot.self, from: data)
             return try snapshot.expanded.parse()
         }
-        let data = try readFile(at: url, limit: EqualizerAPOParser.maximumDataSize)
-        return try EqualizerAPOParser.parse(data: data, filename: url.lastPathComponent)
+        return try EqualizerAPOParser.parse(data: data, filename: filename)
     }
 
     static func readFile(at url: URL, limit: Int) throws -> Data {
