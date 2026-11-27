@@ -1,217 +1,71 @@
 <div align="center">
-  <h1 style="border-bottom: none; margin-bottom: 8px">Airwave</h1>
-  <img src="docs/images/AirwaveIcon.png" alt="Airwave icon" width="128" height="128" />
-  <p>System-wide spatial audio for macOS headphones.</p>
-
-  <p>
-    <a href="https://github.com/sallliisa/Airwave/releases"><strong>Download Airwave</strong></a>
-    ·
-    <a href="https://github.com/sallliisa/Airwave/issues">Support</a>
-  </p>
-  <p>
-    <a href="https://github.com/sallliisa/Airwave/releases/latest"><img src="https://img.shields.io/github/v/release/sallliisa/Airwave?display_name=tag&amp;sort=semver" alt="Latest release" /></a>
-    <a href="https://ko-fi.com/Q5Q51RNAGT"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Support Airwave on Ko-fi" /></a>
-  </p>
-
-  <img src="docs/images/Bento.png" alt="Airwave Bento Infographics" />
+  <img src="Airwave3/Branding.xcassets/AirwaveWelcomeIcon.imageset/airwave-welcome.png" alt="Airwave icon" width="112" height="112" />
+  <h1>Airwave</h1>
+  <p>System-wide audio effects and per-app volume for macOS.</p>
+  <p><a href="https://github.com/sallliisa/Airwave/releases">Releases</a> · <a href="https://github.com/sallliisa/Airwave/issues">Report an issue</a></p>
 </div>
 
+Airwave gives each audio output its own chain of Audio Unit effects. Give your headphones spatial audio, leave your speakers untouched, and lower the volume of a noisy app while your music keeps playing.
 
-## Airwave 3 development
+![Airwave Effects tab with Spatial and Equalizer in an output’s effect chain](docs/images/v3-effects.png)
 
-The `Airwave3` scheme builds the new host with the existing Airwave branding, Spatial, and Equalizer. The `Airwave` scheme builds the previous standalone app for compatibility checks. See the [Airwave 3 release rehearsal](docs/airwave-3-release.md) for build and upgrade checks.
+## Effects
 
-## What Airwave does
+Choose an output in **Effects**, then click **Add Effect…** to browse installed Audio Units. Search by name or filter by publisher. Click an effect card to open its controls, drag the card to reorder it, or use its power button to bypass that instance. You can add the same effect more than once.
 
-Airwave captures audio from your Mac, applies a spatial audio profile, and plays the result through your current output. It uses HRIR convolution to create a wider, more speaker-like listening experience in headphones.
+Airwave applies the chain saved for the output selected in macOS. The picker in **Effects** selects which chain you edit. Use the menu next to it to configure the left and right output channels on a supported device.
 
-Airwave is designed for stereo headphones. The spatial effect may not sound as intended through speakers or other non-headphone outputs.
+### Included Audio Units
 
-Airwave supports stereo and compatible multichannel input. Virtual and aggregate devices are unsupported.
+- **Spatial** gives stereo headphones a more speaker-like presentation using HRIR convolution. It includes `NeutralSH1.0`, `RoomSH1.0`, and `StageSH1.0` and can import compatible HeSuVi WAV files.
+- **Equalizer** includes five presets and imports Equalizer APO text configs. It supports parametric filters, graphic EQ, preamp gain, and convolution. For a config that references other text files or WAV impulse responses, import the folder containing `config.txt` and its companion files.
 
-Airwave follows your normal macOS output selection and volume. You do not need to manage a second audio route while using the app.
+Both effects are bundled with Airwave. You can also use them in another compatible Audio Unit host. Keep Airwave in Applications, open it once, then rescan Audio Units in the other host if needed.
 
-## Requirements
+![Spatial controls with the HRIR preset library](docs/images/v3-spatial.png)
 
-- macOS 15 Sequoia or later
-- Stereo headphones connected to a supported physical output device
-- System Audio Capture permission
+## App Mixer
 
-Airwave does not use microphone access.
+Play audio in an app and open **App Mixer** to set its volume or mute it. Airwave remembers your adjustments. Quiet apps with custom settings appear under **Saved Adjustments**, where you can edit or clear them. The menu bar mixer gives you quick access to playing and recent apps.
 
-## Installation
+![Airwave App Mixer with volume and mute controls for individual apps](docs/images/v3-app-mixer.png)
 
-### Homebrew
+The power control in the main window bypasses both the effect chain and per-app volume adjustments. Closing the window leaves Airwave running in the background. To stop it completely, use the exit button or choose **Quit Airwave** from the menu bar.
 
-```bash
+## Install and set up
+
+Airwave requires **macOS 15 Sequoia or later** and a supported physical audio output. The host works with speakers and headphones. Use stereo headphones for Spatial.
+
+> This branch documents the Airwave 3 release candidate. The download and Homebrew commands install the latest published release.
+
+Download the ZIP from [GitHub Releases](https://github.com/sallliisa/Airwave/releases) and move `Airwave.app` into Applications, or install with Homebrew.
+
+```sh
 brew tap sallliisa/airwave
 brew install --cask airwave
 ```
 
-### Download
+1. Open Airwave and click **Get Started**.
+2. Click **Test Audio Access**. Airwave plays a short test sound. Allow system audio recording if macOS prompts you, then test again if needed. Airwave uses system audio capture. It requires no microphone access.
+3. Add any effects you want for the current output, or continue with an empty chain.
+4. Choose **Launch at Login** and **Show in Menu Bar** on the final page. You can change both later in **Settings**.
 
-Download the latest release from [GitHub Releases](https://github.com/sallliisa/Airwave/releases), open the ZIP file, and move `Airwave.app` to your Applications folder.
+For capture or routing issues, open **Setup & Troubleshooting** in **Settings** and run the audio test again. Check that macOS has selected the intended output and that Airwave is on. For an interface, also check the saved channel pair in **Configure Output**.
 
-If macOS stops the app from opening, try opening it once, then go to **System Settings > Privacy & Security** and choose **Open Anyway** for Airwave.
+## Upgrading from Airwave 2
 
-## First launch
+Airwave 3 imports supported Airwave 2 device profiles and presets. If an output used both Spatial and Equalizer, its new chain puts Spatial first. Imported presets are available in the respective effect controls and the original preset files stay on disk. If an assigned preset can’t be opened, its effect stays bypassed until you pick a replacement.
 
-Airwave opens a short setup wizard the first time you run it. It has four pages and takes only a moment.
+## Build from source
 
-### 1. Welcome
+Open `Airwave.xcodeproj` in full Xcode and run the **Airwave3** scheme. The **Airwave** scheme builds Airwave 2 for compatibility checks. See the [Airwave 3 release rehearsal](docs/airwave-3-release.md) for packaging and upgrade verification.
 
-The welcome page explains the two things Airwave needs: permission to capture system audio and a supported physical output with a resolvable source feed. Airwave always sends stereo to two device channels, which can be assigned in Registered Devices.
-
-![Airwave setup welcome page](docs/images/1Onboarding_Welcome.png)
-
-### 2. Allow system audio capture
-
-Click **Test System Audio Capture**. macOS will ask for permission to let Airwave capture system audio. Follow the prompt, then run the test again if needed.
-
-Airwave plays a short test sound and checks that it can receive captured audio. If access is not enabled, the setup page gives you a button to open the relevant macOS privacy setting.
-
-![Airwave system audio capture setup](docs/images/2Onboarding_SystemAudioCapture.png)
-
-### 3. Choose an HRIR preset
-
-Choose an HRIR preset from the list. Airwave includes `NeutralSH1.0`, `RoomSH1.0`, and `StageSH1.0` presets to get you started. You can listen to audio while switching presets so you can choose the one you prefer.
-
-Airwave also accepts compatible HeSuVi HRIR `.wav` files. Use **Import…** to add files, **Manage…** to open Airwave's preset folder, or **Get more HRIRs…** to visit the [HeSuVi HRTF Database](https://airtable.com/embed/appac4r1cu9UpBNAN/shrpUAbtyZxhDDMjg/tblopH2GznvFipWjq/viwnouWPGDuYEd8Go).
-
-Selecting **None** leaves spatial processing off. You can choose a preset later from Settings or, if enabled, the menu bar.
-
-![Airwave HRIR preset setup](docs/images/3Onboarding_HRIRPreset.png)
-
-### 4. Finish setup
-
-When the capture test and preset setup are complete, Airwave is ready. The final page also lets you choose whether Airwave should launch when you log in and whether it should stay visible in the macOS menu bar.
-
-![Airwave setup complete](docs/images/4Onboarding_Complete.png)
-
-## Running Airwave
-
-Airwave gives you two ways to use it:
-
-- With **Show in Menu Bar** enabled, Airwave is available from the macOS menu bar. Open its menu to choose the HRIR preset, revisit setup, open Settings, or quit Airwave.
-- With **Show in Menu Bar** disabled, Airwave has no visible menu bar icon. It continues processing in the background, which makes it suitable for a set-and-forget setup. Open Airwave again from Applications, Finder, Spotlight, or another app launcher when you need to change a setting.
-
-Changing the HRIR preset takes effect while audio is playing. When no HRIR preset is selected, Airwave leaves audio in its normal form.
-
-Closing the Settings window does not quit Airwave. To stop audio processing and exit Airwave completely, use the power button in Settings or choose **Quit Airwave** from the menu bar menu.
-
-## Airwave Spatial Audio Unit
-
-The Airwave app includes **Airwave Spatial**, a stereo Audio Unit for compatible macOS hosts. Install Airwave in Applications and open it once so macOS can register the effect. If your host is already open, rescan its Audio Units or relaunch it.
-
-In a mixer with output effects, add **Airwave Spatial** to the output chain after per-app volume. Quit the standalone Airwave app while using the plugin for the same output. The host handles audio capture and routing.
-
-The plugin starts with the bundled **Neutral** preset. Use the **HRIR preset** menu to import a compatible HeSuVi WAV or select Neutral. Use **Bypass** to compare the stereo signal with and without the effect. The host can save the imported WAV and bypass setting with that plugin instance.
-
-[Read the Airwave Spatial guide](docs/airwave-spatial-audio-unit.md) for setup, a REAPER walkthrough, and troubleshooting.
-
-## Settings
-
-Settings shows the current supported output at the top. Airwave remembers a separate profile for each output it sees, so a pair of headphones can keep its own HRIR and EQ choices when you switch between devices.
-
-![Airwave Settings](docs/images/5Settings.png)
-
-### Spatial profiles
-
-The **Spatial Profile** section is where you choose the HRIR preset for the output shown at the top of the window. Airwave's bundled presets are available immediately, and imported HeSuVi-compatible WAV files appear in the same list.
-
-### Equalizer
-
-The optional Equalizer imports Equalizer APO `.txt` presets with `Preamp`, `GraphicEQ`, and standard biquad filters. Biquads include peaking, pass, notch, and shelf filters. The importer supports Q, octave bandwidth, and shelf slope where applicable.
-
-Airwave includes five presets.
-
-- Bass Booster
-- Bass Reducer
-- Treble Booster
-- Treble Reducer
-- Vocal Booster
-
-Choose **None** to bypass the Equalizer. Use **Import…** to add your own EqualizerAPO preset, **Manage…** to open Airwave's managed preset folder, or **Get more equalizer presets…** to browse [AutoEq](https://autoeq.app/). You can delete imported presets from the library.
-
-If a config uses `Include` or `Convolution`, select the folder containing `config.txt`. Airwave stores the config with its included text and WAV files. Paths are relative to the file that declares them and must stay within the selected folder.
-If you select `config.txt` directly and Airwave needs access to its companion files, use **Choose Folder…** to grant access and continue the import.
-
-`Channel`, `Copy`, and `Delay` run in config order on Airwave's stereo signal after spatial processing. Use `L`, `R`, `1`, or `2` for channel references. `Channel: all` selects both channels. Delay accepts milliseconds or samples.
-
-`Convolution` uses WAV impulse responses up to 0.5 seconds long on the selected channels. The WAV sample rate must match the output.
-The combined `GraphicEQ` and convolution response limit is 96,000 frames through 48 kHz, 48,000 frames through 96 kHz, and 32,768 frames above 96 kHz.
-
-Airwave evaluates `If`, `ElseIf`, `Else`, `EndIf`, `Eval`, and backtick expressions for the active output. Configs can use the output sample rate, captured and rendered channel counts, and device name or UID. For a Windows device selector, replace the Windows name or GUID with the macOS output name or UID. `Stage: post-mix` selects Airwave's playback stage. Sections for `pre-mix` or `capture` are skipped on playback.
-
-Custom `Filter: ON IIR` accepts stable filters of order 1 through 32, with a combined order limit of 512 for the active preset. Use a sample-rate condition to choose the coefficients supplied for each output rate. Enter frequencies as decimal Hz or use an ungrouped integer such as `6000`.
-
-`Include` and `Convolution` paths must be literal and available at import, including files mentioned inside conditions. Windows registry functions, Windows VST plugins, and system-volume loudness correction are outside Airwave's current config support.
-
-![Airwave Equalizer](docs/images/6Equalizer.png)
-
-The HRIR and Equalizer settings are independent. You can use spatial processing, EQ processing, both together, or neither.
-
-### Registered Devices
-
-**Registered Devices** lists connected physical outputs and remembered device profiles, including profiles for devices that are offline. Each row shows its transport, connection/current status, and assigned HRIR and EQ presets. Selecting a row only selects it for these actions; macOS still controls the active output.
-
-- **Configure output…** opens a native popover with **Left output** and **Right output** channel pickers. Airwave always sends stereo; choose two distinct channels on the selected device. **Save** applies the pair together. Outside-click or Escape dismissal keeps the in-memory draft for reopening; **Cancel** discards it. Connecting an interface does not verify which physical jack each channel reaches.
-- **Reset Profile** clears HRIR, EQ, and the saved output channel assignment for the selected device.
-- **Forget Device** removes the saved profile for a device that is not currently in use. A connected device stays listed; a profile is created again when you save an output assignment or choose a preset.
-
-When HRIR and EQ are both `None`, a device with an explicit output assignment remains active in routing-only mode. Airwave reports **Routing audio** while it sends the stereo output to the saved channels. With no saved assignment, `None`/`None` leaves normal macOS routing in place.
-
-![Airwave Registered Devices](docs/images/7RegisteredDevices.png)
-
-### Application
-
-The **Application** page contains preferences and app information:
-
-- **Launch at Login** starts Airwave when you log in.
-- **Show in Menu Bar** keeps Airwave available from the macOS menu bar. Turn it off to run Airwave as a hidden background app.
-- **Software Update** checks for a newer Airwave release.
-- **About Airwave** shows the installed version and app information.
-
-![Airwave Application settings](docs/images/8Application.png)
-
-## Troubleshooting
-
-### Airwave says system audio capture needs attention
-
-Open setup from **Settings > Setup & Troubleshooting** and run **Test System Audio Capture**. If macOS asks for access, allow Airwave under **System Settings > Privacy & Security > System Audio Capture**, then test again.
-
-### The spatial effect is not audible
-
-Check that:
-
-1. Your headphones are the current macOS output.
-2. The output is a supported physical device (not virtual or aggregate) with a source stream Airwave can resolve.
-3. An HRIR preset other than `None` is selected.
-4. Airwave's capture test has passed.
-
-If audio reaches the wrong interface channels, open **Settings > Registered Devices**, select that device, and choose **Configure output…**. Reconnect an offline device before editing its assignment. A saved channel number is a device destination; the actual connector mapping depends on the interface and has not been verified for every model.
-
-### A device is not available
-
-Connect the headphones and select them as the macOS output. Airwave watches for supported outputs and adds them to the device selector when they become available.
-
-## License
+## License and credits
 
 Airwave is licensed under the [GNU General Public License v3](LICENSE).
 
-## Credits
+- Spatial is inspired by [HeSuVi](https://sourceforge.net/projects/hesuvi/). Third-party HRIR datasets remain subject to their respective licenses.
+- [AutoEq](https://autoeq.app/) is a source of headphone equalizer presets.
+- The Airwave mark uses [Material Symbols](https://fonts.google.com/icons).
 
-- Airwave is inspired by [HeSuVi](https://sourceforge.net/projects/hesuvi/) and supports compatible HRIR datasets. Airwave is independently developed and is not affiliated with HeSuVi.
-- HRIR files from the [HeSuVi HRTF Database](https://airtable.com/embed/appac4r1cu9UpBNAN/shrpUAbtyZxhDDMjg/tblopH2GznvFipWjq/viwnouWPGDuYEd8Go) are provided by third parties and remain subject to their respective licenses.
-- Equalizer preset discovery is provided through [AutoEq](https://autoeq.app/).
-- [Material Symbols](https://fonts.google.com/icons) are used for app and menu bar icons.
-
-## Support
-
-For bugs and feature requests, [open an issue on GitHub](https://github.com/sallliisa/Airwave/issues).
-
-If Airwave is useful to you, you can support its development with a [voluntary donation on Ko-fi](https://ko-fi.com/Q5Q51RNAGT).
-
-<div>
-  <a href="https://ko-fi.com/Q5Q51RNAGT"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Support Airwave on Ko-fi" /></a>
-</div>
+If you find Airwave useful, you can [support development on Ko-fi](https://ko-fi.com/Q5Q51RNAGT).
