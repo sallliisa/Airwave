@@ -311,6 +311,7 @@ private struct HostEffectsPage: View {
     let manageDevices: () -> Void
 
     @State private var showingEffects = false
+    @State private var presetTarget: HostPresetLibraryView.Target?
 
     private var editingDevice: HostDeviceTarget? {
         host.editingDevices.first { $0.id == host.editingDeviceUID }
@@ -333,6 +334,9 @@ private struct HostEffectsPage: View {
                 host.addEditing(component)
                 showingEffects = false
             }
+        }
+        .sheet(item: $presetTarget) { target in
+            HostPresetLibraryView(host: host, target: target)
         }
         .onChange(of: host.editingDeviceUID) { _, _ in showingEffects = false }
     }
@@ -430,6 +434,7 @@ private struct HostEffectsPage: View {
                         canMoveUp: host.editingSlots.first?.id != slot.id,
                         canMoveDown: host.editingSlots.last?.id != slot.id,
                         openEditor: { host.openEditingEditor(slot.id) },
+                        openPresets: presetAction(for: slot),
                         toggleBypass: { host.setEditingBypass(slot.id, !slot.isBypassed) },
                         remove: { host.removeEditing(slot.id) },
                         move: { distance in move(slot.id, by: distance) },
@@ -444,6 +449,11 @@ private struct HostEffectsPage: View {
         }
         .defaultScrollAnchor(.top)
         .accessibilityIdentifier("effect-chain")
+    }
+
+    private func presetAction(for slot: EffectSlot) -> (() -> Void)? {
+        guard HostPresetLibrary.supports(slot.component), let editingDevice else { return nil }
+        return { presetTarget = HostPresetLibraryView.Target(slot: slot, device: editingDevice) }
     }
 
     private func move(_ id: UUID, by distance: Int) {
@@ -1157,6 +1167,7 @@ private struct EffectRow: View {
     let canMoveUp: Bool
     let canMoveDown: Bool
     let openEditor: () -> Void
+    let openPresets: (() -> Void)?
     let toggleBypass: () -> Void
     let remove: () -> Void
     let move: (Int) -> Void
@@ -1178,25 +1189,36 @@ private struct EffectRow: View {
                     .accessibilityLabel("Issue with \(slot.name)")
                     .accessibilityIdentifier("effect-issue")
             }
-            Button(action: toggleBypass) {
-                Image(systemName: "power")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(slot.isBypassed ? Color.secondary : Color.accentColor)
-                    .frame(width: 27, height: 29)
-                    .contentShape(.rect)
+            if slot.migrationIssue == nil {
+                Button(action: toggleBypass) {
+                    Image(systemName: "power")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(slot.isBypassed ? Color.secondary : Color.accentColor)
+                        .frame(width: 27, height: 29)
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .help(slot.isBypassed ? "Enable \(slot.name)" : "Bypass \(slot.name)")
+                .accessibilityLabel(slot.isBypassed ? "Enable \(slot.name)" : "Bypass \(slot.name)")
+                .accessibilityIdentifier("bypass-effect")
             }
-            .buttonStyle(.plain)
-            .help(slot.isBypassed ? "Enable \(slot.name)" : "Bypass \(slot.name)")
-            .accessibilityLabel(slot.isBypassed ? "Enable \(slot.name)" : "Bypass \(slot.name)")
-            .accessibilityIdentifier("bypass-effect")
 
-            Button(action: openEditor) {
-                Label("Controls", systemImage: "slider.horizontal.3")
+            if let openPresets {
+                Button("Presets…", action: openPresets)
+                    .controlSize(.small)
+                    .accessibilityLabel("Browse \(slot.name) presets")
+                    .accessibilityIdentifier("open-presets")
             }
-            .controlSize(.small)
-            .help("Open \(slot.name) controls")
-            .accessibilityLabel("Open \(slot.name) controls")
-            .accessibilityIdentifier("open-editor")
+
+            if slot.migrationIssue == nil {
+                Button(action: openEditor) {
+                    Label("Controls", systemImage: "slider.horizontal.3")
+                }
+                .controlSize(.small)
+                .help("Open \(slot.name) controls")
+                .accessibilityLabel("Open \(slot.name) controls")
+                .accessibilityIdentifier("open-editor")
+            }
 
             Menu {
                 Button("Move Up") { move(-1) }

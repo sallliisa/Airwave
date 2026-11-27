@@ -254,7 +254,10 @@ nonisolated final class SpatialRenderResources {
             }
 
             amount = bypass ? min(1, amount + fadeStep) : max(0, amount - fadeStep)
-            if amount == 0 {
+            if amount == 1 {
+                outputLeft[stride * frame] = dry[frame]
+                outputRight[stride * frame] = dry[maxFrames + frame]
+            } else if amount == 0 {
                 outputLeft[stride * frame] = left
                 outputRight[stride * frame] = right
             } else {

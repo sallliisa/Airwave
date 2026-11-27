@@ -28,7 +28,8 @@ struct Airwave3App: App {
 @MainActor
 final class HostAppDelegate: NSObject, NSApplicationDelegate {
     static let environment = HostLaunchEnvironment()
-    let host = HostController(store: environment.store, defaults: environment.defaults)
+    let host = HostController(store: environment.store, defaults: environment.defaults,
+                              presetLibrary: environment.presetLibrary, migrationWarning: environment.migrationWarning)
 
     private var shell: ShellModel { Self.environment.shell }
     private let windows = HostWindowLifecycle()
@@ -198,6 +199,8 @@ final class HostAppDelegate: NSObject, NSApplicationDelegate {
 struct HostLaunchEnvironment {
     let defaults: UserDefaults
     let store: ProfileStore
+    let presetLibrary: HostPresetLibrary
+    let migrationWarning: String?
     let shell: ShellModel
     let isIsolated: Bool
 
@@ -217,6 +220,8 @@ struct HostLaunchEnvironment {
             let testProfile = profile ?? FileManager.default.temporaryDirectory
                 .appending(path: "system-audio-host-xctest-\(UUID()).plist")
             store = ProfileStore(url: testProfile)
+            presetLibrary = HostPresetLibrary(url: testProfile.appendingPathExtension("presets"))
+            migrationWarning = nil
             isIsolated = true
             shell = ShellModel(
                 defaults: defaults,
@@ -227,25 +232,23 @@ struct HostLaunchEnvironment {
         }
 #endif
         let preferences = UserDefaults.standard
-        let destination = ProfileStore()
+        store = ProfileStore()
+        presetLibrary = HostPresetLibrary(url: HostPresetLibrary.defaultURL)
         defaults = preferences
         isIsolated = false
-        let migrationFailed: Bool
         do {
-            try LegacyAirwaveUpgrade.migrate(defaults: preferences, store: destination) {
+            try LegacyAirwaveUpgrade.migrate(defaults: preferences, store: store, presetLibrary: presetLibrary) {
                 try LegacyAirwaveUpgrade.installedSource(defaults: preferences)
             }
-            store = destination
-            migrationFailed = false
+            migrationWarning = nil
         } catch {
             let failure = error as? LegacyAirwaveUpgrade.Failure
                 ?? .init(reason: "Your old settings are preserved. Reopen Airwave to retry.")
-            store = ProfileStore(upgradeFailure: failure)
+            migrationWarning = failure.localizedDescription
             ShellModel.applyUpgradePreferences(to: preferences, completed: nil, showsMenuBar: nil)
-            migrationFailed = true
         }
         shell = ShellModel(defaults: preferences, loginItem: SMAppService.mainApp,
-                           initialSetupCompleted: migrationFailed)
+                           initialSetupCompleted: migrationWarning != nil)
     }
 }
 

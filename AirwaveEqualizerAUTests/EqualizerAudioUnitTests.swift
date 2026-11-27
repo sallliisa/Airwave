@@ -11,6 +11,30 @@ final class EqualizerAudioUnitTests: XCTestCase {
         componentFlagsMask: 0
     )
 
+    func testEmptyPresetAndNativeBypassCopySamplesWithoutArithmetic() throws {
+        let unit = try EqualizerAudioUnit(componentDescription: Self.component)
+        try configure(unit)
+        defer { unit.deallocateRenderResources() }
+        let left: [Float] = [1.5, -0.0, -2, Float(bitPattern: 0x7f800001)]
+        let right = Array(left.reversed())
+
+        let output = try render(unit, left: left, right: right)
+        XCTAssertEqual(output.left.map(\.bitPattern), left.map(\.bitPattern))
+        XCTAssertEqual(output.right.map(\.bitPattern), right.map(\.bitPattern))
+
+        try unit.clearPreset()
+        let cleared = try render(unit, left: left, right: right, timestamp: Double(left.count))
+        XCTAssertEqual(cleared.left.map(\.bitPattern), left.map(\.bitPattern))
+        XCTAssertEqual(cleared.right.map(\.bitPattern), right.map(\.bitPattern))
+
+        unit.shouldBypassEffect = true
+        unit.reset()
+        try unit.applyPreset(name: "Boost", text: "Preamp: 6 dB")
+        let bypassed = try render(unit, left: left, right: right, timestamp: Double(2 * left.count))
+        XCTAssertEqual(bypassed.left.map(\.bitPattern), left.map(\.bitPattern))
+        XCTAssertEqual(bypassed.right.map(\.bitPattern), right.map(\.bitPattern))
+    }
+
     func testPortableFolderAndOutputContextRenderLikeAirwave2() throws {
         let source = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let filters = source.appendingPathComponent("filters")

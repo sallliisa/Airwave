@@ -18,8 +18,17 @@ enum EffectError: LocalizedError {
     }
 }
 
-@MainActor
-enum EffectCatalog {
+struct EffectCatalog {
+    typealias Instantiate = @MainActor (ComponentID) async throws -> AUAudioUnit
+
+    static let systemInstantiate: Instantiate = { id in
+        try await AUAudioUnit.instantiate(with: id.description, options: [])
+    }
+
+    var list: @MainActor () -> [EffectComponent] = { EffectCatalog.discover() }
+    var instantiate: Instantiate = EffectCatalog.systemInstantiate
+
+    @MainActor
     static func discover() -> [EffectComponent] {
         let manager = AVAudioUnitComponentManager.shared()
         let types = [kAudioUnitType_Effect, kAudioUnitType_MusicEffect]
@@ -54,13 +63,15 @@ final class LiveEffect {
     let unit: AUAudioUnit
     let stage: EffectRenderStage
     let headroomSampleRate: Double?
+    @MainActor var reportedRenderFailure = false
 
     @MainActor
     static func load(
         _ slot: EffectSlot, sampleRate: Double, maximumFrames: UInt32,
-        spatialLayout: InputLayout? = nil, equalizerOutput: (uid: String, name: String, channelCount: Int?)? = nil
+        spatialLayout: InputLayout? = nil, equalizerOutput: (uid: String, name: String, channelCount: Int?)? = nil,
+        instantiate: EffectCatalog.Instantiate = EffectCatalog.systemInstantiate
     ) async throws -> LiveEffect {
-        let unit = try await AUAudioUnit.instantiate(with: slot.component.description, options: [])
+        let unit = try await instantiate(slot.component)
         try Task.checkCancellation()
         guard unit.inputBusses.count == 1, unit.outputBusses.count == 1 else {
             throw EffectError.incompatibleBuses
@@ -116,6 +127,25 @@ final class LiveEffect {
     func saveState(previous: Data?) throws -> Data? {
         guard let state = unit.fullStateForDocument else { return previous }
         return try PropertyListSerialization.data(fromPropertyList: state, format: .binary, options: 0)
+    }
+
+    @MainActor
+    func verifyPreset(_ entry: HostPresetLibrary.Entry) throws {
+        guard let expected = try PropertyListSerialization.propertyList(from: entry.state, format: nil) as? [String: Any],
+              let actual = unit.fullStateForDocument else { throw EffectError.invalidState }
+        switch entry.component {
+        case .airwaveSpatial:
+            let keys = ["AirwaveSpatial.bundledPreset", "AirwaveSpatial.presetName", "AirwaveSpatial.impulseResponse"]
+            for key in keys where expected[key] as? NSObject != actual[key] as? NSObject {
+                throw EffectError.invalidState
+            }
+        case .airwaveEqualizer:
+            guard let wanted = try EqualizerAUState(expected).preset, let loaded = try EqualizerAUState(actual).preset,
+                  wanted.name == loaded.name, wanted.filename == loaded.filename, wanted.data == loaded.data,
+                  wanted.factoryPresetNumber == loaded.factoryPresetNumber else { throw EffectError.invalidState }
+        default:
+            throw EffectError.invalidState
+        }
     }
 
     deinit {
@@ -299,17 +329,23 @@ final class RenderChain {
         var left = inputLeft
         var right = inputRight
         var processedRate: Double?
+        let bytes = Int(frames) * MemoryLayout<Float>.size
         if let pointer = current.load(ordering: .sequentiallyConsistent) {
             let snapshot = Unmanaged<Snapshot>.fromOpaque(pointer).takeUnretainedValue()
             for (index, effect) in snapshot.effects.enumerated() {
                 if let result = effect.stage.process(time, left: left, right: right, frames: frames,
                                                      captured: index == 0 ? captured : nil) {
+                    // The built-in AUs copy dry audio verbatim. For surround,
+                    // Spatial and the capture bridge use the same stereo fold-down.
+                    // Compare buffers so a remote editor can bypass without a control call.
+                    if let rate = effect.headroomSampleRate, processedRate == nil,
+                       memcmp(result.0, left, bytes) != 0 || memcmp(result.1, right, bytes) != 0 {
+                        processedRate = rate
+                    }
                     (left, right) = result
-                    if let rate = effect.headroomSampleRate { processedRate = rate }
                 }
             }
         }
-        let bytes = Int(frames) * MemoryLayout<Float>.size
         memmove(outputLeft, left, bytes)
         memmove(outputRight, right, bytes)
         if let processedRate {

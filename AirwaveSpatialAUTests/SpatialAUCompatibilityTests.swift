@@ -70,6 +70,19 @@ final class SpatialAUCompatibilityTests: XCTestCase {
         }
     }
 
+    func testNativeBypassPreservesSampleBitsDuringPresetChanges() throws {
+        let unit = try makeUnit()
+        unit.shouldBypassEffect = true
+        let stereo = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2))
+        try configure(unit, inputFormat: stereo)
+        defer { unit.deallocateRenderResources() }
+
+        unit.fullStateForDocument = ["AirwaveSpatial.bundledPreset": "stage", "AirwaveSpatial.bypass": true]
+        let bypassed = try render(unit, impulses: [-0.0, 2])
+        XCTAssertEqual(bypassed.left[0].bitPattern, Float(-0.0).bitPattern)
+        XCTAssertEqual(bypassed.right[0], 2)
+    }
+
     private func makeUnit() throws -> AUAudioUnit {
         try AirwaveSpatialAudioUnit(componentDescription: AudioComponentDescription(
             componentType: kAudioUnitType_Effect, componentSubType: 0x4177_7370,

@@ -46,6 +46,7 @@ struct EffectSlot: Identifiable, Codable, Equatable {
     let manufacturer: String
     var isBypassed: Bool
     var state: Data?
+    var migrationIssue: String?
 
     init(_ effect: EffectComponent) {
         id = UUID()
@@ -65,16 +66,12 @@ struct DeviceProfile: Codable, Equatable {
 
 struct ProfileStore {
     private let url: URL
-    private let upgradeFailure: LegacyAirwaveUpgrade.Failure?
 
-    init(url: URL = URL.applicationSupportDirectory.appending(path: "Airwave/Effect Chains.plist"),
-         upgradeFailure: LegacyAirwaveUpgrade.Failure? = nil) {
+    init(url: URL = URL.applicationSupportDirectory.appending(path: "Airwave/Effect Chains.plist")) {
         self.url = url
-        self.upgradeFailure = upgradeFailure
     }
 
     func load() throws -> [String: DeviceProfile] {
-        if let upgradeFailure { throw upgradeFailure }
         let data: Data
         do {
             data = try Data(contentsOf: url)
@@ -92,7 +89,6 @@ struct ProfileStore {
     }
 
     func save(_ profiles: [String: DeviceProfile]) throws {
-        if let upgradeFailure { throw upgradeFailure }
         let encoder = PropertyListEncoder()
         encoder.outputFormat = .binary
         let data = try encoder.encode(profiles)

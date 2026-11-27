@@ -8,6 +8,7 @@ struct LegacyAirwaveUpgrade {
     static let completedKey = "Airwave.OnboardingV2.Completed"
     static let menuBarKey = "Airwave.Application.ShowInMenuBar"
     static let migrationKey = "Airwave.UpgradeTo3.Completed"
+    private static let libraryMigrationKey = "Airwave.UpgradeTo3.PresetLibraryCompleted"
     private static let legacyKeys = [profilesKey, completedKey, menuBarKey]
 
     struct Source {
@@ -16,6 +17,9 @@ struct LegacyAirwaveUpgrade {
 
         var exists: Bool {
             LegacyAirwaveUpgrade.legacyKeys.contains { preferences[$0] != nil }
+                || ["presets/presets.json", "Equalizer Presets/manifest.json"].contains { filename in
+                    FileManager.default.fileExists(atPath: library.appending(path: filename).path)
+                }
         }
     }
 
@@ -32,22 +36,6 @@ struct LegacyAirwaveUpgrade {
         let outputChannels: StereoOutputChannels?
     }
 
-    private struct SpatialPreset: Decodable {
-        let id: UUID
-        let name: String
-        let fileURL: URL
-    }
-
-    private struct EqualizerManifest: Decodable {
-        let presets: [EqualizerPreset]
-    }
-
-    private struct EqualizerPreset: Decodable {
-        let id: UUID
-        let filename: String
-        let displayName: String
-    }
-
     struct Failure: LocalizedError {
         let reason: String
         var errorDescription: String? { "Airwave 2 settings could not be imported. \(reason)" }
@@ -56,35 +44,52 @@ struct LegacyAirwaveUpgrade {
     static func installedSource(defaults: UserDefaults, home: URL = FileManager.default.homeDirectoryForCurrentUser,
                                 applicationSupport: URL = .applicationSupportDirectory) throws -> Source {
         let sandboxLibrary = home.appending(path: "Library/Containers/\(domain)/Data/Library", directoryHint: .isDirectory)
+        let managedLibrary = sandboxLibrary.appending(path: "Application Support/Airwave", directoryHint: .isDirectory)
         let preferencesURL = sandboxLibrary.appending(path: "Preferences/\(domain).plist")
+        let directPreferences = Dictionary(uniqueKeysWithValues: legacyKeys.compactMap { key in
+            defaults.object(forKey: key).map { (key, $0) }
+        })
+        let direct = Source(preferences: directPreferences, library: applicationSupport.appending(path: "Airwave"))
         let bytes: Data
         do {
             bytes = try Data(contentsOf: preferencesURL)
         } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
-            let preferences = Dictionary(uniqueKeysWithValues: legacyKeys.compactMap { key in
-                defaults.object(forKey: key).map { (key, $0) }
-            })
-            return Source(preferences: preferences, library: applicationSupport.appending(path: "Airwave"))
+            if !directPreferences.isEmpty { return direct }
+            let sandbox = Source(preferences: [:], library: managedLibrary)
+            return sandbox.exists ? sandbox : direct
         }
         let plist = try PropertyListSerialization.propertyList(from: bytes, format: nil)
         guard let preferences = plist as? [String: Any] else {
             throw Failure(reason: "The previous preferences are unreadable.")
         }
-        let source = Source(preferences: preferences, library: sandboxLibrary.appending(path: "Application Support/Airwave"))
-        if source.exists { return source }
-        let direct = Dictionary(uniqueKeysWithValues: legacyKeys.compactMap { key in
-            defaults.object(forKey: key).map { (key, $0) }
-        })
-        return Source(preferences: direct, library: applicationSupport.appending(path: "Airwave"))
+        let source = Source(preferences: preferences, library: managedLibrary)
+        return source.exists ? source : direct
     }
 
     @MainActor
     @discardableResult
-    static func migrate(defaults: UserDefaults, store: ProfileStore, source: () throws -> Source) throws -> Bool {
-        guard !defaults.bool(forKey: migrationKey) else { return false }
+    static func migrate(defaults: UserDefaults, store: ProfileStore, presetLibrary: HostPresetLibrary,
+                        source: () throws -> Source) throws -> Bool {
+        let needsProfiles = !defaults.bool(forKey: migrationKey)
+        let needsLibrary = !defaults.bool(forKey: libraryMigrationKey)
+        guard needsProfiles || needsLibrary else { return false }
         let old = try source()
         guard old.exists else { return false }
+        let entries = HostPresetLibrary.legacyEntries(at: old.library)
+        let libraryResult = Result {
+            if needsLibrary {
+                try presetLibrary.mergeLegacy(entries)
+                defaults.set(true, forKey: libraryMigrationKey)
+            }
+        }
+        if needsProfiles { try migrateProfiles(from: old, entries: entries, defaults: defaults, store: store) }
+        try libraryResult.get()
+        return true
+    }
 
+    @MainActor
+    private static func migrateProfiles(from old: Source, entries: [HostPresetLibrary.Entry],
+                                        defaults: UserDefaults, store: ProfileStore) throws {
         if let data = old.preferences[profilesKey] {
             guard let encoded = data as? Data else {
                 throw Failure(reason: "The previous device profiles have an unsupported format.")
@@ -96,18 +101,8 @@ struct LegacyAirwaveUpgrade {
             var profiles = try store.load()
             let missing = legacy.profiles.filter { profiles[$0.deviceUID] == nil }
             if !missing.isEmpty {
-                let spatialDirectory = old.library.appending(path: "presets", directoryHint: .isDirectory)
-                let eqDirectory = old.library.appending(path: "Equalizer Presets", directoryHint: .isDirectory)
-                let decoder = JSONDecoder()
-                let spatial = missing.contains { $0.hrirPresetID != nil }
-                    ? try decoder.decode([SpatialPreset].self, from: Data(contentsOf: spatialDirectory.appending(path: "presets.json")))
-                    : []
-                let equalizers = missing.contains { $0.equalizerPresetID != nil }
-                    ? try decoder.decode(EqualizerManifest.self, from: Data(contentsOf: eqDirectory.appending(path: "manifest.json"))).presets
-                    : []
                 for profile in missing {
-                    let slots = try chain(for: profile, spatial: spatial, spatialDirectory: spatialDirectory,
-                                          equalizers: equalizers, eqDirectory: eqDirectory)
+                    let slots = chain(for: profile, entries: entries)
                     profiles[profile.deviceUID] = DeviceProfile(name: profile.deviceName, sampleRate: nil,
                                                                 slots: slots, outputChannels: profile.outputChannels)
                 }
@@ -120,52 +115,28 @@ struct LegacyAirwaveUpgrade {
             showsMenuBar: old.preferences[menuBarKey] as? Bool
         )
         defaults.set(true, forKey: migrationKey)
-        return true
     }
 
-    private static func chain(for profile: Profile, spatial: [SpatialPreset], spatialDirectory: URL,
-                              equalizers: [EqualizerPreset], eqDirectory: URL) throws -> [EffectSlot] {
+    private static func chain(for profile: Profile, entries: [HostPresetLibrary.Entry]) -> [EffectSlot] {
         var slots: [EffectSlot] = []
         if let id = profile.hrirPresetID {
-            guard let preset = spatial.first(where: { $0.id == id }) else {
-                throw Failure(reason: "A Spatial preset for \(profile.deviceName) is missing.")
-            }
-            let wav = try presetData(filename: preset.fileURL.lastPathComponent, in: spatialDirectory)
-            slots.append(try slot(.airwaveSpatial, name: "Spatial", manufacturer: "Airwave", state: [
-                "AirwaveSpatial.presetName": preset.name,
-                "AirwaveSpatial.impulseResponse": wav,
-                "AirwaveSpatial.bypass": false
-            ]))
+            slots.append(slot(.airwaveSpatial, name: "Spatial", manufacturer: "Airwave", presetID: id, entries: entries))
         }
         if let id = profile.equalizerPresetID {
-            guard let preset = equalizers.first(where: { $0.id == id }) else {
-                throw Failure(reason: "An Equalizer preset for \(profile.deviceName) is missing.")
-            }
-            let bytes = try presetData(filename: preset.filename, in: eqDirectory)
-            let selection = EqualizerAUState.Preset(name: preset.displayName, filename: preset.filename, data: bytes)
-            slots.append(try slot(.airwaveEqualizer, name: "Equalizer", manufacturer: "South Neuhof",
-                                  state: EqualizerAUState.document(preset: selection, context: nil)))
+            slots.append(slot(.airwaveEqualizer, name: "Equalizer", manufacturer: "South Neuhof", presetID: id, entries: entries))
         }
         return slots
     }
 
     private static func slot(_ component: ComponentID, name: String, manufacturer: String,
-                             state: [String: Any]) throws -> EffectSlot {
+                             presetID: UUID, entries: [HostPresetLibrary.Entry]) -> EffectSlot {
         var slot = EffectSlot(EffectComponent(id: component, name: name, manufacturer: manufacturer))
-        slot.state = try PropertyListSerialization.data(fromPropertyList: state, format: .binary, options: 0)
+        if let preset = entries.first(where: { $0.component == component && $0.id == presetID }) {
+            slot.state = preset.state
+        } else {
+            slot.isBypassed = true
+            slot.migrationIssue = "The Airwave 2 preset is unavailable. Choose a preset to restore this effect."
+        }
         return slot
-    }
-
-    private static func presetData(filename: String, in directory: URL) throws -> Data {
-        guard !filename.isEmpty, filename != ".", filename != "..", !filename.contains("/") else {
-            throw Failure(reason: "A managed preset filename is invalid.")
-        }
-        let file = directory.appending(path: filename, directoryHint: .notDirectory)
-        let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
-        guard values.isRegularFile == true, values.isSymbolicLink != true,
-              let size = values.fileSize, size > 0, size <= 64 * 1_024 * 1_024 else {
-            throw Failure(reason: "The managed preset \(filename) cannot be opened.")
-        }
-        return try Data(contentsOf: file)
     }
 }

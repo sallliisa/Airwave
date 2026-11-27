@@ -74,9 +74,12 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
 
     private let store: ProfileStore
     private let defaults: UserDefaults
+    let presetLibrary: HostPresetLibrary
+    private let migrationWarning: String?
     private let currentOutput: () throws -> OutputDevice
     private let availableOutputs: () -> [OutputDevice]
-    private let chain = RenderChain()
+    private let chain: RenderChain
+    private let effectCatalog: EffectCatalog
     private let mixer: AppMixer
     private let audioApplications = AudioApplicationCatalog()
     private var mixerSources: [AppMixerSource] = []
@@ -110,13 +113,21 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
 
     init(
         store: ProfileStore = ProfileStore(), defaults: UserDefaults = .standard,
+        presetLibrary: HostPresetLibrary = HostPresetLibrary(url: HostPresetLibrary.defaultURL),
+        migrationWarning: String? = nil,
         currentOutput: @escaping () throws -> OutputDevice = SystemAudioRoute.currentOutput,
-        availableOutputs: @escaping () -> [OutputDevice] = SystemAudioRoute.availableOutputs
+        availableOutputs: @escaping () -> [OutputDevice] = SystemAudioRoute.availableOutputs,
+        chain: RenderChain = RenderChain(),
+        effectCatalog: EffectCatalog = EffectCatalog()
     ) {
         self.store = store
         self.defaults = defaults
+        self.presetLibrary = presetLibrary
+        self.migrationWarning = migrationWarning
         self.currentOutput = currentOutput
         self.availableOutputs = availableOutputs
+        self.chain = chain
+        self.effectCatalog = effectCatalog
         mixer = AppMixer(defaults: defaults)
         super.init()
         isEnabled = defaults.object(forKey: "ProcessingEnabled") == nil || defaults.bool(forKey: "ProcessingEnabled")
@@ -124,8 +135,7 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
             profiles = try store.load()
         } catch {
             storageReadOnly = true
-            storageError = (error as? LegacyAirwaveUpgrade.Failure)?.errorDescription
-                ?? "Saved chains could not be read. Their file is preserved."
+            storageError = "Saved chains could not be read. Their file is preserved."
         }
         rescan()
         refreshMixerRows()
@@ -142,7 +152,7 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     func rescan() {
-        components = EffectCatalog.discover()
+        components = effectCatalog.list()
         offlineIssues.removeAll()
         for slot in slots where effects[slot.id] == nil { prepare(slot) }
         if case .failed = playback {
@@ -181,13 +191,16 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     var editingSlotIssues: [UUID: String] {
-        if editingDeviceUID == currentDeviceUID { return slotIssues }
-        return editingSlots.reduce(into: [:]) { issues, slot in
-            issues[slot.id] = offlineIssues[slot.id] ?? (
-                components.contains { $0.id == slot.component }
-                    ? nil : "Audio Unit unavailable. Install it and rescan."
-            )
+        let active = editingDeviceUID == currentDeviceUID
+        var issues = active ? slotIssues : offlineIssues
+        for slot in editingSlots {
+            if let issue = slot.migrationIssue {
+                issues[slot.id] = issue
+            } else if !active, issues[slot.id] == nil, !components.contains(where: { $0.id == slot.component }) {
+                issues[slot.id] = "Audio Unit unavailable. Install it and rescan."
+            }
         }
+        return issues
     }
 
     func selectEditingDevice(_ uid: String) {
@@ -252,7 +265,8 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     func setEditingBypass(_ id: UUID, _ bypassed: Bool) {
-        guard let uid = editingDeviceUID, let index = editingSlots.firstIndex(where: { $0.id == id }) else { return }
+        guard let uid = editingDeviceUID, let index = editingSlots.firstIndex(where: { $0.id == id }),
+              editingSlots[index].migrationIssue == nil else { return }
         if uid == currentDeviceUID { setBypass(id, bypassed) }
         else { editProfile(uid) { $0[index].isBypassed = bypassed } }
     }
@@ -311,6 +325,7 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
         if pendingCleanup != nil { return .information(status) }
         if case .failed(let reason) = captureCheck { return .captureFailure(reason) }
         if let storageError { return .warning(storageError) }
+        if let migrationWarning { return .warning(migrationWarning) }
         if rejectedMixerSources != nil { return .warning(status) }
         if case .checking = playback { return .information(status) }
         return nil
@@ -346,7 +361,7 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     func setBypass(_ id: UUID, _ bypassed: Bool) {
-        guard let index = slots.firstIndex(where: { $0.id == id }) else { return }
+        guard let index = slots.firstIndex(where: { $0.id == id }), slots[index].migrationIssue == nil else { return }
         slots[index].isBypassed = bypassed
         if !bypassed, let effect = effects[id], effect.stage.failure.load(ordering: .relaxed) != noErr {
             editors[id]?.window.close()
@@ -357,8 +372,90 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
         updatePlayback()
     }
 
+    func presetState(for id: UUID, deviceUID: String) throws -> Data {
+        guard let slot = profiles[deviceUID]?.slots.first(where: { $0.id == id }) else {
+            throw PresetAssignmentError.effectRemoved
+        }
+        let effect = editors[id]?.effect ?? (deviceUID == currentDeviceUID ? effects[id] : nil)
+        let state = try effect?.saveState(previous: slot.state) ?? slot.state
+        guard let state else { throw PresetAssignmentError.stateUnavailable }
+        return state
+    }
+
+    func applyPreset(_ preset: HostPresetLibrary.Entry, to id: UUID, deviceUID: String) async throws {
+        guard let previous = profiles[deviceUID]?.slots.first(where: { $0.id == id }) else {
+            throw PresetAssignmentError.effectRemoved
+        }
+        guard previous.component == preset.component else { throw PresetAssignmentError.wrongEffect }
+        guard !storageReadOnly else { throw PresetAssignmentError.chainsUnavailable }
+
+        var replacement = previous
+        if replacement.migrationIssue != nil {
+            replacement.isBypassed = false
+            replacement.migrationIssue = nil
+        }
+        replacement.state = preset.state
+        let currentOutput = deviceUID == currentDeviceUID ? output : nil
+        let layout = preferredSpatialLayout(for: replacement)
+        var prepared: LiveEffect?
+        if let currentOutput, components.contains(where: { $0.id == preset.component }) {
+            let effect = try await LiveEffect.load(
+                replacement, sampleRate: currentOutput.sampleRate, maximumFrames: SystemAudioRoute.maximumFrames,
+                spatialLayout: layout, equalizerOutput: (
+                    uid: deviceUID, name: currentOutput.name, channelCount: currentOutput.capturedChannelCount
+                ), instantiate: effectCatalog.instantiate
+            )
+            try effect.verifyPreset(preset)
+            prepared = effect
+        }
+
+        guard var profile = profiles[deviceUID], let index = profile.slots.firstIndex(where: { $0.id == id }) else {
+            throw PresetAssignmentError.effectRemoved
+        }
+        guard profile.slots[index] == previous else { throw PresetAssignmentError.effectChanged }
+        profile.slots[index] = replacement
+        var updated = profiles
+        updated[deviceUID] = profile
+        try store.save(updated)
+
+        editors.removeValue(forKey: id)?.window.close()
+        openingEditors[id] = nil
+        profiles = updated
+        storageError = nil
+        offlineIssues[id] = nil
+        if deviceUID == currentDeviceUID {
+            loadTasks.removeValue(forKey: id)?.cancel()
+            slots = profile.slots
+            if let prepared, currentOutput == output, layout == preferredSpatialLayout(for: replacement) {
+                effects[id] = prepared
+                spatialLayouts[id] = layout
+                slotIssues[id] = nil
+            } else {
+                effects[id] = nil
+                spatialLayouts[id] = nil
+                prepare(replacement)
+            }
+            updatePlayback()
+        }
+    }
+
+    private enum PresetAssignmentError: LocalizedError {
+        case effectRemoved, effectChanged, wrongEffect, chainsUnavailable, stateUnavailable
+
+        var errorDescription: String? {
+            switch self {
+            case .effectRemoved: "This effect was removed."
+            case .effectChanged: "This effect changed. Apply the preset again."
+            case .wrongEffect: "This preset belongs to a different effect."
+            case .chainsUnavailable: "The effect chain could not be saved."
+            case .stateUnavailable: "Choose a preset in the effect’s controls first."
+            }
+        }
+    }
+
     func openEditingEditor(_ id: UUID) {
-        guard let uid = editingDeviceUID, let slot = editingSlots.first(where: { $0.id == id }) else { return }
+        guard let uid = editingDeviceUID, let slot = editingSlots.first(where: { $0.id == id }),
+              slot.migrationIssue == nil else { return }
         if let editor = editors[id] {
             editor.window.makeKeyAndOrderFront(nil)
             return
@@ -381,7 +478,8 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
                 else {
                     effect = try await LiveEffect.load(
                         slot, sampleRate: rate, maximumFrames: SystemAudioRoute.maximumFrames,
-                        equalizerOutput: (uid: uid, name: name, channelCount: device?.capturedChannelCount)
+                        equalizerOutput: (uid: uid, name: name, channelCount: device?.capturedChannelCount),
+                        instantiate: self.effectCatalog.instantiate
                     )
                 }
                 let custom = await effect.unit.requestViewController()
@@ -479,7 +577,8 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
         var effectFailed = false
         for (id, effect) in effects {
             let status = effect.stage.failure.load(ordering: .relaxed)
-            if status != noErr, slotIssues[id] == nil {
+            if status != noErr, !effect.reportedRenderFailure {
+                effect.reportedRenderFailure = true
                 slotIssues[id] = "Render failed (\(status)). Toggle bypass to retry."
                 effectFailed = true
             }
@@ -549,49 +648,81 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
         updatePlayback()
     }
 
-    private func spatialLayout(for slot: EffectSlot) -> InputLayout? {
-        guard slot.component == .airwaveSpatial, let layout = output?.captureLayout, layout.channels.count > 2,
-              slots.first(where: { !$0.isBypassed })?.id == slot.id else { return nil }
+    private var surroundLayout: InputLayout? {
+        guard let layout = output?.captureLayout, layout.channels.count > 2 else { return nil }
         return layout
     }
 
-    private func reconcileSpatialLayouts() {
-        for index in slots.indices where slots[index].component == .airwaveSpatial {
-            let id = slots[index].id
-            guard spatialLayouts[id] != spatialLayout(for: slots[index]) else { continue }
-            if let effect = effects[id] {
-                do {
-                    slots[index].state = try effect.saveState(previous: slots[index].state)
-                    saveProfile()
-                } catch {
-                    slotIssues[id] = "Audio Unit settings could not be saved."
+    private func runnableEffect(for slot: EffectSlot) -> LiveEffect? {
+        guard !slot.isBypassed, let effect = effects[slot.id],
+              effect.stage.failure.load(ordering: .relaxed) == noErr else { return nil }
+        return effect
+    }
+
+    private func reconcileEffects() -> [LiveEffect] {
+        let surround = surroundLayout
+        var active: [LiveEffect] = []
+        for index in slots.indices {
+            let slot = slots[index]
+            guard !slot.isBypassed, slot.migrationIssue == nil else { continue }
+            if slot.component == .airwaveSpatial {
+                let layout = active.isEmpty ? surround : nil
+                if spatialLayouts[slot.id] != layout {
+                    reloadSpatial(at: index, layout: layout)
                     continue
                 }
             }
-            editors[id]?.window.close()
-            openingEditors[id] = nil
-            effects[id] = nil
-            loadTasks.removeValue(forKey: id)?.cancel()
-            prepare(slots[index])
+            if let effect = runnableEffect(for: slot) { active.append(effect) }
         }
+        return active
+    }
+
+    private func reloadSpatial(at index: Int, layout: InputLayout?) {
+        let id = slots[index].id
+        if let effect = effects[id] {
+            do {
+                let state = try effect.saveState(previous: slots[index].state)
+                if state != slots[index].state {
+                    slots[index].state = state
+                    saveProfile()
+                }
+            } catch {
+                slotIssues[id] = "Audio Unit settings could not be saved."
+                return
+            }
+        }
+        editors[id]?.window.close()
+        openingEditors[id] = nil
+        effects[id] = nil
+        loadTasks.removeValue(forKey: id)?.cancel()
+        prepare(slots[index], spatialLayout: layout)
+    }
+
+    private func preferredSpatialLayout(for slot: EffectSlot) -> InputLayout? {
+        guard slot.component == .airwaveSpatial, !slot.isBypassed,
+              !slots.prefix(while: { $0.id != slot.id }).contains(where: { runnableEffect(for: $0) != nil }) else { return nil }
+        return surroundLayout
     }
 
     private func prepare(_ slot: EffectSlot) {
-        guard let output, loadTasks[slot.id] == nil else { return }
-        let layout = spatialLayout(for: slot)
+        prepare(slot, spatialLayout: preferredSpatialLayout(for: slot))
+    }
+
+    private func prepare(_ slot: EffectSlot, spatialLayout layout: InputLayout?) {
+        guard let output, loadTasks[slot.id] == nil, slot.migrationIssue == nil else { return }
         spatialLayouts[slot.id] = layout
         if !components.contains(where: { $0.id == slot.component }) {
             slotIssues[slot.id] = "Audio Unit unavailable. Install it and rescan."
             return
         }
         slotIssues[slot.id] = nil
-        loadTasks[slot.id] = Task { [weak self] in
+        loadTasks[slot.id] = Task { [weak self, instantiate = effectCatalog.instantiate] in
             do {
                 let effect = try await LiveEffect.load(
                     slot, sampleRate: output.sampleRate, maximumFrames: SystemAudioRoute.maximumFrames,
                     spatialLayout: layout, equalizerOutput: (
                         uid: output.uid, name: output.name, channelCount: output.capturedChannelCount
-                    )
+                    ), instantiate: instantiate
                 )
                 guard let self, !Task.isCancelled else { return }
                 self.effects[slot.id] = effect
@@ -622,12 +753,7 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
 
     private func updatePlayback() {
         guard !suspendedForSleep, pendingCleanup == nil else { return }
-        reconcileSpatialLayouts()
-        let active = slots.compactMap { slot -> LiveEffect? in
-            guard !slot.isBypassed, let effect = effects[slot.id],
-                  effect.stage.failure.load(ordering: .relaxed) == noErr else { return nil }
-            return effect
-        }
+        let active = reconcileEffects()
         chain.replace(with: active)
         guard let output else {
             setPlayback(.native)

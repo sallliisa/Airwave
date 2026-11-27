@@ -100,9 +100,11 @@ nonisolated final class EqualizerRenderResources {
         }
 
         adoptPendingPreset()
-        process(current, into: wet, frames: frames)
-        if transitionRemaining > 0, let previous {
-            process(previous, into: previousWet, frames: frames)
+        if current.processor != nil || transitionRemaining > 0 {
+            process(current, into: wet, frames: frames)
+            if transitionRemaining > 0, let previous {
+                process(previous, into: previousWet, frames: frames)
+            }
         }
         writeOutput(outputList, frames: frames, bypass: bypass)
         flags.pointee.remove(.unitRenderAction_OutputIsSilence)
@@ -118,7 +120,7 @@ nonisolated final class EqualizerRenderResources {
             current = incoming
             slot.incoming = nil
             hasPendingPreset.store(false, ordering: .relaxed)
-            transitionRemaining = fadeFrames
+            transitionRemaining = previous?.processor == nil && incoming.processor == nil ? 0 : fadeFrames
         }
     }
 
@@ -199,6 +201,20 @@ nonisolated final class EqualizerRenderResources {
         let fadeStep = 1 / Float(fadeFrames)
         var amount = bypassAmount ?? (bypass ? 1 : 0)
 
+        if transitionRemaining == 0, current.processor == nil || (bypass && amount == 1) {
+            if outputInterleaved {
+                for frame in 0..<frames {
+                    outputLeft[2 * frame] = input[frame]
+                    outputRight[2 * frame] = input[maxFrames + frame]
+                }
+            } else {
+                outputLeft.update(from: input, count: frames)
+                outputRight.update(from: input + maxFrames, count: frames)
+            }
+            bypassAmount = bypass ? 1 : 0
+            return
+        }
+
         for frame in 0..<frames {
             var left = wet[frame]
             var right = wet[maxFrames + frame]
@@ -210,8 +226,16 @@ nonisolated final class EqualizerRenderResources {
             }
 
             amount = bypass ? min(1, amount + fadeStep) : max(0, amount - fadeStep)
-            outputLeft[stride * frame] = left * (1 - amount) + input[frame] * amount
-            outputRight[stride * frame] = right * (1 - amount) + input[maxFrames + frame] * amount
+            if amount == 1 {
+                outputLeft[stride * frame] = input[frame]
+                outputRight[stride * frame] = input[maxFrames + frame]
+            } else if amount == 0 {
+                outputLeft[stride * frame] = left
+                outputRight[stride * frame] = right
+            } else {
+                outputLeft[stride * frame] = left * (1 - amount) + input[frame] * amount
+                outputRight[stride * frame] = right * (1 - amount) + input[maxFrames + frame] * amount
+            }
         }
         bypassAmount = amount
     }
