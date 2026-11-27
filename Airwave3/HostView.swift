@@ -1627,44 +1627,65 @@ struct EffectPicker: View {
     @ObservedObject var host: HostController
     var allowsMultiple = false
     @State private var search = ""
+    @State private var selectedPublisher: String?
     @State private var addedCount = 0
     @FocusState private var searchFocused: Bool
     let add: (EffectComponent) -> Bool
 
+    private var publishers: [String] {
+        Set(host.components.map(\.manufacturer))
+            .filter { !$0.isEmpty }
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
     private var filteredComponents: [EffectComponent] {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        let available = host.components
-        guard !query.isEmpty else { return available }
-        return available.filter {
-            "\($0.manufacturer) \($0.name)".localizedStandardContains(query)
-                || $0.name.localizedStandardContains(query)
+        let matches = host.components.filter { component in
+            (selectedPublisher == nil || component.manufacturer == selectedPublisher)
+                && (query.isEmpty || "\(component.manufacturer) \(component.name)".localizedStandardContains(query))
         }
+        guard selectedPublisher == nil else { return matches }
+        return matches.filter { $0.manufacturer == "Airwave" } + matches.filter { $0.manufacturer != "Airwave" }
     }
 
     var body: some View {
+        let matches = filteredComponents
         VStack(alignment: .leading, spacing: 14) {
             Text(allowsMultiple ? "Add Effects" : "Add Effect")
                 .font(.title2.weight(.semibold))
                 .accessibilityAddTraits(.isHeader)
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
-                TextField("Search Audio Units", text: $search)
-                    .textFieldStyle(.plain)
-                    .focused($searchFocused)
-                    .accessibilityIdentifier("effect-search")
-                    .onSubmit {
-                        if filteredComponents.count == 1, let component = filteredComponents.first {
-                            addEffect(component)
+            HStack(spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    TextField("Search Audio Units", text: $search)
+                        .textFieldStyle(.plain)
+                        .focused($searchFocused)
+                        .accessibilityIdentifier("effect-search")
+                        .onSubmit {
+                            if matches.count == 1, let component = matches.first {
+                                addEffect(component)
+                            }
                         }
-                    }
-            }
-            .padding(8)
-            .background(HostAppearance.raised, in: .rect(cornerRadius: 6))
-            .overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.12)) }
+                }
+                .padding(8)
+                .background(HostAppearance.raised, in: .rect(cornerRadius: 6))
+                .overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.12)) }
 
-            results
+                Picker("Publisher", selection: $selectedPublisher) {
+                    Text("All Publishers").tag(nil as String?)
+                    ForEach(publishers, id: \.self) { publisher in
+                        Text(publisher).tag(Optional(publisher))
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .frame(width: 136)
+                .accessibilityIdentifier("effect-publisher")
+            }
+
+            results(matches)
 
             HStack {
                 Button("Rescan", action: host.rescan)
@@ -1682,6 +1703,11 @@ struct EffectPicker: View {
         .frame(width: 450, height: 380)
         .background(HostAppearance.canvas)
         .onAppear { searchFocused = true }
+        .onChange(of: publishers) { _, publishers in
+            if let selectedPublisher, !publishers.contains(selectedPublisher) {
+                self.selectedPublisher = nil
+            }
+        }
     }
 
     private func addEffect(_ component: EffectComponent) {
@@ -1693,24 +1719,25 @@ struct EffectPicker: View {
         }
     }
 
-    private var results: some View {
+    private func results(_ components: [EffectComponent]) -> some View {
         Group {
-            if filteredComponents.isEmpty {
+            if components.isEmpty {
                 if host.components.isEmpty {
                     HostEmptyState(icon: "puzzlepiece", title: "No compatible Audio Units",
                                    detail: "Install an Audio Unit effect, then rescan.")
                 } else {
                     HostEmptyState(icon: "magnifyingglass", title: "No matches",
-                                   detail: "Try a different effect or manufacturer name.",
-                                   action: Button("Clear Search") {
+                                   detail: "Try a different search or publisher.",
+                                   action: Button(selectedPublisher == nil ? "Clear Search" : "Clear Filters") {
                                        search = ""
+                                       selectedPublisher = nil
                                        searchFocused = true
                                    })
                 }
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(filteredComponents) { component in
+                        ForEach(components) { component in
                             Button {
                                 addEffect(component)
                             } label: {
@@ -1737,6 +1764,7 @@ struct EffectPicker: View {
                         }
                     }
                 }
+                .id(selectedPublisher)
             }
         }
     }
