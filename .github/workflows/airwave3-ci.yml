@@ -1,0 +1,33 @@
+name: Airwave v3 CI
+
+on:
+  push:
+    branches: [codex/airwave-v3, 'codex/airwave-v3-*']
+  pull_request:
+    branches: [codex/airwave-v3, 'codex/airwave-v3-*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: airwave-v3-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        scheme: [Airwave3, Airwave3UI]
+    runs-on: macos-26
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test ${{ matrix.scheme }}
+        run: |
+          xcodebuild -project Airwave.xcodeproj -scheme "${{ matrix.scheme }}" \
+            -configuration Debug -destination 'platform=macOS' \
+            -parallel-testing-enabled NO -derivedDataPath "$RUNNER_TEMP/airwave3" \
+            MARKETING_VERSION=3.0.0 CURRENT_PROJECT_VERSION=3000000 test
