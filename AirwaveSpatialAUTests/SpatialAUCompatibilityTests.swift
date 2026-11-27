@@ -5,6 +5,12 @@ import XCTest
 final class SpatialAUCompatibilityTests: XCTestCase {
     private let sampleRate = 48_000.0
 
+    func testReportsStereoOutputAndEachSupportedInputWidth() throws {
+        let unit = try makeUnit()
+        let pairs = try XCTUnwrap(unit.channelCapabilities).map(\.intValue)
+        XCTAssertEqual(pairs, (1...16).flatMap { [$0, 2] })
+    }
+
     func testReleasedWAVStatePreservesSurroundWithoutBlockLatency() throws {
         let cases: [(layout: AudioChannelLayoutTag, firstLeftSample: Float)] = [
             (kAudioChannelLayoutTag_MPEG_5_1_A, 0.3125),

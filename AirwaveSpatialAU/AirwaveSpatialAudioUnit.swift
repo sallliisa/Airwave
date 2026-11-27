@@ -91,7 +91,7 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
     override var inputBusses: AUAudioUnitBusArray { inputs }
     override var outputBusses: AUAudioUnitBusArray { outputs }
     override var channelCapabilities: [NSNumber]? {
-        [NSNumber(value: -SpatialInputLayout.maximumChannelCount), 2]
+        (1...SpatialInputLayout.maximumChannelCount).flatMap { [NSNumber(value: $0), 2] }
     }
     override var canProcessInPlace: Bool { inputBus.format.channelCount == outputBus.format.channelCount }
     override var latency: TimeInterval { 0 }
