@@ -172,6 +172,7 @@ private struct SpatialPresetPicker: View {
 
     @ObservedObject var model: SpatialPresetPickerModel
     let perform: (Action) -> Void
+    @State private var hoveringPresetActions = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -261,20 +262,61 @@ private struct SpatialPresetPicker: View {
             Button("Import…") { perform(.importWAV) }
                 .buttonStyle(.borderedProminent)
             Spacer()
-            Menu {
-                if let selected {
-                    Button("Rename…") { perform(.rename(selected)) }
-                    Button("Delete…", role: .destructive) { perform(.delete(selected)) }
-                }
-            } label: {
-                Image(systemName: "ellipsis")
-            }
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .disabled(selected == nil)
-            .accessibilityLabel("Manage selected preset")
+            SpatialPresetActionsButton(selected: selected, perform: perform)
+                .frame(width: 28, height: 28)
+                .background(hoveringPresetActions && selected != nil ? Color.primary.opacity(0.08) : .clear,
+                            in: .rect(cornerRadius: 6))
+                .onHover { hoveringPresetActions = $0 }
         }
         .controlSize(.small)
         .padding(10)
+    }
+}
+
+private struct SpatialPresetActionsButton: NSViewRepresentable {
+    let selected: AUAudioUnitPreset?
+    let perform: (SpatialPresetPicker.Action) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSButton {
+        let button = NSButton(frame: .zero)
+        button.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
+        button.imagePosition = .imageOnly
+        button.isBordered = false
+        button.target = context.coordinator
+        button.action = #selector(Coordinator.openMenu(_:))
+        button.setAccessibilityLabel("Manage selected preset")
+        button.setAccessibilityIdentifier("spatial-preset-actions")
+        button.toolTip = "Manage selected preset"
+        return button
+    }
+
+    func updateNSView(_ button: NSButton, context: Context) {
+        context.coordinator.selected = selected
+        context.coordinator.perform = perform
+        button.isEnabled = selected != nil
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        var selected: AUAudioUnitPreset?
+        var perform: ((SpatialPresetPicker.Action) -> Void)?
+
+        @objc func openMenu(_ button: NSButton) {
+            let menu = NSMenu()
+            menu.addItem(withTitle: "Rename…", action: #selector(rename), keyEquivalent: "").target = self
+            menu.addItem(withTitle: "Delete…", action: #selector(delete), keyEquivalent: "").target = self
+            menu.popUp(positioning: nil, at: NSPoint(x: button.bounds.maxX - menu.size.width, y: 0), in: button)
+        }
+
+        @objc private func rename() {
+            if let selected { perform?(.rename(selected)) }
+        }
+
+        @objc private func delete() {
+            if let selected { perform?(.delete(selected)) }
+        }
     }
 }

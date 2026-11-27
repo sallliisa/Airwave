@@ -185,17 +185,10 @@ struct HostWindow: View {
     }
 
     private var quitButton: some View {
-        Button { confirmsQuit = true } label: {
-            Image(systemName: "power")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.red)
-                .frame(width: 44, height: 44)
-                .contentShape(.rect)
-        }
-        .buttonStyle(.plain)
-        .help("Quit Airwave")
-        .accessibilityLabel("Quit Airwave")
-        .accessibilityIdentifier("quit-host")
+        HostHeaderIconButton(symbol: "rectangle.portrait.and.arrow.right", tint: .red) { confirmsQuit = true }
+            .help("Quit Airwave")
+            .accessibilityLabel("Quit Airwave")
+            .accessibilityIdentifier("quit-host")
     }
 }
 
@@ -229,33 +222,40 @@ private struct HostWorkspaceButton: View {
 @MainActor
 private struct HostProcessingButton: View {
     @ObservedObject var host: HostController
-    @State private var hovered = false
 
     var body: some View {
-        Button {
+        HostHeaderIconButton(symbol: "power", tint: host.isEnabled ? .primary : .secondary) {
             host.setEnabled(!host.isEnabled)
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "waveform")
-                    .font(.system(size: 16, weight: .semibold))
-                Text(host.isEnabled ? "On" : "Off")
-                    .font(.caption.weight(.semibold))
-            }
-            .foregroundStyle(host.isEnabled ? Color.primary : .orange)
-            .padding(.horizontal, 10)
-            .frame(height: 34)
-            .background {
-                RoundedRectangle(cornerRadius: HostAppearance.cornerRadius)
-                    .fill(hovered ? Color.white.opacity(0.16) : .clear)
-            }
-            .contentShape(.rect)
         }
-        .buttonStyle(.plain)
-        .onHover { hovered = $0 }
         .help(host.isEnabled ? "Bypass all effects and app volume adjustments" : "Resume audio processing")
         .accessibilityLabel(host.isEnabled ? "Bypass Processing" : "Resume Processing")
         .accessibilityValue(host.isEnabled ? "On" : "Off")
         .accessibilityIdentifier("global-bypass")
+    }
+}
+
+private struct HostHeaderIconButton: View {
+    let symbol: String
+    let tint: Color
+    let action: () -> Void
+
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(tint)
+                .frame(width: 44, height: 44)
+                .background {
+                    RoundedRectangle(cornerRadius: HostAppearance.cornerRadius)
+                        .fill(hovered ? Color.white.opacity(0.16) : .clear)
+                        .frame(width: 34, height: 34)
+                }
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
     }
 }
 
@@ -468,8 +468,10 @@ struct HostBrand: View {
 
     var body: some View {
         HStack(spacing: markSize > 16 ? 12 : 8) {
-            Image(systemName: "waveform")
-                .font(.system(size: markSize * 0.8, weight: .semibold))
+            Image("AirwaveMark")
+                .renderingMode(.template)
+                .resizable()
+                .scaledToFit()
                 .frame(width: markSize, height: markSize)
                 .accessibilityHidden(true)
             Text("Airwave").font(titleFont)
