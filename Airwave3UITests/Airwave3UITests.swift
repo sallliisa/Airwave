@@ -90,20 +90,12 @@ final class Airwave3UITests: XCTestCase {
     }
 
     @MainActor
-    func testManageDevicesCanReturnWithoutChangingTheSelectedProfile() throws {
+    func testEffectsPickerSwitchesBetweenSavedAndLiveOutputs() throws {
         try withApp(profiles: offlineProfile) { app, _ in
             let picker = app.descendants(matching: .any).matching(identifier: "current-output").firstMatch
             let liveOutput = app.buttons["live-output"]
-            let manage = app.buttons["registered-devices"]
-            let offline = app.buttons["edit-device.\(offlineDeviceID)"]
             XCTAssertTrue(picker.waitForExistence(timeout: 8))
             let previousDevice = try XCTUnwrap(picker.value as? String)
-
-            manage.click()
-            XCTAssertTrue(offline.waitForExistence(timeout: 4))
-            app.buttons["back-to-effects"].click()
-            XCTAssertTrue(picker.waitForExistence(timeout: 4))
-            XCTAssertEqual(picker.value as? String, previousDevice)
 
             selectOfflineDevice(in: app)
             XCTAssertEqual(picker.value as? String, "Test Headphones")
@@ -114,6 +106,50 @@ final class Airwave3UITests: XCTestCase {
                 liveOutput.click()
                 XCTAssertEqual(picker.value as? String, previousDevice)
             }
+        }
+    }
+
+    @MainActor
+    func testDeviceActionsResetConnectedEffectsAndRemoveOfflineProfiles() throws {
+        let profiles = try plist([offlineDeviceID: [
+            "name": "Test Headphones", "slots": [] as [String], "outputChannels": ["left": 1, "right": 2],
+        ]])
+        try withApp(profiles: profiles) { app, profile in
+            let picker = app.descendants(matching: .any).matching(identifier: "current-output").firstMatch
+            let actions = app.buttons["device-actions"]
+            let configure = app.menuItems["Configure Output…"]
+            let reset = app.menuItems["Reset Effects…"]
+            let remove = app.menuItems["Remove Saved Profile…"]
+            XCTAssertTrue(actions.waitForExistence(timeout: 8))
+
+            if (picker.value as? String)?.hasSuffix(", live output") == true {
+                addLowpass(to: app)
+                XCTAssertTrue(app.buttons["open-editor"].waitForExistence(timeout: 4))
+                actions.click()
+                XCTAssertTrue(reset.waitForExistence(timeout: 4))
+                XCTAssertFalse(remove.exists)
+                reset.click()
+                app.buttons["Reset Effects"].click()
+                XCTAssertTrue(app.staticTexts["No effects yet"].waitForExistence(timeout: 4))
+            }
+
+            selectOfflineDevice(in: app)
+            actions.click()
+            XCTAssertTrue(configure.waitForExistence(timeout: 4))
+            XCTAssertFalse(reset.exists)
+            configure.click()
+            XCTAssertTrue(app.staticTexts["Configure Output"].waitForExistence(timeout: 4))
+            XCTAssertTrue(app.buttons["Use macOS Default"].isEnabled)
+            app.buttons["Cancel"].click()
+
+            actions.click()
+            XCTAssertTrue(remove.waitForExistence(timeout: 4))
+            remove.click()
+            app.buttons["Remove Saved Profile"].click()
+            XCTAssertNotEqual(picker.value as? String, "Test Headphones")
+            let data = try Data(contentsOf: profile)
+            let saved = try XCTUnwrap(PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any])
+            XCTAssertNil(saved[offlineDeviceID])
         }
     }
 
@@ -378,8 +414,8 @@ final class Airwave3UITests: XCTestCase {
         let picker = app.descendants(matching: .any).matching(identifier: "current-output").firstMatch
         XCTAssertTrue(picker.waitForExistence(timeout: 8))
         if picker.value as? String != "Test Headphones" {
-            app.buttons["registered-devices"].click()
-            let offline = app.buttons["edit-device.\(offlineDeviceID)"]
+            picker.click()
+            let offline = app.menuItems["Test Headphones"]
             XCTAssertTrue(offline.waitForExistence(timeout: 4))
             offline.click()
             XCTAssertTrue(picker.waitForExistence(timeout: 4))

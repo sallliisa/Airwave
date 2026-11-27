@@ -33,7 +33,7 @@ struct HostWindow: View {
     private var modeTransition: AnyTransition { reduceMotion ? .opacity : .hostPageReveal }
     private var selectedTab: ShellPage {
         switch shell.page {
-        case .setup, .devices: .effects
+        case .setup: .effects
         case .effects, .mixer, .settings: shell.page
         }
     }
@@ -132,39 +132,14 @@ struct HostWindow: View {
     private var pageContent: some View {
         switch selectedTab {
         case .effects:
-            effectsWorkspace
+            HostEffectsPage(host: host).padding(24)
         case .mixer:
             HostMixerPage(host: host).padding(24)
         case .settings:
             HostSettingsPage(shell: shell, updates: updates).padding(24)
-        case .setup, .devices:
+        case .setup:
             EmptyView()
         }
-    }
-
-    private var effectsWorkspace: some View {
-        let showsDevices = shell.page == .devices
-        return ZStack(alignment: .topLeading) {
-            if showsDevices {
-                HostDevicesPage(host: host, shell: shell)
-                    .padding(24)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .background(HostAppearance.canvas)
-                    .transition(.hostPageSlide(edge: .trailing))
-            } else {
-                HostEffectsPage(host: host) {
-                    shell.page = .devices
-                }
-                .padding(24)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .background(HostAppearance.canvas)
-                .transition(.hostPageSlide(edge: .leading))
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .clipped()
-        .animation(reduceMotion || selectedTab != .effects || showsSetup ? nil : HostAppearance.setupPageAnimation,
-                   value: showsDevices)
     }
 
     private func openTroubleshooting() {
@@ -175,7 +150,7 @@ struct HostWindow: View {
     private var tabs: some View {
         HStack(spacing: 4) {
             HostWorkspaceButton(title: "Effects", icon: "slider.horizontal.3",
-                                isSelected: shell.page == .effects || shell.page == .devices,
+                                isSelected: shell.page == .effects,
                                 action: shell.showEffects)
                 .accessibilityIdentifier("effects")
             HostWorkspaceButton(title: "App Mixer", icon: "slider.vertical.3", isSelected: shell.page == .mixer) {
@@ -355,18 +330,44 @@ private struct HostEmptyState: View {
 @MainActor
 private struct HostEffectsPage: View {
     @ObservedObject var host: HostController
-    let manageDevices: () -> Void
+
+    private enum ProfileAction {
+        case resetEffects(HostDeviceTarget)
+        case removeProfile(HostDeviceTarget)
+
+        var title: String {
+            switch self {
+            case .resetEffects: "Reset Effects"
+            case .removeProfile: "Remove Saved Profile"
+            }
+        }
+
+        var message: String {
+            switch self {
+            case .resetEffects(let device):
+                "This clears the effect chain for \(device.name)."
+            case .removeProfile(let device):
+                "This removes \(device.name) from Airwave, along with its saved effects and channel settings."
+            }
+        }
+    }
 
     @State private var showingEffects = false
+    @State private var configuringOutput: HostDeviceTarget?
+    @State private var profileAction: ProfileAction?
+    @State private var deviceActionsHovered = false
+    @FocusState private var deviceActionsFocused: Bool
+
+    private var devices: [HostDeviceTarget] { host.editingDevices }
 
     private var editingDevice: HostDeviceTarget? {
-        host.editingDevices.first { $0.id == host.editingDeviceUID }
+        devices.first { $0.id == host.editingDeviceUID }
     }
 
     var body: some View {
         HostAudioPage(title: "Effects", subtitle: "Build an effect chain for each audio output.") {
             VStack(alignment: .leading, spacing: HostAppearance.audioPageSpacing) {
-                if !host.editingDevices.isEmpty { deviceBar }
+                if !devices.isEmpty { deviceBar }
                 if host.editingSlots.isEmpty {
                     emptyChain
                 } else {
@@ -382,31 +383,44 @@ private struct HostEffectsPage: View {
                 return true
             }
         }
+        .sheet(item: $configuringOutput) { target in
+            HostOutputConfigurationView(host: host, target: target)
+        }
+        .confirmationDialog(profileAction?.title ?? "", isPresented: Binding(
+            get: { profileAction != nil },
+            set: { if !$0 { profileAction = nil } }
+        ), titleVisibility: .visible, presenting: profileAction) { action in
+            Button(action.title, role: .destructive) {
+                switch action {
+                case .resetEffects(let device): host.resetEffects(for: device.id)
+                case .removeProfile(let device): host.removeSavedProfile(for: device.id)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { action in
+            Text(action.message)
+        }
         .onChange(of: host.editingDeviceUID) { _, _ in showingEffects = false }
     }
 
     private var deviceBar: some View {
         HStack(spacing: 10) {
-            if let editingDevice {
+            HStack(spacing: 4) {
                 deviceMenu(editingDevice)
-
-                if !editingDevice.isCurrent, let live = host.editingDevices.first(where: \.isCurrent) {
-                    Button(action: host.selectCurrentOutputForEditing) {
-                        Label("Edit Live Output", systemImage: "arrow.uturn.backward")
-                            .font(.callout)
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Edit the chain for \(live.name)")
-                    .accessibilityHint(live.name)
-                    .accessibilityIdentifier("live-output")
+                if let editingDevice { deviceActions(for: editingDevice) }
+            }
+            if let editingDevice, !editingDevice.isCurrent, let live = devices.first(where: \.isCurrent) {
+                Button(action: host.selectCurrentOutputForEditing) {
+                    Label("Edit Live Output", systemImage: "arrow.uturn.backward")
+                        .font(.callout)
                 }
+                .buttonStyle(.borderless)
+                .help("Edit the chain for \(live.name)")
+                .accessibilityHint(live.name)
+                .accessibilityIdentifier("live-output")
             }
 
             Spacer(minLength: 12)
-
-            Button("Manage Devices", action: manageDevices)
-                .fixedSize()
-                .accessibilityIdentifier("registered-devices")
 
             if editingDevice != nil {
                 Button {
@@ -424,13 +438,13 @@ private struct HostEffectsPage: View {
         .frame(minHeight: HostAppearance.audioSectionHeaderHeight)
     }
 
-    private func deviceMenu(_ editingDevice: HostDeviceTarget) -> some View {
+    private func deviceMenu(_ editingDevice: HostDeviceTarget?) -> some View {
         Menu {
-            ForEach(host.editingDevices) { device in
+            ForEach(devices) { device in
                 Button {
                     host.selectEditingDevice(device.id)
                 } label: {
-                    if device.id == editingDevice.id {
+                    if device.id == editingDevice?.id {
                         Label(device.name, systemImage: "checkmark")
                     } else if device.isCurrent {
                         Label(device.name, systemImage: "speaker.wave.2")
@@ -438,13 +452,14 @@ private struct HostEffectsPage: View {
                         Text(device.name)
                     }
                 }
+                .accessibilityIdentifier("edit-device.\(device.id)")
             }
         } label: {
             HStack(spacing: 6) {
-                if editingDevice.isCurrent {
+                if editingDevice?.isCurrent == true {
                     Image(systemName: "speaker.wave.2").accessibilityHidden(true)
                 }
-                Text(editingDevice.name)
+                Text(editingDevice?.name ?? "Choose Device")
                     .font(.callout.weight(.semibold))
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -452,10 +467,27 @@ private struct HostEffectsPage: View {
             }
         }
         .fixedSize(horizontal: true, vertical: false)
-        .help(editingDevice.name)
+        .help(editingDevice?.name ?? "Choose Device")
         .accessibilityLabel("Editing audio device")
-        .accessibilityValue(editingDevice.isCurrent ? "\(editingDevice.name), live output" : editingDevice.name)
+        .accessibilityValue(editingDevice.map { $0.isCurrent ? "\($0.name), live output" : $0.name } ?? "")
         .accessibilityIdentifier("current-output")
+    }
+
+    private func deviceActions(for device: HostDeviceTarget) -> some View {
+        let action: ProfileAction = device.isConnected ? .resetEffects(device) : .removeProfile(device)
+        return HostActionMenuButton(title: "More actions for \(device.name)", groups: [
+            [.init(title: "Configure Output…",
+                   isEnabled: (2...16).contains(device.outputChannelCount) || device.outputChannels != nil) {
+                configuringOutput = device
+            }],
+            [.init(title: "\(action.title)…", isEnabled: device.isConnected ? !host.editingSlots.isEmpty : device.hasProfile,
+                   isDestructive: true) {
+                profileAction = action
+            }]
+        ], hovered: deviceActionsHovered, focused: deviceActionsFocused)
+        .onHover { deviceActionsHovered = $0 }
+        .focused($deviceActionsFocused)
+        .accessibilityIdentifier("device-actions")
     }
 
     @ViewBuilder
@@ -463,9 +495,9 @@ private struct HostEffectsPage: View {
         if editingDevice != nil {
             HostEmptyState(icon: "slider.horizontal.3", title: "No effects yet",
                            detail: "Add an Audio Unit to process audio for this output.")
-        } else if !host.editingDevices.isEmpty {
+        } else if !devices.isEmpty {
             HostEmptyState(icon: "speaker.wave.2", title: "Choose a device",
-                           detail: "Open Manage Devices to choose an effect chain.")
+                           detail: "Pick an output to edit its effect chain.")
         } else {
             HostEmptyState(icon: "speaker.slash", title: "No audio output",
                            detail: "Connect a supported output to add effects.")
@@ -553,143 +585,6 @@ struct HostCompactPage<Content: View>: View {
         .padding(.bottom, 24)
         .frame(maxWidth: 680, maxHeight: .infinity, alignment: .topLeading)
         .frame(maxWidth: .infinity, alignment: .top)
-    }
-}
-
-private extension HostDeviceTarget {
-    var profileStatus: String {
-        if isCurrent { return "Current output" }
-        return isConnected ? "Connected" : "Offline profile"
-    }
-}
-
-private struct HostBackButton: View {
-    let action: () -> Void
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: "chevron.left")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(hovering ? Color.primary : .secondary)
-                .frame(width: 34, height: 34)
-                .background(hovering ? HostAppearance.hover : .clear, in: .circle)
-                .contentShape(.circle)
-        }
-        .buttonStyle(PressedStyle())
-        .help("Back to Effects")
-        .accessibilityLabel("Back to Effects")
-        .onHover { isHovering in
-            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.14)) {
-                hovering = isHovering
-            }
-        }
-    }
-
-    private struct PressedStyle: ButtonStyle {
-        @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-        func makeBody(configuration: Configuration) -> some View {
-            configuration.label
-                .scaleEffect(configuration.isPressed && !reduceMotion ? 0.96 : 1)
-                .opacity(configuration.isPressed ? 0.82 : 1)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: configuration.isPressed)
-        }
-    }
-}
-
-private struct HostDevicesPage: View {
-    @ObservedObject var host: HostController
-    @ObservedObject var shell: ShellModel
-
-    private enum Action {
-        case reset(HostDeviceTarget)
-        case forget(HostDeviceTarget)
-
-        var device: HostDeviceTarget {
-            switch self {
-            case .reset(let device), .forget(let device): device
-            }
-        }
-
-        var title: String {
-            switch self {
-            case .reset: "Reset Effect Chain"
-            case .forget: "Forget Device"
-            }
-        }
-    }
-
-    @State private var action: Action?
-    @State private var configuringOutput: HostDeviceTarget?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .top, spacing: 14) {
-                HostBackButton(action: shell.showEffects)
-                    .accessibilityIdentifier("back-to-effects")
-                HostPageHeader(title: "Manage Devices", subtitle: "Edit effects and channel settings for each output.")
-            }
-
-            if host.editingDevices.isEmpty {
-                HostEmptyState(icon: "headphones", title: "No devices yet",
-                               detail: "Connect an audio output to set up its effect chain.")
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(host.editingDevices) { device in
-                            HostSettingsRow(icon: device.isCurrent ? "speaker.wave.2" : "headphones",
-                                            title: device.name, subtitle: device.profileStatus) {
-                                Button("Edit Chain") {
-                                    host.selectEditingDevice(device.id)
-                                    shell.showEffects()
-                                }
-                                .controlSize(.small)
-                                .accessibilityIdentifier("edit-device.\(device.id)")
-                                Menu {
-                                    Button("Configure Output…") { configuringOutput = device }
-                                        .disabled(!(2...16).contains(device.outputChannelCount) && device.outputChannels == nil)
-                                    Button("Reset Effect Chain…") { action = .reset(device) }
-                                        .disabled(!device.hasProfile)
-                                    Button("Forget Device…", role: .destructive) { action = .forget(device) }
-                                        .disabled(device.isCurrent || !device.hasProfile)
-                                } label: {
-                                    Image(systemName: "ellipsis")
-                                }
-                                .menuStyle(.borderlessButton)
-                                .menuIndicator(.hidden)
-                                .fixedSize()
-                                .help("Manage \(device.name)")
-                                .accessibilityLabel("Manage \(device.name)")
-                            }
-                            if host.editingDevices.last?.id != device.id { Divider().padding(.leading, 42) }
-                        }
-                    }
-                    .background(HostAppearance.raised, in: .rect(cornerRadius: HostAppearance.cornerRadius))
-                }
-            }
-        }
-        .frame(maxWidth: 680, alignment: .leading)
-        .frame(maxWidth: .infinity, alignment: .top)
-        .sheet(item: $configuringOutput) { target in
-            HostOutputConfigurationView(host: host, target: target)
-        }
-        .confirmationDialog("Manage Effect Chain", isPresented: Binding(
-            get: { action != nil },
-            set: { if !$0 { action = nil } }
-        ), presenting: action) { action in
-            Button(action.title, role: .destructive) {
-                switch action {
-                case .reset(let device): host.resetProfile(device.id)
-                case .forget(let device): host.forgetProfile(device.id)
-                }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: { action in
-            Text("This removes all saved effects from \(action.device.name).")
-        }
     }
 }
 
@@ -1143,22 +1038,6 @@ extension AnyTransition {
     static var hostPageReveal: Self {
         .modifier(active: HostPageReveal(revealed: false), identity: HostPageReveal(revealed: true))
     }
-
-    fileprivate static func hostPageSlide(edge: Edge) -> Self {
-        .move(edge: edge).combined(with: .modifier(
-            active: HostPageSlideAppearance(revealed: false),
-            identity: HostPageSlideAppearance(revealed: true)
-        ))
-    }
-}
-
-private struct HostPageSlideAppearance: ViewModifier {
-    let revealed: Bool
-
-    func body(content: Content) -> some View {
-        content.blur(radius: revealed ? 0 : 8)
-            .opacity(revealed ? 1 : 0.72)
-    }
 }
 
 private struct HostPageReveal: ViewModifier {
@@ -1367,7 +1246,7 @@ struct EffectChain: View {
     }
 }
 
-private struct EffectActionAppearance: ViewModifier {
+private struct HostActionAppearance: ViewModifier {
     static let size: CGFloat = 32
 
     let hovered: Bool
@@ -1405,7 +1284,6 @@ private struct EffectRow: View {
     let endDrag: (CGPoint) -> Void
     let canDrag: Bool
     @State private var hovered: Target?
-    @State private var menuAnchor = NSView(frame: .zero)
     @FocusState private var focus: Target?
 
     private let actionSpacing: CGFloat = 2
@@ -1413,7 +1291,7 @@ private struct EffectRow: View {
     private var showsPower: Bool { slot.migrationIssue == nil }
     private var actionsWidth: CGFloat {
         let count = CGFloat(1 + (showsPower ? 1 : 0) + (issue != nil ? 1 : 0))
-        return count * EffectActionAppearance.size + (count - 1) * actionSpacing + actionInset
+        return count * HostActionAppearance.size + (count - 1) * actionSpacing + actionInset
     }
 
     var body: some View {
@@ -1452,7 +1330,7 @@ private struct EffectRow: View {
                     HostNoticeButton(notice: .warning(issue))
                         .accessibilityLabel("Issue with \(slot.name)")
                         .accessibilityIdentifier("effect-issue")
-                        .frame(width: EffectActionAppearance.size)
+                        .frame(width: HostActionAppearance.size)
                 }
                 if showsPower { power }
                 moreActions
@@ -1488,7 +1366,7 @@ private struct EffectRow: View {
             Image(systemName: "power")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(HostAppearance.powerTint(isOn: !slot.isBypassed))
-                .modifier(EffectActionAppearance(hovered: hovered == .power, focused: focus == .power))
+                .modifier(HostActionAppearance(hovered: hovered == .power, focused: focus == .power))
         }
         .buttonStyle(.plain)
         .focused($focus, equals: .power)
@@ -1500,40 +1378,15 @@ private struct EffectRow: View {
     }
 
     private var moreActions: some View {
-        Button(action: showActionsMenu) {
-            Image(systemName: "ellipsis")
-                .font(.system(size: 12, weight: .medium))
-                .modifier(EffectActionAppearance(hovered: hovered == .actions, focused: focus == .actions))
-        }
-        .buttonStyle(.plain)
-        .background {
-            EffectMenuAnchor(view: menuAnchor)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-        }
+        HostActionMenuButton(title: "More actions for \(slot.name)", groups: [
+            [
+                .init(title: "Move Up", isEnabled: canMoveUp) { move(-1) },
+                .init(title: "Move Down", isEnabled: canMoveDown) { move(1) },
+            ],
+            [.init(title: "Remove Effect", isDestructive: true, action: remove)],
+        ], hovered: hovered == .actions, focused: focus == .actions)
         .focused($focus, equals: .actions)
-        .focusEffectDisabled()
-        .help("More actions for \(slot.name)")
-        .accessibilityLabel("More actions for \(slot.name)")
         .accessibilityIdentifier("effect-actions")
-    }
-
-    private func showActionsMenu() {
-        guard menuAnchor.window != nil else { return }
-        let actions = EffectMenuActions(move: move, remove: remove)
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-        menu.addItem(actions.item("Move Up", action: #selector(EffectMenuActions.moveUp), enabled: canMoveUp))
-        menu.addItem(actions.item("Move Down", action: #selector(EffectMenuActions.moveDown), enabled: canMoveDown))
-        menu.addItem(.separator())
-        let removeItem = actions.item("Remove Effect", action: #selector(EffectMenuActions.removeEffect))
-        removeItem.attributedTitle = NSAttributedString(string: removeItem.title, attributes: [.foregroundColor: NSColor.systemRed])
-        menu.addItem(removeItem)
-
-        let bottom = menuAnchor.isFlipped ? menuAnchor.bounds.maxY : menuAnchor.bounds.minY
-        withExtendedLifetime(actions) {
-            _ = menu.popUp(positioning: nil, at: NSPoint(x: 0, y: bottom), in: menuAnchor)
-        }
     }
 
     private func updateHover(_ point: CGPoint?, width: CGFloat) {
@@ -1541,7 +1394,7 @@ private struct EffectRow: View {
             hovered = nil
             return
         }
-        let size = EffectActionAppearance.size
+        let size = HostActionAppearance.size
         let step = size + actionSpacing
         let x = width - actionInset - point.x
         let targets: [Target] = [.actions] + (showsPower ? [.power] : []) + (issue == nil ? [] : [.issue])
@@ -1575,32 +1428,81 @@ private struct EffectRow: View {
     }
 }
 
-private struct EffectMenuAnchor: NSViewRepresentable {
-    let view: NSView
-
-    func makeNSView(context: Context) -> NSView { view }
-    func updateNSView(_ view: NSView, context: Context) {}
-}
-
-private final class EffectMenuActions: NSObject {
-    let move: (Int) -> Void
-    let remove: () -> Void
-
-    init(move: @escaping (Int) -> Void, remove: @escaping () -> Void) {
-        self.move = move
-        self.remove = remove
+@MainActor
+private struct HostActionMenuButton: View {
+    struct Item {
+        let title: String
+        var isEnabled = true
+        var isDestructive = false
+        let action: () -> Void
     }
 
-    func item(_ title: String, action: Selector, enabled: Bool = true) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
-        item.target = self
-        item.isEnabled = enabled
-        return item
+    let title: String
+    let groups: [[Item]]
+    let hovered: Bool
+    let focused: Bool
+
+    @State private var anchor = NSView(frame: .zero)
+
+    var body: some View {
+        Button(action: showMenu) {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 12, weight: .medium))
+                .modifier(HostActionAppearance(hovered: hovered, focused: focused))
+        }
+        .buttonStyle(.plain)
+        .background {
+            MenuAnchor(view: anchor)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+        .focusEffectDisabled()
+        .help(title)
+        .accessibilityLabel(title)
     }
 
-    @objc func moveUp() { move(-1) }
-    @objc func moveDown() { move(1) }
-    @objc func removeEffect() { remove() }
+    private func showMenu() {
+        guard anchor.window != nil else { return }
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let targets = groups.map { $0.map(MenuAction.init) }
+        for (index, group) in targets.enumerated() {
+            if index > 0 { menu.addItem(.separator()) }
+            for target in group { menu.addItem(target.makeItem()) }
+        }
+
+        let bottom = anchor.isFlipped ? anchor.bounds.maxY : anchor.bounds.minY
+        withExtendedLifetime(targets) {
+            _ = menu.popUp(positioning: nil, at: NSPoint(x: 0, y: bottom), in: anchor)
+        }
+    }
+
+    private struct MenuAnchor: NSViewRepresentable {
+        let view: NSView
+
+        func makeNSView(context: Context) -> NSView { view }
+        func updateNSView(_ view: NSView, context: Context) {}
+    }
+
+    private final class MenuAction: NSObject {
+        let item: Item
+
+        init(_ item: Item) {
+            self.item = item
+        }
+
+        func makeItem() -> NSMenuItem {
+            let menuItem = NSMenuItem(title: item.title, action: #selector(invoke), keyEquivalent: "")
+            menuItem.target = self
+            menuItem.isEnabled = item.isEnabled
+            if item.isDestructive {
+                menuItem.attributedTitle = NSAttributedString(string: item.title, attributes: [.foregroundColor: NSColor.systemRed])
+            }
+            return menuItem
+        }
+
+        @objc private func invoke() { item.action() }
+    }
 }
 
 private struct EffectCardPointer: NSViewRepresentable {

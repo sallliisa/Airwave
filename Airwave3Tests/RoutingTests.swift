@@ -241,7 +241,10 @@ final class RoutingTests: XCTestCase {
         XCTAssertThrowsError(try host.configureOutput(
             for: output.uid, channels: StereoOutputChannels(left: 4, right: 4)
         ))
-        host.resetProfile(output.uid)
+        host.addEditing(EffectComponent(id: .airwaveSpatial, name: "Spatial", manufacturer: "Airwave"))
+        XCTAssertEqual(host.editingSlots.count, 1)
+        host.resetEffects(for: output.uid)
+        XCTAssertTrue(host.editingSlots.isEmpty)
         XCTAssertEqual(try store.load()[output.uid]?.outputChannels, pair)
         XCTAssertEqual(host.editingDevices.first?.outputChannels, pair)
         try host.configureOutput(for: output.uid, channels: nil)

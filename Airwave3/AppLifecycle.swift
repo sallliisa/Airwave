@@ -7,7 +7,6 @@ enum ShellPage: Equatable {
     case setup
     case effects
     case mixer
-    case devices
     case settings
 }
 

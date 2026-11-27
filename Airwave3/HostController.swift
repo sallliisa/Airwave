@@ -307,9 +307,11 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
         }
     }
 
-    func resetProfile(_ uid: String) {
-        guard profiles[uid] != nil else { return }
+    func resetEffects(for uid: String) {
+        guard uid == currentDeviceUID || connected[uid] != nil,
+              let profile = profiles[uid], !profile.slots.isEmpty else { return }
         closeEditors(for: [uid])
+        for slot in profile.slots { offlineIssues[slot.id] = nil }
         if uid == currentDeviceUID {
             loadTasks.values.forEach { $0.cancel() }
             loadTasks.removeAll()
@@ -324,9 +326,11 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
         }
     }
 
-    func forgetProfile(_ uid: String) {
-        guard uid != currentDeviceUID, profiles[uid] != nil else { return }
+    func removeSavedProfile(for uid: String) {
+        guard uid != currentDeviceUID, connected[uid] == nil,
+              let profile = profiles[uid] else { return }
         closeEditors(for: [uid])
+        for slot in profile.slots { offlineIssues[slot.id] = nil }
         profiles[uid] = nil
         repairEditingDevice()
         persistProfiles()
