@@ -111,15 +111,23 @@ nonisolated final class EqualizerAudioUnit: AUAudioUnit {
     private let tail = Atomic<UInt64>(0)
     private let inputBus: AUAudioUnitBus
     private let outputBus: AUAudioUnitBus
+    private let userPresetStore: NativeUserPresetStore
     private var inputs: AUAudioUnitBusArray!
     private var outputs: AUAudioUnitBusArray!
 
-    override init(componentDescription: AudioComponentDescription, options: AudioComponentInstantiationOptions = []) throws {
+    override convenience init(componentDescription: AudioComponentDescription, options: AudioComponentInstantiationOptions = []) throws {
+        try self.init(componentDescription: componentDescription, options: options,
+                      userPresetStore: NativeUserPresetStore(effect: "Equalizer"))
+    }
+
+    init(componentDescription: AudioComponentDescription, options: AudioComponentInstantiationOptions = [],
+         userPresetStore: NativeUserPresetStore) throws {
         guard let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2) else {
             throw EqualizerAudioUnitError.unsupportedFormat
         }
         inputBus = try AUAudioUnitBus(format: format)
         outputBus = try AUAudioUnitBus(format: format)
+        self.userPresetStore = userPresetStore
         try super.init(componentDescription: componentDescription, options: options)
         inputs = AUAudioUnitBusArray(audioUnit: self, busType: .input, busses: [inputBus])
         outputs = AUAudioUnitBusArray(audioUnit: self, busType: .output, busses: [outputBus])
@@ -134,23 +142,95 @@ nonisolated final class EqualizerAudioUnit: AUAudioUnit {
     override var tailTime: TimeInterval { Double(bitPattern: tail.load(ordering: .relaxed)) }
 
     override var factoryPresets: [AUAudioUnitPreset]? { FactoryPreset.allCases.map(\.reference) }
+    override var supportsUserPresets: Bool { true }
+    override var userPresets: [AUAudioUnitPreset] { userPresetStore.presets }
 
     @objc dynamic override var currentPreset: AUAudioUnitPreset? {
         get {
-            let number = state.withLockUnchecked { $0.selection?.preset.factoryPresetNumber }
-            return number.flatMap(FactoryPreset.init(rawValue:))?.reference
+            guard let preset = state.withLockUnchecked({ $0.selection?.preset }) else { return nil }
+            if let number = preset.userPresetNumber {
+                let reference = AUAudioUnitPreset()
+                reference.name = preset.name
+                reference.number = number
+                return reference
+            }
+            return preset.factoryPresetNumber.flatMap(FactoryPreset.init(rawValue:))?.reference
         }
         set {
-            guard let number = newValue?.number else {
-                state.withLockUnchecked { $0.selection?.preset.factoryPresetNumber = nil }
+            guard let newValue else {
+                state.withLockUnchecked {
+                    $0.selection?.preset.factoryPresetNumber = nil
+                    $0.selection?.preset.userPresetNumber = nil
+                }
                 notifyPresetChange()
                 return
             }
             do {
-                try selectFactoryPreset(number: number)
+                try selectPreset(newValue)
             } catch {
-                Self.logger.error("Could not select Equalizer factory preset: \(error.localizedDescription, privacy: .private)")
+                Self.logger.error("Could not select Equalizer preset: \(error.localizedDescription, privacy: .private)")
             }
+        }
+    }
+
+    override func saveUserPreset(_ userPreset: AUAudioUnitPreset) throws {
+        guard let preset = state.withLockUnchecked({ $0.selection?.preset }) else {
+            throw EqualizerAudioUnitError.preset("Choose an Equalizer preset first.")
+        }
+        let document = EqualizerAUState.document(preset: preset.named(preset.name), context: nil)
+        try updatingUserPresets { try userPresetStore.save(userPreset, state: document) }
+        notifyPresetChange()
+    }
+
+    override func deleteUserPreset(_ userPreset: AUAudioUnitPreset) throws {
+        try updatingUserPresets {
+            try userPresetStore.delete(userPreset)
+            state.withLockUnchecked { current in
+                guard current.selection?.preset.userPresetNumber == userPreset.number,
+                      current.selection?.preset.name == userPreset.name else { return }
+                current.selection?.preset.userPresetNumber = nil
+            }
+        }
+        notifyPresetChange()
+    }
+
+    func renameUserPreset(_ userPreset: AUAudioUnitPreset, to name: String) throws {
+        let previousName = userPreset.name
+        let previousNumber = userPreset.number
+        try updatingUserPresets {
+            try userPresetStore.rename(userPreset, to: name)
+            state.withLockUnchecked { current in
+                guard var selection = current.selection, selection.preset.userPresetNumber == previousNumber,
+                      selection.preset.name == previousName else { return }
+                selection.preset = selection.preset.named(userPreset.name)
+                selection.preset.userPresetNumber = userPreset.number
+                current.selection = selection
+            }
+        }
+        notifyPresetChange()
+    }
+
+    override func presetState(for userPreset: AUAudioUnitPreset) throws -> [String: Any] {
+        try userPresetStore.state(for: userPreset)
+    }
+
+    private func updatingUserPresets(_ update: () throws -> Void) throws {
+        willChangeValue(forKey: "userPresets")
+        defer { didChangeValue(forKey: "userPresets") }
+        try update()
+    }
+
+    func selectPreset(_ preset: AUAudioUnitPreset) throws {
+        if preset.number >= 0 {
+            try selectFactoryPreset(number: preset.number)
+        } else {
+            let document = try EqualizerAUState(presetState(for: preset))
+            guard var selection = document.preset?.named(preset.name) else {
+                throw EqualizerAudioUnitError.preset("This Equalizer preset is unavailable.")
+            }
+            selection.userPresetNumber = preset.number
+            try select(Selection(preset: selection), source: .editor)
+            notifyPresetChange()
         }
     }
 
@@ -213,12 +293,12 @@ nonisolated final class EqualizerAudioUnit: AUAudioUnit {
         }
     }
 
-    func applyPreset(name: String, text: String) throws {
-        try select(Selection.pasted(name: name, text: text), source: .editor)
+    func applyPreset(name: String, text: String, remember: Bool = false) throws {
+        try selectImported(Selection.pasted(name: name, text: text), remember: remember)
         notifyPresetChange()
     }
 
-    func importPreset(from url: URL) throws {
+    func importPreset(from url: URL, remember: Bool = false) throws {
         let selection: Selection
         if EqualizerConfigFiles.isArchive(url) {
             let data = try EqualizerConfigFiles.readFile(at: url, limit: EqualizerConfigFiles.maximumArchiveSize)
@@ -241,8 +321,31 @@ nonisolated final class EqualizerAudioUnit: AUAudioUnit {
                 selection = priorFormat
             }
         }
-        try select(selection, source: .editor)
+        try selectImported(selection, remember: remember)
         notifyPresetChange()
+    }
+
+    private func selectImported(_ selection: Selection, remember: Bool) throws {
+        guard remember else {
+            try select(selection, source: .editor)
+            return
+        }
+        let presets = userPresets
+        let names = Set(presets.map { $0.name.localizedLowercase })
+        let numbers = Set(presets.map(\.number))
+        let reference = AUAudioUnitPreset()
+        let name = selection.preset.name
+        reference.name = name
+        var suffix = 2
+        while names.contains(reference.name.localizedLowercase) {
+            reference.name = "\(name) (\(suffix))"
+            suffix += 1
+        }
+        reference.number = -1
+        while numbers.contains(reference.number) { reference.number -= 1 }
+        try updatingUserPresets {
+            try select(selection, source: .editor, savingAs: reference)
+        }
     }
 
     func clearPreset() throws {
@@ -329,8 +432,9 @@ nonisolated final class EqualizerAudioUnit: AUAudioUnit {
         case document(EqualizerAUState.OutputContext?)
     }
 
-    private func select(_ selection: Selection?, source: SelectionSource) throws {
+    private func select(_ selection: Selection?, source: SelectionSource, savingAs userPreset: AUAudioUnitPreset? = nil) throws {
         try state.withLockUnchecked { current in
+            var selection = selection
             let context: EqualizerAUState.OutputContext?
             switch source {
             case .editor: context = current.context
@@ -344,6 +448,13 @@ nonisolated final class EqualizerAudioUnit: AUAudioUnit {
             } else {
                 definition = try selection?.resolve(sampleRate: sampleRate, context: context)
                 let processor = try Self.prepare(definition: definition, sampleRate: sampleRate)
+                if let userPreset, var selected = selection {
+                    selected.preset = selected.preset.named(userPreset.name)
+                    let document = EqualizerAUState.document(preset: selected.preset, context: nil)
+                    try userPresetStore.save(userPreset, state: document)
+                    selected.preset.userPresetNumber = userPreset.number
+                    selection = selected
+                }
                 current.resources?.publish(processor)
             }
             setTail(definition: definition, sampleRate: sampleRate)

@@ -180,6 +180,69 @@ final class EqualizerAudioUnitTests: XCTestCase {
         XCTAssertEqual(output.right, [0, 0.5])
     }
 
+    func testNativeUserPresetIsPortableAcrossInstancesAndDocuments() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = NativeUserPresetStore(effect: "Equalizer", root: root)
+        let writer = try EqualizerAudioUnit(componentDescription: Self.component, userPresetStore: library)
+        let source = EqualizerAUState.Preset(name: "Desk", filename: "Desk.txt", data: Data("Preamp: -6 dB".utf8))
+        let sourceContext = EqualizerAUState.OutputContext(deviceName: "Desk", deviceUID: "desk", inputChannelCount: 2)
+        writer.fullStateForDocument = EqualizerAUState.document(preset: source, context: sourceContext, bypass: true)
+        let reference = AUAudioUnitPreset()
+        reference.name = "Desk"
+        reference.number = -1
+        XCTAssertTrue(writer.supportsUserPresets)
+        try writer.saveUserPreset(reference)
+
+        let reader = try EqualizerAudioUnit(componentDescription: Self.component, userPresetStore: library)
+        let saved = try XCTUnwrap(reader.userPresets.first)
+        XCTAssertEqual(saved.name, "Desk")
+        let portable = try EqualizerAUState(reader.presetState(for: saved))
+        XCTAssertEqual(portable.preset?.data, source.data)
+        XCTAssertNil(portable.context)
+        XCTAssertFalse(portable.bypass)
+
+        let targetContext = EqualizerAUState.OutputContext(deviceName: "Studio", deviceUID: "studio", inputChannelCount: 6)
+        reader.fullStateForDocument = EqualizerAUState.document(preset: nil, context: targetContext, bypass: true)
+        reader.currentPreset = saved
+        XCTAssertEqual(reader.currentPreset?.number, saved.number)
+        XCTAssertEqual(reader.preset?.preampDB, -6)
+        let document = try roundtrip(XCTUnwrap(reader.fullStateForDocument))
+        XCTAssertEqual(try EqualizerAUState(document).context, targetContext)
+        XCTAssertTrue(reader.shouldBypassEffect)
+
+        let initialNumber = saved.number
+        try reader.renameUserPreset(saved, to: "Studio Desk")
+        XCTAssertEqual(reader.currentPreset?.name, "Studio Desk")
+        XCTAssertEqual(reader.currentPreset?.number, initialNumber)
+        XCTAssertEqual(writer.userPresets.map(\.name), ["Studio Desk"])
+
+        try reader.deleteUserPreset(saved)
+        XCTAssertTrue(writer.userPresets.isEmpty)
+        let restored = try EqualizerAudioUnit(componentDescription: Self.component, userPresetStore: library)
+        restored.fullStateForDocument = document
+        XCTAssertEqual(restored.preset?.preampDB, -6)
+        XCTAssertTrue(restored.shouldBypassEffect)
+    }
+
+    func testImportAndPasteRememberPersonalPresetsWithoutOverwritingPriorEntries() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = NativeUserPresetStore(effect: "Equalizer", root: root)
+        let unit = try EqualizerAudioUnit(componentDescription: Self.component, userPresetStore: library)
+        let url = root.appendingPathComponent("Desk.txt")
+        try Data("Preamp: -6 dB".utf8).write(to: url)
+        try unit.importPreset(from: url, remember: true)
+        try unit.applyPreset(name: "Desk", text: "Preamp: -12 dB", remember: true)
+
+        XCTAssertEqual(unit.userPresets.map(\.name), ["Desk", "Desk (2)"])
+        XCTAssertEqual(unit.currentPreset?.name, "Desk (2)")
+        let original = try XCTUnwrap(unit.userPresets.first)
+        try unit.selectPreset(original)
+        XCTAssertEqual(unit.preset?.preampDB, -6)
+    }
+
     private func configure(_ unit: AUAudioUnit, sampleRate: Double = 48_000) throws {
         let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2))
         try unit.inputBusses[0].setFormat(format)

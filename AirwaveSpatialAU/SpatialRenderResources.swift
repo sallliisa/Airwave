@@ -10,8 +10,12 @@ nonisolated final class SpatialRenderAccess {
 }
 
 nonisolated final class SpatialRenderResources {
+    private struct PresetChange {
+        let processor: SpatialProcessor?
+    }
+
     private struct PresetUpdate {
-        var incoming: SpatialProcessor?
+        var incoming: PresetChange?
         var retired: SpatialProcessor?
     }
 
@@ -25,7 +29,7 @@ nonisolated final class SpatialRenderResources {
     private let update = OSAllocatedUnfairLock(uncheckedState: PresetUpdate())
     private let hasPendingPreset = Atomic<Bool>(false)
 
-    private var processor: SpatialProcessor
+    private var processor: SpatialProcessor?
     private var previousProcessor: SpatialProcessor?
     private var transitionRemaining = 0
     private var bypassAmount: Float?
@@ -39,7 +43,7 @@ nonisolated final class SpatialRenderResources {
     private let previousWet: UnsafeMutablePointer<Float>
     private let outputStorage: UnsafeMutablePointer<Float>
 
-    init(processor: SpatialProcessor, layout: SpatialInputLayout, sampleRate: Double, maxFrames: Int,
+    init(processor: SpatialProcessor?, layout: SpatialInputLayout, sampleRate: Double, maxFrames: Int,
          inputInterleaved: Bool, outputInterleaved: Bool) {
         self.processor = processor
         self.layout = layout
@@ -79,16 +83,16 @@ nonisolated final class SpatialRenderResources {
         outputStorage.deallocate()
     }
 
-    func publish(_ processor: SpatialProcessor) {
+    func publish(_ processor: SpatialProcessor?) {
         update.withLockUnchecked {
-            $0.incoming = processor
+            $0.incoming = PresetChange(processor: processor)
             $0.retired = nil
             hasPendingPreset.store(true, ordering: .releasing)
         }
     }
 
     func reset() {
-        processor.reset()
+        processor?.reset()
         transitionRemaining = 0
         bypassAmount = nil
     }
@@ -117,7 +121,7 @@ nonisolated final class SpatialRenderResources {
         }
 
         adoptPendingPreset()
-        processor.process(
+        processor?.process(
             input: input, channelStride: maxFrames,
             leftOutput: wet, rightOutput: wet + maxFrames, frameCount: frames
         )
@@ -139,10 +143,12 @@ nonisolated final class SpatialRenderResources {
             // Keep the previous processor alive until control can release it.
             slot.retired = previousProcessor
             previousProcessor = processor
-            processor = incoming
+            processor = incoming.processor
             slot.incoming = nil
             hasPendingPreset.store(false, ordering: .relaxed)
-            transitionRemaining = presetWarmupFrames + fadeFrames
+            if previousProcessor != nil || processor != nil {
+                transitionRemaining = (processor == nil ? 0 : presetWarmupFrames) + fadeFrames
+            }
         }
     }
 
@@ -220,7 +226,10 @@ nonisolated final class SpatialRenderResources {
         let fadeStep = 1 / Float(fadeFrames)
         var amount = bypassAmount ?? (bypass ? 1 : 0)
         let dry = downmixStorage ?? input
-        if (bypass || amount > 0), let downmixStorage, let inputChannels {
+        let current = processor == nil ? dry : wet
+        let previous = previousProcessor == nil ? dry : previousWet
+        if (bypass || amount > 0 || processor == nil || (transitionRemaining > 0 && previousProcessor == nil)),
+           let downmixStorage, let inputChannels {
             StereoDownmixGains.downmix(
                 inputChannels: UnsafePointer(inputChannels), inputChannelCount: layout.channelCount,
                 inputOffset: 0, inputSpeakers: layout.layout.channels, outputLeft: downmixStorage,
@@ -229,7 +238,7 @@ nonisolated final class SpatialRenderResources {
         }
 
         if transitionRemaining == 0, amount == (bypass ? 1 : 0) {
-            let source = bypass ? dry : wet
+            let source = bypass ? dry : current
             if outputInterleaved {
                 for i in 0..<frames {
                     outputLeft[2 * i] = source[i]
@@ -244,12 +253,12 @@ nonisolated final class SpatialRenderResources {
         }
 
         for frame in 0..<frames {
-            var left = wet[frame]
-            var right = wet[maxFrames + frame]
+            var left = current[frame]
+            var right = current[maxFrames + frame]
             if transitionRemaining > 0 {
                 let progress = Float(max(0, fadeFrames - transitionRemaining)) * fadeStep
-                left = previousWet[frame] * (1 - progress) + left * progress
-                right = previousWet[maxFrames + frame] * (1 - progress) + right * progress
+                left = previous[frame] * (1 - progress) + left * progress
+                right = previous[maxFrames + frame] * (1 - progress) + right * progress
                 transitionRemaining -= 1
             }
 

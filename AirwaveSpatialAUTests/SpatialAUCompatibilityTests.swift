@@ -83,11 +83,69 @@ final class SpatialAUCompatibilityTests: XCTestCase {
         XCTAssertEqual(bypassed.right[0], 2)
     }
 
-    private func makeUnit() throws -> AUAudioUnit {
-        try AirwaveSpatialAudioUnit(componentDescription: AudioComponentDescription(
+    func testNoPresetIsDryUntilASelectionIsMade() throws {
+        let unit = try makeUnit()
+        unit.fullStateForDocument = ["AirwaveSpatial.noPreset": true]
+        let stereo = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2))
+        try configure(unit, inputFormat: stereo)
+        defer { unit.deallocateRenderResources() }
+
+        XCTAssertNil(unit.currentPreset)
+        XCTAssertEqual(unit.fullStateForDocument?["AirwaveSpatial.noPreset"] as? Bool, true)
+        XCTAssertNil(unit.fullStateForDocument?["AirwaveSpatial.bundledPreset"])
+        XCTAssertNil(unit.fullStateForDocument?["AirwaveSpatial.impulseResponse"])
+        let dry = try render(unit, impulses: [-0.0, 2])
+        XCTAssertEqual(dry.left[0].bitPattern, Float(-0.0).bitPattern)
+        XCTAssertEqual(dry.right[0], 2)
+
+        unit.currentPreset = unit.factoryPresets?.first(where: { $0.name == "Stage" })
+        XCTAssertEqual(unit.currentPreset?.name, "Stage")
+        XCTAssertNil(unit.fullStateForDocument?["AirwaveSpatial.noPreset"])
+        XCTAssertEqual(unit.fullStateForDocument?["AirwaveSpatial.bundledPreset"] as? String, "stage")
+    }
+
+    func testImportedPresetIsAvailableToAnotherUnitAndKeepsItsBypass() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = NativeUserPresetStore(effect: "Spatial", root: root)
+        let source = root.appending(path: "My room.wav")
+        let wav = impulseResponse()
+        try wav.write(to: source)
+
+        let importer = try makeUnit(presetStore: store)
+        XCTAssertTrue(importer.supportsUserPresets)
+        try importer.importPreset(from: source)
+        XCTAssertEqual(importer.currentPreset?.name, "My room")
+
+        let other = try makeUnit(presetStore: store)
+        other.shouldBypassEffect = true
+        let preset = try XCTUnwrap(other.userPresets.first)
+        XCTAssertLessThan(preset.number, 0)
+        XCTAssertEqual(preset.name, "My room")
+        XCTAssertEqual(try other.presetState(for: preset)["AirwaveSpatial.impulseResponse"] as? Data, wav)
+        other.currentPreset = preset
+        XCTAssertTrue(other.shouldBypassEffect)
+        XCTAssertEqual(other.fullStateForDocument?["AirwaveSpatial.impulseResponse"] as? Data, wav)
+
+        try other.renameUserPreset(preset, to: "My studio")
+        XCTAssertEqual(importer.userPresets.map(\.name), ["My studio"])
+        XCTAssertEqual(other.currentPreset?.name, "My studio")
+        XCTAssertEqual(other.fullStateForDocument?["AirwaveSpatial.presetName"] as? String, "My studio")
+        XCTAssertEqual(other.fullStateForDocument?["AirwaveSpatial.impulseResponse"] as? Data, wav)
+
+        try other.deleteUserPreset(preset)
+        XCTAssertTrue(importer.userPresets.isEmpty)
+        XCTAssertEqual(other.fullStateForDocument?["AirwaveSpatial.impulseResponse"] as? Data, wav)
+    }
+
+    private func makeUnit(presetStore: NativeUserPresetStore? = nil) throws -> AirwaveSpatialAudioUnit {
+        let description = AudioComponentDescription(
             componentType: kAudioUnitType_Effect, componentSubType: 0x4177_7370,
             componentManufacturer: 0x4177_7665, componentFlags: 0, componentFlagsMask: 0
-        ))
+        )
+        if let presetStore { return try AirwaveSpatialAudioUnit(componentDescription: description, presetStore: presetStore) }
+        return try AirwaveSpatialAudioUnit(componentDescription: description)
     }
 
     private func configure(_ unit: AUAudioUnit, inputFormat: AVAudioFormat) throws {

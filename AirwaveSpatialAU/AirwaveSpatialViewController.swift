@@ -6,14 +6,21 @@ import os
 
 final class AirwaveSpatialViewController: AUViewController, AUAudioUnitFactory {
     private typealias BundledPreset = AirwaveSpatialAudioUnit.BundledPreset
-    private static let importWAVTitle = "Import WAV…"
-    private static let importWAVTag = 1
+
+    private enum PresetAction {
+        case factory(BundledPreset)
+        case personal(AUAudioUnitPreset)
+        case importWAV
+        case rename(AUAudioUnitPreset)
+        case delete(AUAudioUnitPreset)
+    }
 
     private nonisolated let unit = OSAllocatedUnfairLock<AirwaveSpatialAudioUnit?>(uncheckedState: nil)
     private let presetMenu = NSPopUpButton(frame: .zero, pullsDown: false)
     private let errorLabel = NSTextField(wrappingLabelWithString: "")
     private lazy var bypassButton = NSButton(checkboxWithTitle: "Bypass", target: self, action: #selector(setBypass))
     private var bypassObservation: NSKeyValueObservation?
+    private var presetsObservation: NSKeyValueObservation?
 
     nonisolated func createAudioUnit(with componentDescription: AudioComponentDescription) throws -> AUAudioUnit {
         let audioUnit = try AirwaveSpatialAudioUnit(componentDescription: componentDescription)
@@ -36,6 +43,8 @@ final class AirwaveSpatialViewController: AUViewController, AUAudioUnitFactory {
         presetMenu.setAccessibilityLabel("HRIR preset")
         presetMenu.cell?.lineBreakMode = .byTruncatingMiddle
         presetMenu.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        NotificationCenter.default.addObserver(self, selector: #selector(refreshPresetMenu),
+                                               name: NSPopUpButton.willPopUpNotification, object: presetMenu)
 
         errorLabel.textColor = .systemRed
         errorLabel.maximumNumberOfLines = 2
@@ -65,6 +74,7 @@ final class AirwaveSpatialViewController: AUViewController, AUAudioUnitFactory {
     private func connectEditor() {
         NotificationCenter.default.removeObserver(self, name: AirwaveSpatialAudioUnit.presetDidChange, object: nil)
         bypassObservation = nil
+        presetsObservation = nil
         if let audioUnit = unit.withLockUnchecked({ $0 }) {
             NotificationCenter.default.addObserver(
                 self, selector: #selector(presetDidChange), name: AirwaveSpatialAudioUnit.presetDidChange,
@@ -74,6 +84,9 @@ final class AirwaveSpatialViewController: AUViewController, AUAudioUnitFactory {
                 DispatchQueue.main.async { [weak self] in
                     self?.refreshBypass()
                 }
+            }
+            presetsObservation = audioUnit.observe(\.userPresets) { [weak self] _, _ in
+                DispatchQueue.main.async { [weak self] in self?.refreshPresetMenu() }
             }
         }
         refreshEditor()
@@ -86,29 +99,52 @@ final class AirwaveSpatialViewController: AUViewController, AUAudioUnitFactory {
         errorLabel.isHidden = true
     }
 
-    private func refreshPresetMenu() {
-        let selection = unit.withLockUnchecked { $0?.presetSelection }
-        presetMenu.removeAllItems()
+    @objc private func refreshPresetMenu() {
+        let audioUnit = unit.withLockUnchecked { $0 }
+        let selection = audioUnit?.presetSelection
+        let savedPresets = audioUnit?.userPresets ?? []
+        let selectedPersonal = audioUnit?.selectedUserPreset(in: savedPresets)
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        func add(_ title: String, action: PresetAction? = nil) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            item.representedObject = action
+            menu.addItem(item)
+            return item
+        }
+        var selectedItem: NSMenuItem?
         for preset in BundledPreset.allCases {
-            presetMenu.addItem(withTitle: preset.title)
-            presetMenu.lastItem?.representedObject = preset.rawValue
+            let item = add(preset.title, action: .factory(preset))
+            if selection == .bundled(preset), selectedPersonal == nil { selectedItem = item }
         }
-        let title: String
-        switch selection {
-        case .bundled(let preset):
-            title = preset.title
-        case .imported(let name):
-            let reservedTitles = BundledPreset.allCases.map(\.title) + [Self.importWAVTitle]
-            title = reservedTitles.contains(name) ? "\(name) (Imported)" : name
-            presetMenu.addItem(withTitle: title)
-        case nil:
-            title = BundledPreset.neutral.title
+        if !savedPresets.isEmpty {
+            menu.addItem(.separator())
+            for preset in savedPresets {
+                let item = add(preset.name, action: .personal(preset))
+                if selectedPersonal?.name == preset.name { selectedItem = item }
+            }
         }
-        presetMenu.menu?.addItem(.separator())
-        presetMenu.addItem(withTitle: Self.importWAVTitle)
-        presetMenu.lastItem?.tag = Self.importWAVTag
-        presetMenu.selectItem(withTitle: title)
-        presetMenu.isEnabled = selection != nil
+        if selectedItem == nil {
+            let title: String
+            if case .imported(let name) = selection {
+                title = name
+            } else {
+                title = "Choose Preset"
+            }
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.insertItem(item, at: 0)
+            selectedItem = item
+        }
+        menu.addItem(.separator())
+        _ = add("Import WAV…", action: .importWAV)
+        if let selectedPersonal {
+            _ = add("Rename Current Preset…", action: .rename(selectedPersonal))
+            _ = add("Delete Current Preset…", action: .delete(selectedPersonal))
+        }
+        presetMenu.menu = menu
+        presetMenu.select(selectedItem)
+        presetMenu.isEnabled = audioUnit != nil
     }
 
     private func refreshBypass() {
@@ -129,14 +165,50 @@ final class AirwaveSpatialViewController: AUViewController, AUAudioUnitFactory {
     }
 
     @objc private func selectPreset() {
-        guard let item = presetMenu.selectedItem,
+        guard let action = presetMenu.selectedItem?.representedObject as? PresetAction,
               let audioUnit = unit.withLockUnchecked({ $0 }) else { return }
         refreshPresetMenu()
-        if item.tag == Self.importWAVTag {
-            importPreset()
-        } else if let id = item.representedObject as? String, let preset = BundledPreset(rawValue: id),
-                  audioUnit.presetSelection != .bundled(preset) {
+        switch action {
+        case .factory(let preset):
             updatePreset { try audioUnit.useBundledPreset(preset) }
+        case .personal(let preset):
+            updatePreset { try audioUnit.useUserPreset(preset) }
+        case .importWAV:
+            importPreset()
+        case .rename(let preset):
+            renamePreset(preset, in: audioUnit)
+        case .delete(let preset):
+            deletePreset(preset, from: audioUnit)
+        }
+    }
+
+    private func renamePreset(_ preset: AUAudioUnitPreset, in audioUnit: AirwaveSpatialAudioUnit) {
+        guard let window = view.window else { return }
+        let name = NSTextField(string: preset.name)
+        name.frame.size.width = 220
+        name.setAccessibilityLabel("Preset name")
+        let alert = NSAlert()
+        alert.messageText = "Rename Preset"
+        alert.accessoryView = name
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = name
+        alert.beginSheetModal(for: window) { [weak self, weak audioUnit] response in
+            guard response == .alertFirstButtonReturn, let audioUnit else { return }
+            self?.updatePreset { try audioUnit.renameUserPreset(preset, to: name.stringValue) }
+        }
+    }
+
+    private func deletePreset(_ preset: AUAudioUnitPreset, from audioUnit: AirwaveSpatialAudioUnit) {
+        guard let window = view.window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Delete “\(preset.name)”?"
+        alert.informativeText = "Effects using this preset will keep their current settings."
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { [weak self, weak audioUnit] response in
+            guard response == .alertFirstButtonReturn, let audioUnit else { return }
+            self?.updatePreset { try audioUnit.deleteUserPreset(preset) }
         }
     }
 

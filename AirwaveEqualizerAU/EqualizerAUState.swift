@@ -6,6 +6,7 @@ nonisolated struct EqualizerAUState {
         let filename: String
         let data: Data
         var factoryPresetNumber: Int?
+        var userPresetNumber: Int?
         fileprivate let isLegacyText: Bool
 
         init(name: String, filename: String, data: Data, factoryPresetNumber: Int? = nil) {
@@ -25,6 +26,11 @@ nonisolated struct EqualizerAUState {
         }
 
         var legacyText: String? { isLegacyText ? String(decoding: data, as: UTF8.self) : nil }
+
+        func named(_ name: String) -> Preset {
+            if let legacyText { return Preset(name: name, legacyText: legacyText) }
+            return Preset(name: name, filename: filename, data: data)
+        }
     }
 
     struct OutputContext: Equatable, Sendable {
@@ -48,6 +54,7 @@ nonisolated struct EqualizerAUState {
         static let filename = "Equalizer.presetFilename"
         static let data = "Equalizer.presetData"
         static let factoryPresetNumber = "Equalizer.factoryPresetNumber"
+        static let userPresetNumber = "Equalizer.userPresetNumber"
         static let context = "Equalizer.outputContext"
         static let bypass = "Equalizer.bypass"
     }
@@ -72,7 +79,8 @@ nonisolated struct EqualizerAUState {
         }
 
         let version = state[Key.version] as? Int
-        let hasPreset = [Key.name, Key.text, Key.filename, Key.data, Key.factoryPresetNumber].contains { state[$0] != nil }
+        let hasPreset = [Key.name, Key.text, Key.filename, Key.data, Key.factoryPresetNumber, Key.userPresetNumber]
+            .contains { state[$0] != nil }
         switch (version, hasPreset) {
         case (nil, false) where state[Key.version] == nil && state[Key.bypass] == nil:
             preset = nil
@@ -82,12 +90,16 @@ nonisolated struct EqualizerAUState {
             guard let name = state[Key.name] as? String, let text = state[Key.text] as? String else {
                 throw InvalidDocument()
             }
-            preset = Preset(name: name, legacyText: text)
+            var selection = Preset(name: name, legacyText: text)
+            selection.userPresetNumber = (state[Key.userPresetNumber] as? Int).flatMap { $0 < 0 ? $0 : nil }
+            preset = selection
         case (2, true):
             guard let name = state[Key.name] as? String, let filename = state[Key.filename] as? String,
                   let bytes = state[Key.data] as? Data else { throw InvalidDocument() }
-            preset = Preset(name: name, filename: filename, data: bytes,
-                            factoryPresetNumber: state[Key.factoryPresetNumber] as? Int)
+            var selection = Preset(name: name, filename: filename, data: bytes,
+                                   factoryPresetNumber: state[Key.factoryPresetNumber] as? Int)
+            selection.userPresetNumber = (state[Key.userPresetNumber] as? Int).flatMap { $0 < 0 ? $0 : nil }
+            preset = selection
         default:
             throw InvalidDocument()
         }
@@ -104,6 +116,7 @@ nonisolated struct EqualizerAUState {
         state[Key.filename] = nil
         state[Key.data] = nil
         state[Key.factoryPresetNumber] = preset?.factoryPresetNumber
+        state[Key.userPresetNumber] = preset?.userPresetNumber
         if let text = preset?.legacyText {
             state[Key.version] = 1
             state[Key.text] = text

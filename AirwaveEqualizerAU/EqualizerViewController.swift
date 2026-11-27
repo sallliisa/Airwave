@@ -26,6 +26,11 @@ final class EqualizerViewController: AUViewController, AUAudioUnitFactory {
         connectEditor()
     }
 
+    override func viewWillAppear() {
+        super.viewWillAppear()
+        editor.refresh()
+    }
+
     private func connectEditor() {
         let audioUnit = unit.withLockUnchecked { $0 }
         let notifications = NotificationCenter.default
@@ -52,7 +57,12 @@ private final class EQEditorModel: ObservableObject {
     private weak var unit: EqualizerAudioUnit?
 
     var factoryPresets: [AUAudioUnitPreset] { unit?.factoryPresets ?? [] }
+    var userPresets: [AUAudioUnitPreset] { unit?.userPresets ?? [] }
     var currentPresetNumber: Int? { unit?.currentPreset?.number }
+    var currentUserPreset: AUAudioUnitPreset? {
+        guard let current = unit?.currentPreset, current.number < 0 else { return nil }
+        return userPresets.first { $0.number == current.number && $0.name == current.name }
+    }
 
     func connect(_ unit: EqualizerAudioUnit?) {
         self.unit = unit
@@ -99,7 +109,7 @@ private final class EQEditorModel: ObservableObject {
         do {
             let access = url.startAccessingSecurityScopedResource()
             defer { if access { url.stopAccessingSecurityScopedResource() } }
-            try unit.importPreset(from: url)
+            try unit.importPreset(from: url, remember: true)
             error = nil
             refresh()
         } catch let accessError as EqualizerConfigFiles.FolderAccessRequired {
@@ -129,7 +139,7 @@ private final class EQEditorModel: ObservableObject {
     func pastePreset() {
         apply { unit in
             guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else { throw ImportError.emptyClipboard }
-            try unit.applyPreset(name: "Pasted Preset", text: text)
+            try unit.applyPreset(name: "Pasted Preset", text: text, remember: true)
         }
     }
 
@@ -137,8 +147,17 @@ private final class EQEditorModel: ObservableObject {
         apply { try $0.clearPreset() }
     }
 
-    func selectFactoryPreset(_ preset: AUAudioUnitPreset) {
-        apply { try $0.selectFactoryPreset(number: preset.number) }
+    func selectPreset(_ preset: AUAudioUnitPreset) {
+        apply { try $0.selectPreset(preset) }
+    }
+
+    func deleteCurrentUserPreset() {
+        guard let preset = currentUserPreset else { return }
+        apply { try $0.deleteUserPreset(preset) }
+    }
+
+    func renameUserPreset(_ preset: AUAudioUnitPreset, to name: String) {
+        apply { try $0.renameUserPreset(preset, to: name) }
     }
 
     private func apply(_ change: (EqualizerAudioUnit) throws -> Void) {
@@ -165,40 +184,45 @@ private final class EQEditorModel: ObservableObject {
 
 private struct EQEditor: View {
     @ObservedObject var model: EQEditorModel
+    @State private var presetToRename: AUAudioUnitPreset?
+    @State private var presetName = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text(model.preset?.name ?? "No Preset")
-                    .font(.headline)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .accessibilityIdentifier("eq-preset-name")
-                Spacer()
-                Menu("Presets") {
-                    ForEach(model.factoryPresets, id: \.number) { preset in
-                        Button {
-                            model.selectFactoryPreset(preset)
-                        } label: {
-                            if preset.number == model.currentPresetNumber {
-                                Label(preset.name, systemImage: "checkmark")
-                            } else {
-                                Text(preset.name)
-                            }
-                        }
+            Menu {
+                Section("Factory Presets") {
+                    presetRows(model.factoryPresets)
+                }
+                if !model.userPresets.isEmpty {
+                    Section("Personal Presets") {
+                        presetRows(model.userPresets)
                     }
                 }
-                .fixedSize()
-                .accessibilityIdentifier("eq-factory-presets")
+                Divider()
                 Button("Import…", action: model.importPreset)
                     .accessibilityIdentifier("eq-import")
                 Button("Paste Preset", action: model.pastePreset)
                     .accessibilityIdentifier("eq-paste")
-                Button("Clear", action: model.clearPreset)
+                Button("Clear Preset", action: model.clearPreset)
                     .disabled(model.preset == nil)
                     .accessibilityIdentifier("eq-clear")
+                if let preset = model.currentUserPreset {
+                    Button("Rename Preset…") {
+                        presetName = preset.name
+                        presetToRename = preset
+                    }
+                    Button("Remove from Personal Presets", role: .destructive, action: model.deleteCurrentUserPreset)
+                }
+            } label: {
+                Text(model.preset?.name ?? "Choose Preset")
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
+            .frame(maxWidth: 240, alignment: .leading)
             .disabled(!model.isConnected)
+            .accessibilityLabel("Equalizer preset")
+            .accessibilityValue(model.preset?.name ?? "No Preset")
+            .accessibilityIdentifier("eq-presets")
 
             EQResponseChart(values: model.response)
                 .frame(minHeight: 154)
@@ -238,6 +262,28 @@ private struct EQEditor: View {
         .padding(16)
         .frame(minWidth: 440, minHeight: 260)
         .background(Color(nsColor: .windowBackgroundColor))
+        .alert("Rename Personal Preset", isPresented: Binding(
+            get: { presetToRename != nil }, set: { if !$0 { presetToRename = nil } }
+        ), presenting: presetToRename) { preset in
+            TextField("Preset name", text: $presetName)
+            Button("Rename") { model.renameUserPreset(preset, to: presetName) }
+                .disabled(presetName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+
+    private func presetRows(_ presets: [AUAudioUnitPreset]) -> some View {
+        ForEach(presets, id: \.number) { preset in
+            Button {
+                model.selectPreset(preset)
+            } label: {
+                if preset.number == model.currentPresetNumber {
+                    Label(preset.name, systemImage: "checkmark")
+                } else {
+                    Text(preset.name)
+                }
+            }
+        }
     }
 }
 

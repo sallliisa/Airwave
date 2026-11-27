@@ -15,21 +15,55 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
         var url: URL? {
             Bundle(for: AirwaveSpatialAudioUnit.self).url(forResource: title + "SH1.0", withExtension: "wav")
         }
+
+        var reference: AUAudioUnitPreset {
+            let preset = AUAudioUnitPreset()
+            preset.name = title
+            preset.number = Self.allCases.firstIndex(of: self)!
+            return preset
+        }
     }
 
     enum PresetSelection: Equatable {
+        case none
         case bundled(BundledPreset)
         case imported(name: String)
     }
 
     private enum Preset {
+        case none
         case bundled(BundledPreset)
         case imported(name: String, wav: Data)
 
-        func prepare(sampleRate: Double, layout: SpatialInputLayout) throws -> SpatialProcessor {
+        init?(document: [String: Any]) {
+            if document[StateKey.noPreset] as? Bool == true {
+                self = .none
+            } else if let wav = document[StateKey.impulseResponse] as? Data,
+                      let name = document[StateKey.presetName] as? String,
+                      !wav.isEmpty, wav.count <= WAVLoader.maximumFileSize {
+                self = .imported(name: name, wav: wav)
+            } else if let name = document[StateKey.bundledPreset] as? String,
+                      let preset = BundledPreset(rawValue: name) {
+                self = .bundled(preset)
+            } else {
+                return nil
+            }
+        }
+
+        var document: [String: Any] {
+            switch self {
+            case .none: [StateKey.noPreset: true]
+            case .bundled(let preset): [StateKey.bundledPreset: preset.rawValue]
+            case .imported(let name, let wav): [StateKey.presetName: name, StateKey.impulseResponse: wav]
+            }
+        }
+
+        func prepare(sampleRate: Double, layout: SpatialInputLayout) throws -> SpatialProcessor? {
             let url: URL
             let temporaryURL: URL?
             switch self {
+            case .none:
+                return nil
             case .bundled(let preset):
                 guard let resource = preset.url else {
                     throw SpatialAudioUnitError.missingPreset(preset.title)
@@ -50,6 +84,7 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
 
     private struct State {
         var preset: Preset = .bundled(.neutral)
+        var userPreset: AUAudioUnitPreset?
         var resources: SpatialRenderResources?
     }
 
@@ -58,9 +93,11 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
         static let presetName = "AirwaveSpatial.presetName"
         static let impulseResponse = "AirwaveSpatial.impulseResponse"
         static let bypass = "AirwaveSpatial.bypass"
+        static let noPreset = "AirwaveSpatial.noPreset"
     }
 
     private let state = OSAllocatedUnfairLock(uncheckedState: State())
+    private let presetStore: NativeUserPresetStore
     private let renderAccess = SpatialRenderAccess()
     private let tail = Atomic<UInt64>(0)
     private let inputBus: AUAudioUnitBus
@@ -68,7 +105,14 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
     private var inputs: AUAudioUnitBusArray!
     private var outputs: AUAudioUnitBusArray!
 
-    override init(componentDescription: AudioComponentDescription, options: AudioComponentInstantiationOptions = []) throws {
+    override convenience init(componentDescription: AudioComponentDescription, options: AudioComponentInstantiationOptions = []) throws {
+        try self.init(componentDescription: componentDescription, options: options,
+                      presetStore: NativeUserPresetStore(effect: "Spatial"))
+    }
+
+    init(componentDescription: AudioComponentDescription, options: AudioComponentInstantiationOptions = [],
+         presetStore: NativeUserPresetStore) throws {
+        self.presetStore = presetStore
         guard let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2) else {
             throw SpatialAudioUnitError.unsupportedFormat
         }
@@ -99,6 +143,68 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
         Double(bitPattern: tail.load(ordering: .relaxed))
     }
 
+    override var supportsUserPresets: Bool { true }
+    override var factoryPresets: [AUAudioUnitPreset]? { BundledPreset.allCases.map(\.reference) }
+    @objc dynamic override var userPresets: [AUAudioUnitPreset] { presetStore.presets }
+
+    override func saveUserPreset(_ userPreset: AUAudioUnitPreset) throws {
+        let preset = state.withLockUnchecked { $0.preset }
+        if case .none = preset { throw SpatialAudioUnitError.invalidPreset }
+        willChangeValue(forKey: "userPresets")
+        defer { didChangeValue(forKey: "userPresets") }
+        try presetStore.save(userPreset, state: preset.document)
+    }
+
+    override func deleteUserPreset(_ userPreset: AUAudioUnitPreset) throws {
+        willChangeValue(forKey: "userPresets")
+        defer { didChangeValue(forKey: "userPresets") }
+        try presetStore.delete(userPreset)
+        state.withLockUnchecked { current in
+            if current.userPreset?.name == userPreset.name { current.userPreset = nil }
+        }
+        NotificationCenter.default.post(name: Self.presetDidChange, object: self)
+    }
+
+    override func presetState(for userPreset: AUAudioUnitPreset) throws -> [String: Any] {
+        try presetStore.state(for: userPreset)
+    }
+
+    func renameUserPreset(_ preset: AUAudioUnitPreset, to name: String) throws {
+        let selected = selectedUserPreset(in: [preset]) != nil
+        let previousName = preset.name
+        willChangeValue(forKey: "userPresets")
+        defer { didChangeValue(forKey: "userPresets") }
+        try presetStore.rename(preset, to: name)
+        if selected {
+            state.withLockUnchecked { current in
+                if case .imported(let name, let wav) = current.preset, name == previousName {
+                    current.preset = .imported(name: preset.name, wav: wav)
+                    current.userPreset = preset
+                } else if current.userPreset?.name == previousName {
+                    current.userPreset = preset
+                }
+            }
+        }
+        NotificationCenter.default.post(name: Self.presetDidChange, object: self)
+    }
+
+    override var currentPreset: AUAudioUnitPreset? {
+        get {
+            let (preset, userPreset) = state.withLockUnchecked { ($0.preset, $0.userPreset) }
+            if let userPreset { return userPreset }
+            if case .bundled(let bundled) = preset { return bundled.reference }
+            return nil
+        }
+        set {
+            guard let preset = newValue else { return }
+            if preset.number < 0 {
+                try? useUserPreset(preset)
+            } else if BundledPreset.allCases.indices.contains(preset.number) {
+                try? useBundledPreset(BundledPreset.allCases[preset.number])
+            }
+        }
+    }
+
     @objc dynamic override var shouldBypassEffect: Bool {
         get { renderAccess.bypass.load(ordering: .relaxed) }
         set { renderAccess.bypass.store(newValue, ordering: .relaxed) }
@@ -109,39 +215,26 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
             let preset = state.withLockUnchecked { $0.preset }
             var snapshot = super.fullState ?? [:]
             snapshot[StateKey.bypass] = shouldBypassEffect
-            switch preset {
-            case .bundled(let choice):
-                snapshot[StateKey.bundledPreset] = choice.rawValue
-                snapshot[StateKey.presetName] = nil
-                snapshot[StateKey.impulseResponse] = nil
-            case .imported(let name, let wav):
-                snapshot[StateKey.bundledPreset] = nil
-                snapshot[StateKey.presetName] = name
-                snapshot[StateKey.impulseResponse] = wav
-            }
+            snapshot[StateKey.bundledPreset] = nil
+            snapshot[StateKey.presetName] = nil
+            snapshot[StateKey.impulseResponse] = nil
+            snapshot[StateKey.noPreset] = nil
+            snapshot.merge(preset.document) { _, presetValue in presetValue }
             return snapshot
         }
         set {
             super.fullState = newValue
             shouldBypassEffect = newValue?[StateKey.bypass] as? Bool ?? false
-            if let wav = newValue?[StateKey.impulseResponse] as? Data,
-               let name = newValue?[StateKey.presetName] as? String,
-               !wav.isEmpty, wav.count <= WAVLoader.maximumFileSize {
-                do {
-                    try selectPreset(.imported(name: name, wav: wav))
-                    return
-                } catch {
-                    // Fall back to a playable preset when a host document contains invalid audio data.
-                }
-            }
-            let bundled = (newValue?[StateKey.bundledPreset] as? String).flatMap(BundledPreset.init(rawValue:))
-            try? selectPreset(.bundled(bundled ?? .neutral))
+            let preset = newValue.flatMap(Preset.init(document:)) ?? .bundled(.neutral)
+            do { try selectPreset(preset) }
+            catch { try? selectPreset(.bundled(.neutral)) }
         }
     }
 
     var presetSelection: PresetSelection {
         state.withLockUnchecked { current in
             switch current.preset {
+            case .none: .none
             case .bundled(let preset): .bundled(preset)
             case .imported(let name, _): .imported(name: name)
             }
@@ -150,6 +243,23 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
 
     func useBundledPreset(_ preset: BundledPreset) throws {
         try selectPreset(.bundled(preset))
+    }
+
+    func useUserPreset(_ preset: AUAudioUnitPreset) throws {
+        let document = try presetState(for: preset)
+        guard var selection = Preset(document: document) else { throw SpatialAudioUnitError.invalidPreset }
+        if case .imported(_, let wav) = selection { selection = .imported(name: preset.name, wav: wav) }
+        try selectPreset(selection, userPreset: preset)
+    }
+
+    func selectedUserPreset(in saved: [AUAudioUnitPreset]) -> AUAudioUnitPreset? {
+        let (selected, reference) = state.withLockUnchecked { ($0.preset, $0.userPreset) }
+        if let reference, let preset = saved.first(where: { $0.name == reference.name }) { return preset }
+        guard case .imported(let name, let wav) = selected,
+              let preset = saved.first(where: { $0.name == name }),
+              let savedState = try? presetState(for: preset),
+              savedState[StateKey.impulseResponse] as? Data == wav else { return nil }
+        return preset
     }
 
     func importPreset(from url: URL) throws {
@@ -162,10 +272,32 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
             throw WAVError.emptyFile
         }
         guard wav.count <= WAVLoader.maximumFileSize else { throw WAVError.fileTooLarge }
-        try selectPreset(.imported(name: url.deletingPathExtension().lastPathComponent, wav: wav))
+        let baseName = url.deletingPathExtension().lastPathComponent
+        let saved = userPresets
+        let names = Set((saved.map(\.name) + BundledPreset.allCases.map(\.title)).map { $0.lowercased() })
+        var name = baseName
+        var suffix = 2
+        while names.contains(name.lowercased()) {
+            name = "\(baseName) (\(suffix))"
+            suffix += 1
+        }
+        let reference = AUAudioUnitPreset()
+        reference.name = name
+        let numbers = Set(saved.map(\.number))
+        reference.number = -1
+        while numbers.contains(reference.number) { reference.number -= 1 }
+
+        let previous = state.withLockUnchecked { ($0.preset, $0.userPreset) }
+        try selectPreset(.imported(name: name, wav: wav), userPreset: reference)
+        do {
+            try saveUserPreset(reference)
+        } catch {
+            try? selectPreset(previous.0, userPreset: previous.1)
+            throw error
+        }
     }
 
-    private func selectPreset(_ preset: Preset) throws {
+    private func selectPreset(_ preset: Preset, userPreset: AUAudioUnitPreset? = nil) throws {
         try state.withLockUnchecked { current in
             guard let layout = current.resources?.layout ?? SpatialInputLayout(format: inputBus.format) else {
                 throw SpatialAudioUnitError.unsupportedFormat
@@ -176,7 +308,8 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
                 resources.publish(processor)
             }
             current.preset = preset
-            setTail(frames: processor.tailFrames, sampleRate: sampleRate)
+            current.userPreset = userPreset
+            setTail(frames: processor?.tailFrames ?? 0, sampleRate: sampleRate)
         }
         NotificationCenter.default.post(name: Self.presetDidChange, object: self)
     }
@@ -212,7 +345,7 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
                     outputInterleaved: output.isInterleaved
                 )
                 current.resources = resources
-                setTail(frames: processor.tailFrames, sampleRate: output.sampleRate)
+                setTail(frames: processor?.tailFrames ?? 0, sampleRate: output.sampleRate)
                 renderAccess.resources.store(Unmanaged.passUnretained(resources).toOpaque(), ordering: .releasing)
             }
         } catch {
@@ -268,6 +401,7 @@ private nonisolated enum SpatialAudioUnitError: LocalizedError, CustomNSError {
     case unsupportedFormat
     case unsupportedFrameCount
     case missingPreset(String)
+    case invalidPreset
 
     static let errorDomain = NSOSStatusErrorDomain
 
@@ -276,6 +410,7 @@ private nonisolated enum SpatialAudioUnitError: LocalizedError, CustomNSError {
         case .unsupportedFormat: Int(kAudioUnitErr_FormatNotSupported)
         case .unsupportedFrameCount: Int(kAudioUnitErr_TooManyFramesToProcess)
         case .missingPreset: Int(kAudioUnitErr_FailedInitialization)
+        case .invalidPreset: Int(kAudioUnitErr_InvalidPropertyValue)
         }
     }
 
@@ -284,6 +419,7 @@ private nonisolated enum SpatialAudioUnitError: LocalizedError, CustomNSError {
         case .unsupportedFormat: "Airwave Spatial requires 32-bit floating-point input and stereo output at the same sample rate."
         case .unsupportedFrameCount: "The host requested an unsupported render buffer size."
         case .missingPreset(let name): "The bundled \(name) preset is missing."
+        case .invalidPreset: "This preset does not contain a Spatial impulse response."
         }
     }
 }
