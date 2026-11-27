@@ -927,7 +927,7 @@ struct HostMenuPopover: View {
             HostMenuAction(title: "Quit Airwave", action: quit)
                 .padding(.vertical, 4)
         }
-        .frame(width: shell.setupCompleted ? 310 : 280)
+        .frame(width: shell.setupCompleted ? 340 : 280)
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
         .environment(\.colorScheme, .dark)
