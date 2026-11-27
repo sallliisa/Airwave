@@ -153,6 +153,13 @@ final class SystemAudioHostTests: XCTestCase {
         let restored = try await LiveEffect.load(saved, sampleRate: 48_000, maximumFrames: 4_096)
         XCTAssertTrue(restored.unit.shouldBypassEffect)
         XCTAssertFalse(second.unit.shouldBypassEffect)
+
+        chain.replace(with: [second])
+        let peak = render(chain, amplitude: 10).map(abs).max() ?? 0
+        XCTAssertGreaterThan(peak, 0.9)
+        XCTAssertLessThanOrEqual(peak, 0.98)
+        chain.replace(with: [])
+        XCTAssertEqual(render(chain), dry)
     }
 
     @MainActor
@@ -507,10 +514,10 @@ final class SystemAudioHostTests: XCTestCase {
         }
     }
 
-    private func render(_ chain: RenderChain) -> [Float] {
+    private func render(_ chain: RenderChain, amplitude: Float = 0.15) -> [Float] {
         let frames = 256
         let blocks = 42
-        let input = (0..<frames).map { sin(Float($0) * 0.32) * 0.15 }
+        let input = (0..<frames).map { sin(Float($0) * 0.32) * amplitude }
         let opposite = input.map { $0 * -0.6 }
         var left = [Float](repeating: 0, count: frames)
         var right = left

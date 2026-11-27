@@ -51,6 +51,9 @@ private final class EQEditorModel: ObservableObject {
     @Published private(set) var error: String?
     private weak var unit: EqualizerAudioUnit?
 
+    var factoryPresets: [AUAudioUnitPreset] { unit?.factoryPresets ?? [] }
+    var currentPresetNumber: Int? { unit?.currentPreset?.number }
+
     func connect(_ unit: EqualizerAudioUnit?) {
         self.unit = unit
         isConnected = unit != nil
@@ -134,6 +137,10 @@ private final class EQEditorModel: ObservableObject {
         apply { try $0.clearPreset() }
     }
 
+    func selectFactoryPreset(_ preset: AUAudioUnitPreset) {
+        apply { try $0.selectFactoryPreset(number: preset.number) }
+    }
+
     private func apply(_ change: (EqualizerAudioUnit) throws -> Void) {
         guard let unit else { return }
         do {
@@ -168,6 +175,21 @@ private struct EQEditor: View {
                     .truncationMode(.middle)
                     .accessibilityIdentifier("eq-preset-name")
                 Spacer()
+                Menu("Presets") {
+                    ForEach(model.factoryPresets, id: \.number) { preset in
+                        Button {
+                            model.selectFactoryPreset(preset)
+                        } label: {
+                            if preset.number == model.currentPresetNumber {
+                                Label(preset.name, systemImage: "checkmark")
+                            } else {
+                                Text(preset.name)
+                            }
+                        }
+                    }
+                }
+                .fixedSize()
+                .accessibilityIdentifier("eq-factory-presets")
                 Button("Import…", action: model.importPreset)
                     .accessibilityIdentifier("eq-import")
                 Button("Paste Preset", action: model.pastePreset)

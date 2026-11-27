@@ -5,13 +5,15 @@ nonisolated struct EqualizerAUState {
         let name: String
         let filename: String
         let data: Data
+        var factoryPresetNumber: Int?
         fileprivate let isLegacyText: Bool
 
-        init(name: String, filename: String, data: Data) {
+        init(name: String, filename: String, data: Data, factoryPresetNumber: Int? = nil) {
             let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
             self.name = name.isEmpty ? "Preset" : name
             self.filename = filename
             self.data = data
+            self.factoryPresetNumber = factoryPresetNumber
             self.isLegacyText = false
         }
 
@@ -45,6 +47,7 @@ nonisolated struct EqualizerAUState {
         static let text = "Equalizer.presetText"
         static let filename = "Equalizer.presetFilename"
         static let data = "Equalizer.presetData"
+        static let factoryPresetNumber = "Equalizer.factoryPresetNumber"
         static let context = "Equalizer.outputContext"
         static let bypass = "Equalizer.bypass"
     }
@@ -69,7 +72,7 @@ nonisolated struct EqualizerAUState {
         }
 
         let version = state[Key.version] as? Int
-        let hasPreset = [Key.name, Key.text, Key.filename, Key.data].contains { state[$0] != nil }
+        let hasPreset = [Key.name, Key.text, Key.filename, Key.data, Key.factoryPresetNumber].contains { state[$0] != nil }
         switch (version, hasPreset) {
         case (nil, false) where state[Key.version] == nil && state[Key.bypass] == nil:
             preset = nil
@@ -83,7 +86,8 @@ nonisolated struct EqualizerAUState {
         case (2, true):
             guard let name = state[Key.name] as? String, let filename = state[Key.filename] as? String,
                   let bytes = state[Key.data] as? Data else { throw InvalidDocument() }
-            preset = Preset(name: name, filename: filename, data: bytes)
+            preset = Preset(name: name, filename: filename, data: bytes,
+                            factoryPresetNumber: state[Key.factoryPresetNumber] as? Int)
         default:
             throw InvalidDocument()
         }
@@ -99,6 +103,7 @@ nonisolated struct EqualizerAUState {
         state[Key.text] = nil
         state[Key.filename] = nil
         state[Key.data] = nil
+        state[Key.factoryPresetNumber] = preset?.factoryPresetNumber
         if let text = preset?.legacyText {
             state[Key.version] = 1
             state[Key.text] = text

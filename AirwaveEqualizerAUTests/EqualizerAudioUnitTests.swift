@@ -122,6 +122,40 @@ final class EqualizerAudioUnitTests: XCTestCase {
         XCTAssertEqual(response[2], -6, accuracy: 0.1)
     }
 
+    func testFactoryPresetsUseAirwave2CurvesAndRestoreFromDocument() throws {
+        let original = try EqualizerAudioUnit(componentDescription: Self.component)
+        let presets = try XCTUnwrap(original.factoryPresets)
+        XCTAssertEqual(presets.map(\.name), ["Bass Booster", "Bass Reducer", "Treble Booster", "Treble Reducer", "Vocal Booster"])
+        XCTAssertEqual(Set(presets.map(\.number)).count, presets.count)
+        for preset in presets {
+            original.currentPreset = preset
+            XCTAssertEqual(original.currentPreset?.number, preset.number)
+            XCTAssertEqual(original.preset?.name, preset.name)
+        }
+
+        original.currentPreset = try XCTUnwrap(presets.first { $0.name == "Bass Reducer" })
+        let state = try roundtrip(XCTUnwrap(original.fullStateForDocument))
+        let restored = try EqualizerAudioUnit(componentDescription: Self.component)
+        restored.fullStateForDocument = state
+        XCTAssertEqual(restored.currentPreset?.name, "Bass Reducer")
+        try configure(restored)
+        defer { restored.deallocateRenderResources() }
+        let response = try restored.responseDB(frequencies: [50, 10_000])
+        XCTAssertLessThan(response[0], -5)
+        XCTAssertEqual(response[1], 0, accuracy: 0.1)
+
+        // An older project must keep the bytes it saved even when a later build changes a factory curve.
+        var previousRevision = state
+        previousRevision["Equalizer.presetData"] = Data("Preamp: -6.020599913 dB".utf8)
+        let oldInstance = try EqualizerAudioUnit(componentDescription: Self.component)
+        oldInstance.fullStateForDocument = previousRevision
+        try configure(oldInstance)
+        defer { oldInstance.deallocateRenderResources() }
+        let output = try render(oldInstance, left: [1, 0], right: [0, 1])
+        XCTAssertEqual(output.left, [0.5, 0])
+        XCTAssertEqual(output.right, [0, 0.5])
+    }
+
     private func configure(_ unit: AUAudioUnit, sampleRate: Double = 48_000) throws {
         let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2))
         try unit.inputBusses[0].setFormat(format)

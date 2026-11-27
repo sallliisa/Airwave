@@ -14,8 +14,43 @@ nonisolated final class EqualizerAudioUnit: AUAudioUnit {
     static let presetDidChange = Notification.Name("EqualizerPresetDidChange")
     private static let logger = os.Logger(subsystem: AirwaveLog.subsystem, category: "Equalizer Audio Unit")
 
+    private enum FactoryPreset: Int, CaseIterable {
+        case bassBooster = 0
+        case bassReducer = 1
+        case trebleBooster = 2
+        case trebleReducer = 3
+        case vocalBooster = 4
+
+        var name: String {
+            switch self {
+            case .bassBooster: "Bass Booster"
+            case .bassReducer: "Bass Reducer"
+            case .trebleBooster: "Treble Booster"
+            case .trebleReducer: "Treble Reducer"
+            case .vocalBooster: "Vocal Booster"
+            }
+        }
+
+        var reference: AUAudioUnitPreset {
+            let preset = AUAudioUnitPreset()
+            preset.number = rawValue
+            preset.name = name
+            return preset
+        }
+
+        func load() throws -> EqualizerAUState.Preset {
+            let bundle = Bundle(for: EqualizerAudioUnit.self)
+            guard let url = bundle.url(forResource: name, withExtension: "txt") else {
+                throw EqualizerAudioUnitError.preset("The \(name) preset is missing from Airwave.")
+            }
+            let data = try EqualizerConfigFiles.readFile(at: url, limit: EqualizerAPOParser.maximumDataSize)
+            return EqualizerAUState.Preset(name: name, filename: url.lastPathComponent, data: data,
+                                           factoryPresetNumber: rawValue)
+        }
+    }
+
     private struct Selection {
-        let preset: EqualizerAUState.Preset
+        var preset: EqualizerAUState.Preset
         let definition: EqualizerDefinition
 
         init(preset: EqualizerAUState.Preset) throws {
@@ -97,6 +132,35 @@ nonisolated final class EqualizerAudioUnit: AUAudioUnit {
     override var channelCapabilities: [NSNumber]? { [2, 2] }
     override var canProcessInPlace: Bool { true }
     override var tailTime: TimeInterval { Double(bitPattern: tail.load(ordering: .relaxed)) }
+
+    override var factoryPresets: [AUAudioUnitPreset]? { FactoryPreset.allCases.map(\.reference) }
+
+    @objc dynamic override var currentPreset: AUAudioUnitPreset? {
+        get {
+            let number = state.withLockUnchecked { $0.selection?.preset.factoryPresetNumber }
+            return number.flatMap(FactoryPreset.init(rawValue:))?.reference
+        }
+        set {
+            guard let number = newValue?.number else {
+                state.withLockUnchecked { $0.selection?.preset.factoryPresetNumber = nil }
+                notifyPresetChange()
+                return
+            }
+            do {
+                try selectFactoryPreset(number: number)
+            } catch {
+                Self.logger.error("Could not select Equalizer factory preset: \(error.localizedDescription, privacy: .private)")
+            }
+        }
+    }
+
+    func selectFactoryPreset(number: Int) throws {
+        guard let factory = FactoryPreset(rawValue: number) else {
+            throw EqualizerAudioUnitError.preset("This Equalizer preset is unavailable.")
+        }
+        try select(Selection(preset: factory.load()), source: .editor)
+        notifyPresetChange()
+    }
 
     @objc dynamic override var shouldBypassEffect: Bool {
         get { renderAccess.bypass.load(ordering: .relaxed) }

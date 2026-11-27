@@ -53,6 +53,7 @@ final class LiveEffect {
     let slotID: UUID
     let unit: AUAudioUnit
     let stage: EffectRenderStage
+    let headroomSampleRate: Double?
 
     @MainActor
     static func load(
@@ -98,13 +99,16 @@ final class LiveEffect {
         unit.inputBusses[0].isEnabled = true
         if slot.component == .airwaveEqualizer, let state { unit.fullStateForDocument = state }
         try unit.allocateRenderResources()
+        let headroomRate = slot.component == .airwaveSpatial || slot.component == .airwaveEqualizer ? sampleRate : nil
         return LiveEffect(slotID: slot.id, unit: unit, maximumFrames: maximumFrames,
-                          inputChannelCount: Int(inputFormat.channelCount))
+                          inputChannelCount: Int(inputFormat.channelCount), headroomSampleRate: headroomRate)
     }
 
-    private init(slotID: UUID, unit: AUAudioUnit, maximumFrames: UInt32, inputChannelCount: Int) {
+    private init(slotID: UUID, unit: AUAudioUnit, maximumFrames: UInt32, inputChannelCount: Int,
+                 headroomSampleRate: Double?) {
         self.slotID = slotID
         self.unit = unit
+        self.headroomSampleRate = headroomSampleRate
         stage = EffectRenderStage(render: unit.renderBlock, maximumFrames: maximumFrames,
                                   inputChannelCount: inputChannelCount)
     }
@@ -255,6 +259,8 @@ final class RenderChain {
     private let current = Atomic<UnsafeRawPointer?>(nil)
     private let readers = Atomic<Int>(0)
     private var retired: [UnsafeRawPointer] = []
+    private var outputHeadroom = ProcessedOutputHeadroom()
+    private var headroomSampleRate: Double?
     let callbacks = Atomic<UInt64>(0)
 
     func replace(with effects: [LiveEffect]) {
@@ -292,18 +298,32 @@ final class RenderChain {
 
         var left = inputLeft
         var right = inputRight
+        var processedRate: Double?
         if let pointer = current.load(ordering: .sequentiallyConsistent) {
             let snapshot = Unmanaged<Snapshot>.fromOpaque(pointer).takeUnretainedValue()
             for (index, effect) in snapshot.effects.enumerated() {
                 if let result = effect.stage.process(time, left: left, right: right, frames: frames,
                                                      captured: index == 0 ? captured : nil) {
                     (left, right) = result
+                    if let rate = effect.headroomSampleRate { processedRate = rate }
                 }
             }
         }
         let bytes = Int(frames) * MemoryLayout<Float>.size
         memmove(outputLeft, left, bytes)
         memmove(outputRight, right, bytes)
+        if let processedRate {
+            if headroomSampleRate != processedRate {
+                outputHeadroom.prepare(sampleRate: processedRate)
+                headroomSampleRate = processedRate
+            }
+            if frames > 0 {
+                outputHeadroom.apply(left: outputLeft, right: outputRight, frameCount: Int(frames))
+            }
+        } else {
+            outputHeadroom.reset()
+            headroomSampleRate = nil
+        }
     }
 
     deinit {

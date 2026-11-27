@@ -99,6 +99,17 @@
 		A05000000000000000000060 /* Spatial AU test preset */ = { isa = PBXBuildFile; fileRef = A02000000000000000000004; };
 		A05000000000000000000061 /* Spatial AU test preset */ = { isa = PBXBuildFile; fileRef = A0200000000000000000005A; };
 		A05000000000000000000062 /* Spatial AU test preset */ = { isa = PBXBuildFile; fileRef = A0200000000000000000005B; };
+		A06000000000000000000011 /* Bass Booster.txt in Resources */ = {isa = PBXBuildFile; fileRef = A06000000000000000000001 /* Bass Booster.txt */; };
+		A06000000000000000000012 /* Bass Reducer.txt in Resources */ = {isa = PBXBuildFile; fileRef = A06000000000000000000002 /* Bass Reducer.txt */; };
+		A06000000000000000000013 /* Treble Booster.txt in Resources */ = {isa = PBXBuildFile; fileRef = A06000000000000000000003 /* Treble Booster.txt */; };
+		A06000000000000000000014 /* Treble Reducer.txt in Resources */ = {isa = PBXBuildFile; fileRef = A06000000000000000000004 /* Treble Reducer.txt */; };
+		A06000000000000000000015 /* Vocal Booster.txt in Resources */ = {isa = PBXBuildFile; fileRef = A06000000000000000000005 /* Vocal Booster.txt */; };
+		A06000000000000000000021 /* Bass Booster.txt in Resources */ = {isa = PBXBuildFile; fileRef = A06000000000000000000001 /* Bass Booster.txt */; };
+		A06000000000000000000022 /* Bass Reducer.txt in Resources */ = {isa = PBXBuildFile; fileRef = A06000000000000000000002 /* Bass Reducer.txt */; };
+		A06000000000000000000023 /* Treble Booster.txt in Resources */ = {isa = PBXBuildFile; fileRef = A06000000000000000000003 /* Treble Booster.txt */; };
+		A06000000000000000000024 /* Treble Reducer.txt in Resources */ = {isa = PBXBuildFile; fileRef = A06000000000000000000004 /* Treble Reducer.txt */; };
+		A06000000000000000000025 /* Vocal Booster.txt in Resources */ = {isa = PBXBuildFile; fileRef = A06000000000000000000005 /* Vocal Booster.txt */; };
+		A07000000000000000000002 /* ProcessedOutputHeadroom.swift in Sources */ = {isa = PBXBuildFile; fileRef = A07000000000000000000001; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -205,6 +216,12 @@
 		A05000000000000000000020 /* AirwaveSpatialAudioUnit.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirwaveSpatialAU/AirwaveSpatialAudioUnit.swift; sourceTree = SOURCE_ROOT; };
 		A05000000000000000000021 /* SpatialProcessor.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirwaveSpatialAU/SpatialProcessor.swift; sourceTree = SOURCE_ROOT; };
 		A05000000000000000000022 /* SpatialRenderResources.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirwaveSpatialAU/SpatialRenderResources.swift; sourceTree = SOURCE_ROOT; };
+		A06000000000000000000001 /* Bass Booster.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = "Bass Booster.txt"; path = "assets/eq/Bass Booster.txt"; sourceTree = SOURCE_ROOT; };
+		A06000000000000000000002 /* Bass Reducer.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = "Bass Reducer.txt"; path = "assets/eq/Bass Reducer.txt"; sourceTree = SOURCE_ROOT; };
+		A06000000000000000000003 /* Treble Booster.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = "Treble Booster.txt"; path = "assets/eq/Treble Booster.txt"; sourceTree = SOURCE_ROOT; };
+		A06000000000000000000004 /* Treble Reducer.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = "Treble Reducer.txt"; path = "assets/eq/Treble Reducer.txt"; sourceTree = SOURCE_ROOT; };
+		A06000000000000000000005 /* Vocal Booster.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = "Vocal Booster.txt"; path = "assets/eq/Vocal Booster.txt"; sourceTree = SOURCE_ROOT; };
+		A07000000000000000000001 /* ProcessedOutputHeadroom.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Airwave/ProcessedOutputHeadroom.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -489,8 +506,8 @@
 		};
 		A03000000000000000000014 /* Resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A03000000000000000000002, A03000000000000000000003, ); runOnlyForDeploymentPostprocessing = 0; };
 		A03000000000000000000018 /* Resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
-		A0400000000000000000000C /* Resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
-		A0400000000000000000000F /* Resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A0400000000000000000000C /* Resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A06000000000000000000011, A06000000000000000000012, A06000000000000000000013, A06000000000000000000014, A06000000000000000000015, ); runOnlyForDeploymentPostprocessing = 0; };
+		A0400000000000000000000F /* Resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A06000000000000000000021, A06000000000000000000022, A06000000000000000000023, A06000000000000000000024, A06000000000000000000025, ); runOnlyForDeploymentPostprocessing = 0; };
 		A05000000000000000000006 /* Resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A05000000000000000000060, A05000000000000000000061, A05000000000000000000062, ); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXResourcesBuildPhase section */
 
@@ -545,7 +562,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		A03000000000000000000012 /* Sources */ = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A040000000000000000000C0, A040000000000000000000C1, A040000000000000000000C2, A040000000000000000000C3, A040000000000000000000C4, ); runOnlyForDeploymentPostprocessing = 0; };
+		A03000000000000000000012 /* Sources */ = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A07000000000000000000002, A040000000000000000000C0, A040000000000000000000C1, A040000000000000000000C2, A040000000000000000000C3, A040000000000000000000C4, ); runOnlyForDeploymentPostprocessing = 0; };
 		A03000000000000000000016 /* Sources */ = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		A0400000000000000000000B /* Sources */ = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A04000000000000000000070, A04000000000000000000071, A04000000000000000000072, A04000000000000000000073, A04000000000000000000074, A04000000000000000000075, A04000000000000000000076, A04000000000000000000077, A04000000000000000000078, A04000000000000000000079, A0400000000000000000007A, A0400000000000000000007B, A0400000000000000000007C, A0400000000000000000007D, ); runOnlyForDeploymentPostprocessing = 0; };
 		A0400000000000000000000D /* Sources */ = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A04000000000000000000090, A04000000000000000000091, A04000000000000000000092, A04000000000000000000093, A04000000000000000000094, A04000000000000000000095, A04000000000000000000096, A04000000000000000000097, A04000000000000000000098, A04000000000000000000099, A0400000000000000000009A, A0400000000000000000009B, A0400000000000000000009C, A0400000000000000000009D, A0400000000000000000009E, A0400000000000000000009F, A040000000000000000000A0, A040000000000000000000A1, ); runOnlyForDeploymentPostprocessing = 0; };
