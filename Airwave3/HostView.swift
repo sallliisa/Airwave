@@ -377,6 +377,7 @@ private struct HostEffectsPage: View {
                     if !devices.isEmpty { deviceBar }
                     EffectChain(host: host)
                         .id(host.editingDeviceUID)
+                        .contentMargins(.bottom, 24, for: .scrollContent)
                 }
             }
         }
@@ -711,6 +712,7 @@ private struct HostMixerPage: View {
                             if !saved.isEmpty { mixerSection("Saved Adjustments", rows: saved) }
                         }
                     }
+                    .contentMargins(.bottom, 24, for: .scrollContent)
                 }
             }
             .accessibilityIdentifier("app-mixer-list")
