@@ -216,11 +216,22 @@ final class Airwave3UITests: XCTestCase {
 
             let editor = app.windows["AULowpass"]
             let editorPower = editor.buttons["editor-bypass-effect"]
+            let editorTitle = editor.staticTexts["editor-effect-title"]
             XCTAssertTrue(editorPower.waitForExistence(timeout: 8))
+            XCTAssertEqual(editorTitle.label, "AULowpass")
+            let titleFrame = editorTitle.frame
+            let powerFrame = editorPower.frame
+            XCTAssertLessThan(titleFrame.maxX, powerFrame.minX)
+            editorPower.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).hover()
+            XCTAssertEqual(editorTitle.frame, titleFrame)
+            XCTAssertEqual(editorPower.frame, powerFrame)
+
             XCTAssertEqual(editorPower.value as? String, "On")
             editorPower.click()
             XCTAssertEqual(editorPower.value as? String, "Off")
             XCTAssertEqual(cardPower.value as? String, "Off")
+            XCTAssertEqual(editorTitle.frame, titleFrame)
+            XCTAssertEqual(editorPower.frame, powerFrame)
 
             mainWindow.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.03)).click()
             cardPower.click()

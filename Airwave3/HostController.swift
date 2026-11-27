@@ -461,18 +461,7 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
                       (uid == self.currentDeviceUID) == active else { return }
                 if active && !choosingReplacement && self.effects[id] !== effect { return }
                 let controller = custom ?? NSHostingController(rootView: ParameterEditor(unit: effect.unit))
-                let window = NSWindow(contentViewController: controller)
-                window.title = slot.name
-                window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-                window.isReleasedWhenClosed = false
-                let power = NSTitlebarAccessoryViewController()
-                power.layoutAttribute = .right
-                power.view = NSHostingView(rootView: HostEditorPowerButton(host: self, slot: slot, deviceUID: uid))
-                power.view.frame.size = NSSize(width: 38, height: 29)
-                window.addTitlebarAccessoryViewController(power)
-                if window.contentLayoutRect.width < 240 || window.contentLayoutRect.height < 120 {
-                    window.setContentSize(NSSize(width: 420, height: 300))
-                }
+                let window = self.makeEditorWindow(controller, slot: slot, deviceUID: uid)
                 window.delegate = self
                 window.center()
                 self.editors[id] = Editor(deviceUID: uid, effect: effect, spatialLayout: layout, window: window)
@@ -486,6 +475,52 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
                 }
             }
         }
+    }
+
+    private func makeEditorWindow(_ editor: NSViewController, slot: EffectSlot, deviceUID: String) -> NSWindow {
+        let content = editor.view
+        let editorSize = [editor.preferredContentSize, content.frame.size].first {
+            $0.width >= 240 && $0.height >= 120
+        } ?? NSSize(width: 420, height: 300)
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: editorSize),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = slot.name
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
+        window.backgroundColor = NSColor(HostAppearance.canvas)
+        window.isReleasedWhenClosed = false
+
+        let container = NSViewController()
+        container.view = NSView()
+        container.addChild(editor)
+        window.contentViewController = container
+
+        let header = NSHostingView(rootView: HostEditorHeader(host: self, slot: slot, deviceUID: deviceUID))
+        header.appearance = NSAppearance(named: .darkAqua)
+        header.translatesAutoresizingMaskIntoConstraints = false
+        content.translatesAutoresizingMaskIntoConstraints = false
+        let root = container.view
+        root.addSubview(header)
+        root.addSubview(content)
+
+        let nativeTitlebarHeight = root.bounds.height - window.contentLayoutRect.height
+        NSLayoutConstraint.activate([
+            header.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor),
+            header.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            header.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            header.heightAnchor.constraint(equalToConstant: HostEditorHeader.height),
+            content.topAnchor.constraint(equalTo: header.bottomAnchor),
+            content.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            content.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+        ])
+        window.setContentSize(NSSize(width: editorSize.width, height: editorSize.height + HostEditorHeader.height + nativeTitlebarHeight))
+        return window
     }
 
     func windowWillClose(_ notification: Notification) {

@@ -1154,7 +1154,9 @@ private struct EffectDrag: Codable, Transferable {
 }
 
 @MainActor
-struct HostEditorPowerButton: View {
+struct HostEditorHeader: View {
+    static let height: CGFloat = 44
+
     @ObservedObject var host: HostController
     let slot: EffectSlot
     let deviceUID: String
@@ -1162,12 +1164,30 @@ struct HostEditorPowerButton: View {
     var body: some View {
         let current = host.effectSlot(slot.id, for: deviceUID)
         let bypassed = current?.isBypassed ?? true
-        HostEffectPowerButton(name: slot.name, isBypassed: bypassed) {
-            host.setBypass(slot.id, !bypassed, for: deviceUID)
+        let actionTitle = bypassed ? "Enable \(slot.name)" : "Bypass \(slot.name)"
+
+        HStack(spacing: 8) {
+            Text(slot.name)
+                .font(.system(size: 15, weight: .semibold))
+                .lineLimit(1)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityIdentifier("editor-effect-title")
+
+            Spacer(minLength: 0)
+
+            HostHeaderIconButton(symbol: "power", tint: bypassed ? .secondary : .primary) {
+                host.setBypass(slot.id, !bypassed, for: deviceUID)
+            }
+            .disabled(current == nil || current?.migrationIssue != nil)
+            .help(actionTitle)
+            .accessibilityLabel(actionTitle)
+            .accessibilityValue(bypassed ? "Off" : "On")
+            .accessibilityIdentifier("editor-bypass-effect")
         }
-        .disabled(current == nil || current?.migrationIssue != nil)
-        .accessibilityIdentifier("editor-bypass-effect")
-        .frame(width: 38, height: 29)
+        .padding(.leading, 14)
+        .padding(.trailing, 9)
+        .frame(height: Self.height)
+        .background(HostAppearance.canvas)
     }
 }
 
