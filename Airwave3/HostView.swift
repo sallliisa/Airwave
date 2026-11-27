@@ -132,9 +132,9 @@ struct HostWindow: View {
     private var pageContent: some View {
         switch selectedTab {
         case .effects:
-            HostEffectsPage(host: host).padding(24)
+            HostEffectsPage(host: host).padding([.top, .horizontal], 24)
         case .mixer:
-            HostMixerPage(host: host).padding(24)
+            HostMixerPage(host: host).padding([.top, .horizontal], 24)
         case .settings:
             HostSettingsPage(shell: shell, updates: updates).padding(24)
         case .setup:
