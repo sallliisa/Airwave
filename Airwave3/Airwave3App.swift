@@ -18,7 +18,7 @@ struct Airwave3App: App {
                 openMixer: delegate.openMixer, openSetup: delegate.openSetup, quit: delegate.quit
             )
         } label: {
-            Label("Airwave", image: "MenuBarIcon")
+            Label("Airwave", image: "AirwaveMark")
                 .accessibilityIdentifier("hostMenu")
         }
         .menuBarExtraStyle(.window)
