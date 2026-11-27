@@ -768,7 +768,7 @@ private struct HostMixerRow: View {
                 .accessibilityIdentifier("app-mixer-name.\(row.id)")
 
             Slider(value: Binding(get: { row.volume }, set: { host.setAppVolume($0, for: row.id) }),
-                   in: 0...100, step: 1) {
+                   in: 0...100) {
                 Text("\(row.name) volume")
             }
             .labelsHidden()
