@@ -356,9 +356,11 @@ private struct HostEffectsPage: View {
     @State private var configuringOutput: HostDeviceTarget?
     @State private var profileAction: ProfileAction?
     @State private var deviceActionsHovered = false
+    @State private var liveOutputHovered = false
     @FocusState private var deviceActionsFocused: Bool
 
     private var devices: [HostDeviceTarget] { host.editingDevices }
+    private var liveDevice: HostDeviceTarget? { devices.first(where: \.isCurrent) }
 
     private var editingDevice: HostDeviceTarget? {
         devices.first { $0.id == host.editingDeviceUID }
@@ -400,7 +402,10 @@ private struct HostEffectsPage: View {
         } message: { action in
             Text(action.message)
         }
-        .onChange(of: host.editingDeviceUID) { _, _ in showingEffects = false }
+        .onChange(of: host.editingDeviceUID) { _, _ in
+            showingEffects = false
+            liveOutputHovered = false
+        }
     }
 
     private var deviceBar: some View {
@@ -409,13 +414,17 @@ private struct HostEffectsPage: View {
                 deviceMenu(editingDevice)
                 if let editingDevice { deviceActions(for: editingDevice) }
             }
-            if let editingDevice, !editingDevice.isCurrent, let live = devices.first(where: \.isCurrent) {
+            if let editingDevice, !editingDevice.isCurrent, let live = liveDevice {
                 Button(action: host.selectCurrentOutputForEditing) {
-                    Label("Edit Live Output", systemImage: "arrow.uturn.backward")
+                    Label("Live Output", systemImage: "arrow.uturn.backward")
                         .font(.callout)
+                        .foregroundStyle(liveOutputHovered ? Color.primary : .secondary)
+                        .contentShape(.rect)
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.plain)
+                .onHover { liveOutputHovered = $0 }
                 .help("Edit the chain for \(live.name)")
+                .accessibilityLabel("Edit Live Output")
                 .accessibilityHint(live.name)
                 .accessibilityIdentifier("live-output")
             }
@@ -467,10 +476,18 @@ private struct HostEffectsPage: View {
             }
         }
         .fixedSize(horizontal: true, vertical: false)
-        .help(editingDevice?.name ?? "Choose Device")
+        .help(devicePickerHelp(for: editingDevice))
         .accessibilityLabel("Editing audio device")
         .accessibilityValue(editingDevice.map { $0.isCurrent ? "\($0.name), live output" : $0.name } ?? "")
         .accessibilityIdentifier("current-output")
+    }
+
+    private func devicePickerHelp(for device: HostDeviceTarget?) -> String {
+        guard let device else { return "Choose Device" }
+        if !device.isCurrent, let liveDevice {
+            return "Editing \(device.name). \(liveDevice.name) is the live output."
+        }
+        return device.name
     }
 
     private func deviceActions(for device: HostDeviceTarget) -> some View {
@@ -484,7 +501,7 @@ private struct HostEffectsPage: View {
                    isDestructive: true) {
                 profileAction = action
             }]
-        ], hovered: deviceActionsHovered, focused: deviceActionsFocused)
+        ], hovered: deviceActionsHovered, focused: deviceActionsFocused, compact: true)
         .onHover { deviceActionsHovered = $0 }
         .focused($deviceActionsFocused)
         .accessibilityIdentifier("device-actions")
@@ -1251,11 +1268,12 @@ private struct HostActionAppearance: ViewModifier {
 
     let hovered: Bool
     let focused: Bool
+    var compact = false
 
     func body(content: Content) -> some View {
         content
-            .frame(width: Self.size, height: Self.size)
-            .background(hovered ? HostAppearance.hover : .clear, in: .rect(cornerRadius: 6))
+            .frame(width: compact ? 22 : Self.size, height: compact ? 24 : Self.size)
+            .background(hovered && !compact ? HostAppearance.hover : .clear, in: .rect(cornerRadius: 6))
             .overlay {
                 RoundedRectangle(cornerRadius: 6)
                     .strokeBorder(focused ? Color.accentColor : .clear, lineWidth: 2)
@@ -1441,6 +1459,7 @@ private struct HostActionMenuButton: View {
     let groups: [[Item]]
     let hovered: Bool
     let focused: Bool
+    var compact = false
 
     @State private var anchor = NSView(frame: .zero)
 
@@ -1448,7 +1467,8 @@ private struct HostActionMenuButton: View {
         Button(action: showMenu) {
             Image(systemName: "ellipsis")
                 .font(.system(size: 12, weight: .medium))
-                .modifier(HostActionAppearance(hovered: hovered, focused: focused))
+                .foregroundStyle(compact && !hovered ? Color.secondary : .primary)
+                .modifier(HostActionAppearance(hovered: hovered, focused: focused, compact: compact))
         }
         .buttonStyle(.plain)
         .background {
