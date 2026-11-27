@@ -9,9 +9,18 @@ enum HostSetupStep: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .welcome: "Welcome"
-        case .capture: "System Audio Capture"
-        case .effect: "Choose an Audio Unit"
+        case .capture: "Allow System Audio"
+        case .effect: "Add Effects"
         case .finish: "Finish Setup"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .welcome: "Use effects on your Mac’s audio and adjust each app’s volume."
+        case .capture: "Airwave needs audio access to apply effects and adjust app volume."
+        case .effect: "Add Audio Units for this output, or continue without effects."
+        case .finish: "Choose how Airwave starts and where it appears."
         }
     }
 
@@ -68,32 +77,37 @@ struct HostSetupView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showingEffects = false
 
+    private var currentOutput: HostDeviceTarget? {
+        host.editingDevices.first(where: \.isCurrent)
+    }
+
     var body: some View {
         ZStack(alignment: .bottom) {
-            HostCompactPage(title: step.title) {
+            HostCompactPage(title: step.title, subtitle: step.subtitle) {
                 stepContent
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .id(step)
-            .transition(reduceMotion ? .opacity : .hostPageReveal)
+            .transition(.opacity)
             .padding(.bottom, 64)
 
             footer.padding(.horizontal, 24).padding(.bottom, 24)
         }
-        .animation(reduceMotion ? nil : HostAppearance.setupPageAnimation, value: step)
+        .animation(reduceMotion ? nil : HostAppearance.pageFade, value: step)
         .sheet(isPresented: $showingEffects) {
-            EffectPicker(host: host) { component in
-                if let current = host.editingDevices.first(where: \.isCurrent) {
-                    host.selectEditingDevice(current.id)
-                    host.addEditing(component)
-                }
-                showingEffects = false
+            EffectPicker(host: host, allowsMultiple: true) { component in
+                guard let currentOutput else { return false }
+                host.selectEditingDevice(currentOutput.id)
+                let previousCount = host.editingSlots.count
+                host.addEditing(component)
+                return host.editingSlots.count > previousCount
             }
         }
+        .onChange(of: currentOutput?.id) { _, _ in showingEffects = false }
     }
 
     private var canFinish: Bool {
-        guard host.editingDevices.contains(where: \.isCurrent) else { return false }
+        guard currentOutput != nil else { return false }
         switch host.captureCheck {
         case .verified: return true
         case .idle: return shell.setupCompleted
@@ -104,31 +118,27 @@ struct HostSetupView: View {
     @ViewBuilder
     private var stepContent: some View {
         switch step {
-        case .welcome: welcomePage
+        case .welcome: EmptyView()
         case .capture: capturePage
         case .effect: effectPage
         case .finish: finishPage
         }
     }
 
-    private var welcomePage: some View {
-        Text("Apply Audio Unit effects to sound from your Mac. Each output can have its own effect chain.")
-            .foregroundStyle(.secondary)
-    }
-
     private var capturePage: some View {
         VStack(alignment: .leading, spacing: 12) {
             switch host.captureCheck {
             case .idle:
-                Text("The test plays a short sound. Allow system audio recording if macOS asks.")
-                captureButton("Test System Audio Capture")
+                Text("The test plays a short sound. If prompted, allow system audio recording.")
+                    .foregroundStyle(.secondary)
+                captureButton("Test Audio Access")
             case .checking:
-                ProgressView("Checking system audio…").controlSize(.small)
+                ProgressView("Testing audio access…").controlSize(.small)
             case .verified:
-                infoCard("Capture verified", icon: "checkmark.circle.fill", color: .green)
+                infoCard("System audio is ready", icon: "checkmark.circle.fill", color: .green)
                 captureButton("Test Again")
             case .failed(let reason):
-                infoCard("System audio capture needs attention", icon: "exclamationmark.triangle.fill",
+                infoCard("Audio access test failed", icon: "exclamationmark.triangle.fill",
                          detail: reason, color: .orange)
                 HStack {
                     Button("Open System Settings", action: host.openCaptureSettings)
@@ -140,32 +150,34 @@ struct HostSetupView: View {
 
     private var effectPage: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(host.outputName)
-                .foregroundStyle(.secondary)
-            let chosen = host.editingDevices.first(where: \.isCurrent)?.id == host.editingDeviceUID
-                ? host.editingSlots : []
-            if let effect = chosen.last {
-                infoCard(effect.name, icon: "checkmark.circle.fill", color: .green)
+            HStack {
+                Text(host.outputName)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Add Effects…") {
+                    host.rescan()
+                    showingEffects = true
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(currentOutput == nil)
+                .accessibilityIdentifier("setup-add-effect")
             }
-            Button("Add Effect…") {
-                host.rescan()
-                showingEffects = true
+            if let currentOutput, currentOutput.id == host.editingDeviceUID, !host.editingSlots.isEmpty {
+                EffectChain(host: host)
+                    .id(currentOutput.id)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-            .disabled(!host.editingDevices.contains(where: \.isCurrent))
-            .accessibilityIdentifier("setup-add-effect")
         }
     }
 
     private var finishPage: some View {
         VStack(alignment: .leading, spacing: 16) {
             if canFinish {
-                infoCard("Current output", icon: "speaker.wave.2", detail: host.outputName, color: .green)
+                infoCard("Audio output ready", icon: "speaker.wave.2", detail: host.outputName, color: .green)
             } else {
-                infoCard("Check system audio capture", icon: "exclamationmark.triangle.fill",
-                         detail: "A successful capture test is required to finish.", color: .orange)
-                Button("Review Capture") { step = .capture }
+                infoCard("Audio access is required", icon: "exclamationmark.triangle.fill",
+                         detail: "Run the audio test to finish setup.", color: .orange)
+                Button("Review Audio Access") { step = .capture }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
             }
@@ -210,7 +222,7 @@ struct HostSetupView: View {
             .accessibilityIdentifier("setup-back")
 
             navigationButton(
-                step == .finish ? "Finish Setup" : (step == .welcome ? "Begin Setup" : "Continue"),
+                step == .finish ? "Finish Setup" : (step == .welcome ? "Get Started" : "Continue"),
                 icon: step == .finish ? "play.fill" : "arrow.right",
                 prominent: true
             ) {

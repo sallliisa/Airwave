@@ -10,6 +10,7 @@ enum HostAppearance {
     static let audioSectionHeaderHeight: CGFloat = 28
     static let audioRowHeight: CGFloat = 52
     static let setupPageAnimation = Animation.smooth(duration: 0.3)
+    static let pageFade = Animation.easeInOut(duration: 0.16)
 
     static func powerTint(isOn: Bool) -> Color {
         isOn ? .primary : .secondary
@@ -123,7 +124,7 @@ struct HostWindow: View {
                 .id(selectedTab)
                 .transition(.opacity)
         }
-        .animation(reduceMotion || showsSetup ? nil : .easeInOut(duration: 0.16), value: selectedTab)
+        .animation(reduceMotion || showsSetup ? nil : HostAppearance.pageFade, value: selectedTab)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
@@ -305,11 +306,12 @@ private struct HostNoticeButton: View {
 
 private struct HostAudioPage<Content: View>: View {
     let title: String
+    let subtitle: String
     @ViewBuilder let content: () -> Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: HostAppearance.audioPageSpacing) {
-            HostPageHeader(title: title)
+            HostPageHeader(title: title, subtitle: subtitle)
             content()
         }
     }
@@ -362,7 +364,7 @@ private struct HostEffectsPage: View {
     }
 
     var body: some View {
-        HostAudioPage(title: "Effect Chain") {
+        HostAudioPage(title: "Effects", subtitle: "Build an effect chain for each audio output.") {
             VStack(alignment: .leading, spacing: HostAppearance.audioPageSpacing) {
                 if !host.editingDevices.isEmpty { deviceBar }
                 if host.editingSlots.isEmpty {
@@ -375,8 +377,9 @@ private struct HostEffectsPage: View {
         }
         .sheet(isPresented: $showingEffects) {
             EffectPicker(host: host) { component in
+                guard host.editingDeviceUID != nil else { return false }
                 host.addEditing(component)
-                showingEffects = false
+                return true
             }
         }
         .onChange(of: host.editingDeviceUID) { _, _ in showingEffects = false }
@@ -489,10 +492,18 @@ struct HostBrand: View {
 
 private struct HostPageHeader: View {
     let title: String
+    let subtitle: String
 
     var body: some View {
-        Text(title).font(.largeTitle.weight(.semibold))
-            .accessibilityAddTraits(.isHeader)
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title)
+                .font(.largeTitle.weight(.semibold))
+                .accessibilityAddTraits(.isHeader)
+            Text(subtitle)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 
@@ -529,11 +540,12 @@ struct HostSettingsRow<Trailing: View>: View {
 
 struct HostCompactPage<Content: View>: View {
     let title: String
+    let subtitle: String
     @ViewBuilder let content: () -> Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
-            HostPageHeader(title: title)
+            HostPageHeader(title: title, subtitle: subtitle)
             content()
         }
         .padding(.horizontal, 30)
@@ -615,10 +627,10 @@ private struct HostDevicesPage: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 14) {
+            HStack(alignment: .top, spacing: 14) {
                 HostBackButton(action: shell.showEffects)
                     .accessibilityIdentifier("back-to-effects")
-                HostPageHeader(title: "Manage Devices")
+                HostPageHeader(title: "Manage Devices", subtitle: "Edit effects and channel settings for each output.")
             }
 
             if host.editingDevices.isEmpty {
@@ -773,7 +785,7 @@ private struct HostMixerPage: View {
     var body: some View {
         let recent = host.mixerRows.filter(\.isRecent)
         let saved = host.mixerRows.filter { $0.isAdjusted && !$0.isRecent }
-        HostAudioPage(title: "App Mixer") {
+        HostAudioPage(title: "App Mixer", subtitle: "Adjust volume for individual apps.") {
             Group {
                 if recent.isEmpty && saved.isEmpty {
                     HostEmptyState(icon: "speaker.wave.2", title: "No apps to mix",
@@ -888,17 +900,19 @@ private struct HostSettingsPage: View {
     @ObservedObject var updates: HostUpdateManager
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                VStack(spacing: 0) {
-                    HostPreferenceRows(shell: shell)
-                }
-                .background(HostAppearance.raised, in: .rect(cornerRadius: HostAppearance.cornerRadius))
+        HostAudioPage(title: "Settings", subtitle: "Manage startup, menu bar access, and updates.") {
+            ScrollView {
+                VStack(spacing: 16) {
+                    VStack(spacing: 0) {
+                        HostPreferenceRows(shell: shell)
+                    }
+                    .background(HostAppearance.raised, in: .rect(cornerRadius: HostAppearance.cornerRadius))
 
-                utilityRows
+                    utilityRows
+                }
+                .frame(maxWidth: 520)
+                .frame(maxWidth: .infinity)
             }
-            .frame(maxWidth: 520)
-            .frame(maxWidth: .infinity)
         }
     }
 
@@ -1196,7 +1210,7 @@ struct HostEditorHeader: View {
 }
 
 @MainActor
-private struct EffectChain: View {
+struct EffectChain: View {
     private struct Drag {
         let id: UUID
         let startY: CGFloat
@@ -1420,6 +1434,7 @@ private struct EffectRow: View {
             .focusEffectDisabled()
             .help("Open \(slot.name) controls")
             .accessibilityLabel("Open \(slot.name) controls")
+            .accessibilityValue(slot.isBypassed ? "Bypassed" : "Enabled")
             .accessibilityIdentifier("open-editor")
             .overlay {
                 EffectCardPointer(
@@ -1526,10 +1541,10 @@ private struct EffectRow: View {
                     .foregroundStyle(slot.isBypassed ? Color.secondary : Color.primary)
                     .lineLimit(1)
                 if slot.isBypassed {
-                    Text("Bypassed")
-                        .font(.caption)
+                    Image(systemName: "circle.slash")
+                        .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.secondary)
-                        .fixedSize()
+                        .accessibilityHidden(true)
                 }
             }
             if !slot.manufacturer.isEmpty {
@@ -1624,9 +1639,11 @@ private struct EffectCardPointer: NSViewRepresentable {
 struct EffectPicker: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var host: HostController
+    var allowsMultiple = false
     @State private var search = ""
+    @State private var addedCount = 0
     @FocusState private var searchFocused: Bool
-    let add: (EffectComponent) -> Void
+    let add: (EffectComponent) -> Bool
 
     private var filteredComponents: [EffectComponent] {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1640,7 +1657,7 @@ struct EffectPicker: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Add Effect")
+            Text(allowsMultiple ? "Add Effects" : "Add Effect")
                 .font(.title2.weight(.semibold))
                 .accessibilityAddTraits(.isHeader)
             HStack(spacing: 8) {
@@ -1653,7 +1670,7 @@ struct EffectPicker: View {
                     .accessibilityIdentifier("effect-search")
                     .onSubmit {
                         if filteredComponents.count == 1, let component = filteredComponents.first {
-                            add(component)
+                            addEffect(component)
                         }
                     }
             }
@@ -1666,7 +1683,12 @@ struct EffectPicker: View {
             HStack {
                 Button("Rescan", action: host.rescan)
                 Spacer()
-                Button("Cancel") { dismiss() }
+                if allowsMultiple && addedCount > 0 {
+                    Text("\(addedCount) added")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                Button(allowsMultiple ? "Done" : "Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
             }
         }
@@ -1674,6 +1696,15 @@ struct EffectPicker: View {
         .frame(width: 450, height: 380)
         .background(HostAppearance.canvas)
         .onAppear { searchFocused = true }
+    }
+
+    private func addEffect(_ component: EffectComponent) {
+        guard add(component) else { return }
+        if allowsMultiple {
+            addedCount += 1
+        } else {
+            dismiss()
+        }
     }
 
     private var results: some View {
@@ -1695,7 +1726,7 @@ struct EffectPicker: View {
                     LazyVStack(spacing: 0) {
                         ForEach(filteredComponents) { component in
                             Button {
-                                add(component)
+                                addEffect(component)
                             } label: {
                                 HStack {
                                     VStack(alignment: .leading, spacing: 2) {

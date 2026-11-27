@@ -23,11 +23,43 @@ final class Airwave3UITests: XCTestCase {
     }
 
     @MainActor
+    func testOnboardingCanAddMultipleEffectsInOnePicker() throws {
+        try withApp(setupPending: true) { app, _ in
+            let next = app.buttons["setup-next"]
+            XCTAssertTrue(next.waitForExistence(timeout: 8))
+            next.click()
+            XCTAssertTrue(app.staticTexts["Allow System Audio"].waitForExistence(timeout: 4))
+            next.click()
+            let addEffects = app.buttons["setup-add-effect"]
+            XCTAssertTrue(addEffects.waitForExistence(timeout: 4))
+            addEffects.click()
+
+            let search = app.textFields["effect-search"]
+            XCTAssertTrue(search.waitForExistence(timeout: 4))
+            search.typeText("AULowpass")
+            app.buttons["Add AULowpass"].click()
+            XCTAssertTrue(app.staticTexts["1 added"].exists)
+
+            search.click()
+            app.typeKey("a", modifierFlags: .command)
+            search.typeText("AUDelay")
+            app.buttons["Add AUDelay"].click()
+            XCTAssertTrue(app.staticTexts["2 added"].exists)
+            app.buttons["Done"].click()
+
+            let cards = app.buttons.matching(identifier: "open-editor")
+            XCTAssertTrue(cards.element(boundBy: 1).waitForExistence(timeout: 4))
+            XCTAssertEqual(cards.element(boundBy: 0).label, "Open AULowpass controls")
+            XCTAssertEqual(cards.element(boundBy: 1).label, "Open AUDelay controls")
+        }
+    }
+
+    @MainActor
     func testTabFramesStayFixedAndTroubleshootingReturnsToSettings() throws {
         try withApp { app, _ in
             let tabIDs = ["effects", "app-mixer", "application-settings"]
             let tabs = tabIDs.map { app.buttons[$0] }
-            let effectsHeading = app.staticTexts["Effect Chain"]
+            let effectsHeading = app.staticTexts["Effects"]
             let setup = app.buttons["setup-troubleshooting"]
             XCTAssertTrue(effectsHeading.waitForExistence(timeout: 8))
             let frames = tabs.map(\.frame)
@@ -124,7 +156,7 @@ final class Airwave3UITests: XCTestCase {
     @MainActor
     func testMenuBarReopensTheMainWindowAfterClosingIt() throws {
         try withApp(preferences: ["Host.Application.ShowInMenuBar": true]) { app, _ in
-            let effectsHeading = app.staticTexts["Effect Chain"]
+            let effectsHeading = app.staticTexts["Effects"]
             XCTAssertTrue(effectsHeading.waitForExistence(timeout: 8))
             let close = app.windows.firstMatch.buttons[XCUIIdentifierCloseWindow]
             XCTAssertTrue(close.exists)
@@ -148,7 +180,7 @@ final class Airwave3UITests: XCTestCase {
     @MainActor
     func testAudioIssueOpensWithoutMovingTheEffectsControls() throws {
         try withApp(profiles: Data("Invalid profile data".utf8)) { app, profile in
-            let effectsHeading = app.staticTexts["Effect Chain"]
+            let effectsHeading = app.staticTexts["Effects"]
             XCTAssertTrue(effectsHeading.waitForExistence(timeout: 8))
             let addEffect = app.buttons["add-effect"]
             let content = addEffect.exists ? addEffect : effectsHeading
@@ -276,6 +308,8 @@ final class Airwave3UITests: XCTestCase {
             editorPower.click()
             XCTAssertEqual(editorPower.value as? String, "Off")
             XCTAssertEqual(cardPower.value as? String, "Off")
+            XCTAssertEqual(mainWindow.buttons["open-editor"].value as? String, "Bypassed")
+            XCTAssertFalse(mainWindow.staticTexts["Bypassed"].exists)
             XCTAssertEqual(editorTitle.frame, titleFrame)
             XCTAssertEqual(editorPower.frame, powerFrame)
 
