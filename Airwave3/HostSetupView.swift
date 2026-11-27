@@ -17,7 +17,7 @@ enum HostSetupStep: String, CaseIterable, Identifiable {
 
     var subtitle: String {
         switch self {
-        case .welcome: "Use effects on your Mac’s audio and adjust each app’s volume."
+        case .welcome: "Build an effect chain for each audio output and adjust the volume of individual apps."
         case .capture: "Airwave needs audio access to apply effects and adjust app volume."
         case .effect: "Add Audio Units for this output, or continue without effects."
         case .finish: "Choose how Airwave starts and where it appears."
@@ -83,13 +83,10 @@ struct HostSetupView: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            HostCompactPage(title: step.title, subtitle: step.subtitle) {
-                stepContent
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .id(step)
-            .transition(.opacity)
-            .padding(.bottom, 64)
+            stepContent
+                .id(step)
+                .transition(.opacity)
+                .padding(.bottom, 64)
 
             footer.padding(.horizontal, 24).padding(.bottom, 24)
         }
@@ -118,10 +115,16 @@ struct HostSetupView: View {
     @ViewBuilder
     private var stepContent: some View {
         switch step {
-        case .welcome: EmptyView()
-        case .capture: capturePage
-        case .effect: effectPage
-        case .finish: finishPage
+        case .welcome: HostSetupWelcome { step = .capture }
+        case .capture: setupPage(capturePage)
+        case .effect: setupPage(effectPage)
+        case .finish: setupPage(finishPage)
+        }
+    }
+
+    private func setupPage(_ content: some View) -> some View {
+        HostCompactPage(title: step.title, subtitle: step.subtitle) {
+            content.frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -214,29 +217,29 @@ struct HostSetupView: View {
                 .accessibilityIdentifier("exit-setup")
             }
             Spacer()
-            navigationButton("Back", icon: "chevron.left", prominent: false) {
-                step = HostSetupStep.allCases[step.index - 1]
-            }
-            .disabled(step == .welcome)
-            .opacity(step == .welcome ? 0.35 : 1)
-            .accessibilityIdentifier("setup-back")
-
-            navigationButton(
-                step == .finish ? "Finish Setup" : (step == .welcome ? "Get Started" : "Continue"),
-                icon: step == .finish ? "play.fill" : "arrow.right",
-                prominent: true
-            ) {
-                if step == .finish {
-                    guard canFinish else { return }
-                    shell.finishSetup()
-                } else {
-                    step = HostSetupStep.allCases[step.index + 1]
+            if step != .welcome {
+                navigationButton("Back", icon: "chevron.left", prominent: false) {
+                    step = HostSetupStep.allCases[step.index - 1]
                 }
+                .accessibilityIdentifier("setup-back")
+
+                navigationButton(
+                    step == .finish ? "Finish Setup" : "Continue",
+                    icon: step == .finish ? "play.fill" : "arrow.right",
+                    prominent: true
+                ) {
+                    if step == .finish {
+                        guard canFinish else { return }
+                        shell.finishSetup()
+                    } else {
+                        step = HostSetupStep.allCases[step.index + 1]
+                    }
+                }
+                .disabled(step == .finish && !canFinish)
+                .opacity(step == .finish && !canFinish ? 0.35 : 1)
+                .keyboardShortcut(.defaultAction)
+                .accessibilityIdentifier(step == .finish ? "finish-setup" : "setup-next")
             }
-            .disabled(step == .finish && !canFinish)
-            .opacity(step == .finish && !canFinish ? 0.35 : 1)
-            .keyboardShortcut(.defaultAction)
-            .accessibilityIdentifier(step == .finish ? "finish-setup" : "setup-next")
         }
     }
 
@@ -255,5 +258,49 @@ struct HostSetupView: View {
         .buttonStyle(.plain)
         .accessibilityLabel(label)
         .help(label)
+    }
+}
+
+private struct HostSetupWelcome: View {
+    let start: () -> Void
+
+    var body: some View {
+        VStack(spacing: 22) {
+            Image("AirwaveIcon")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 96, height: 96)
+                .shadow(color: .orange.opacity(0.18), radius: 24, y: 8)
+                .accessibilityHidden(true)
+
+            VStack(spacing: 8) {
+                Text(HostSetupStep.welcome.title)
+                    .font(.system(size: 38, weight: .semibold))
+                    .accessibilityAddTraits(.isHeader)
+                Text(HostSetupStep.welcome.subtitle)
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(3)
+                    .frame(maxWidth: 320)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Button(action: start) {
+                HStack(spacing: 8) {
+                    Text("Get Started")
+                    Image(systemName: "arrow.right")
+                        .accessibilityHidden(true)
+                }
+                .font(.system(size: 13, weight: .semibold))
+                .padding(.horizontal, 8)
+            }
+            .buttonStyle(.borderedProminent)
+            .buttonBorderShape(.capsule)
+            .controlSize(.large)
+            .keyboardShortcut(.defaultAction)
+            .accessibilityIdentifier("setup-next")
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

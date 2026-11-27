@@ -49,7 +49,7 @@ final class ShellModel: ObservableObject {
         page = complete ? .effects : .setup
         let checkpoint = defaults.string(forKey: Self.setupCheckpointKey)
         setupCheckpoint = ["welcome", "capture", "effect", "finish"].first { $0 == checkpoint } ?? "welcome"
-        showsMenuBar = defaults.bool(forKey: Self.menuBarKey)
+        showsMenuBar = defaults.object(forKey: Self.menuBarKey) as? Bool ?? !complete
         refreshLoginItem()
     }
 
@@ -66,6 +66,7 @@ final class ShellModel: ObservableObject {
     }
 
     func finishSetup() {
+        defaults.set(showsMenuBar, forKey: Self.menuBarKey)
         setupCompleted = true
         defaults.set(true, forKey: Self.setupCompletedKey)
         showEffects()

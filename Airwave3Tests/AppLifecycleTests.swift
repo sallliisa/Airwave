@@ -40,9 +40,8 @@ final class AppLifecycleTests: XCTestCase {
         try withDefaults { defaults in
             let shell = ShellModel(defaults: defaults, loginItem: LoginItemStub())
             XCTAssertFalse(shell.setupCompleted)
-            XCTAssertFalse(shell.showsMenuBar)
+            XCTAssertTrue(shell.showsMenuBar)
             shell.setupCheckpoint = "effect"
-            shell.setMenuBarVisible(true)
 
             let reopened = ShellModel(defaults: defaults, loginItem: LoginItemStub())
             reopened.showEffects()
@@ -53,6 +52,7 @@ final class AppLifecycleTests: XCTestCase {
             reopened.finishSetup()
             let completed = ShellModel(defaults: defaults, loginItem: LoginItemStub())
             XCTAssertTrue(completed.setupCompleted)
+            XCTAssertTrue(completed.showsMenuBar)
             XCTAssertEqual(completed.page, .effects)
             completed.page = .settings
             completed.showSetup()
@@ -60,6 +60,9 @@ final class AppLifecycleTests: XCTestCase {
             XCTAssertEqual(completed.setupCheckpoint, "welcome")
             completed.returnFromSetup()
             XCTAssertEqual(completed.page, .settings)
+
+            completed.setMenuBarVisible(false)
+            XCTAssertFalse(ShellModel(defaults: defaults, loginItem: LoginItemStub()).showsMenuBar)
         }
     }
 
