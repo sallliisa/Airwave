@@ -1186,7 +1186,7 @@ struct HostEditorHeader: View {
 
             Spacer(minLength: 0)
 
-            HostHeaderIconButton(symbol: "power", tint: HostAppearance.powerTint(isOn: !bypassed), title: state) {
+            HostHeaderIconButton(symbol: "power", tint: HostAppearance.powerTint(isOn: !bypassed)) {
                 host.setBypass(slot.id, !bypassed, for: deviceUID)
             }
             .disabled(current == nil || current?.migrationIssue != nil)
