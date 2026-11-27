@@ -10,6 +10,10 @@ enum HostAppearance {
     static let audioSectionHeaderHeight: CGFloat = 28
     static let audioRowHeight: CGFloat = 52
     static let setupPageAnimation = Animation.smooth(duration: 0.3)
+
+    static func powerTint(isOn: Bool) -> Color {
+        isOn ? .primary : .secondary
+    }
 }
 
 @MainActor
@@ -224,12 +228,13 @@ private struct HostProcessingButton: View {
     @ObservedObject var host: HostController
 
     var body: some View {
-        HostHeaderIconButton(symbol: "power", tint: host.isEnabled ? .primary : .secondary) {
+        let state = host.isEnabled ? "On" : "Off"
+        HostHeaderIconButton(symbol: "power", tint: HostAppearance.powerTint(isOn: host.isEnabled), title: state) {
             host.setEnabled(!host.isEnabled)
         }
         .help(host.isEnabled ? "Bypass all effects and app volume adjustments" : "Resume audio processing")
         .accessibilityLabel(host.isEnabled ? "Bypass Processing" : "Resume Processing")
-        .accessibilityValue(host.isEnabled ? "On" : "Off")
+        .accessibilityValue(state)
         .accessibilityIdentifier("global-bypass")
     }
 }
@@ -237,22 +242,27 @@ private struct HostProcessingButton: View {
 private struct HostHeaderIconButton: View {
     let symbol: String
     let tint: Color
+    var title: String? = nil
     let action: () -> Void
 
     @State private var hovered = false
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(tint)
-                .frame(width: 44, height: 44)
-                .background {
-                    RoundedRectangle(cornerRadius: HostAppearance.cornerRadius)
-                        .fill(hovered ? Color.white.opacity(0.16) : .clear)
-                        .frame(width: 34, height: 34)
+            HStack(spacing: 6) {
+                Image(systemName: symbol)
+                    .font(.system(size: 14, weight: .medium))
+                if let title {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                        .frame(width: 22, alignment: .leading)
                 }
-                .contentShape(.rect)
+            }
+            .foregroundStyle(tint)
+            .frame(width: title == nil ? 34 : 62, height: 34)
+            .background(hovered ? Color.white.opacity(0.16) : .clear, in: .rect(cornerRadius: HostAppearance.cornerRadius))
+            .padding(5)
+            .contentShape(.rect)
         }
         .buttonStyle(.plain)
         .onHover { hovered = $0 }
@@ -1164,6 +1174,7 @@ struct HostEditorHeader: View {
     var body: some View {
         let current = host.effectSlot(slot.id, for: deviceUID)
         let bypassed = current?.isBypassed ?? true
+        let state = bypassed ? "Off" : "On"
         let actionTitle = bypassed ? "Enable \(slot.name)" : "Bypass \(slot.name)"
 
         HStack(spacing: 8) {
@@ -1175,13 +1186,13 @@ struct HostEditorHeader: View {
 
             Spacer(minLength: 0)
 
-            HostHeaderIconButton(symbol: "power", tint: bypassed ? .secondary : .primary) {
+            HostHeaderIconButton(symbol: "power", tint: HostAppearance.powerTint(isOn: !bypassed), title: state) {
                 host.setBypass(slot.id, !bypassed, for: deviceUID)
             }
             .disabled(current == nil || current?.migrationIssue != nil)
             .help(actionTitle)
             .accessibilityLabel(actionTitle)
-            .accessibilityValue(bypassed ? "Off" : "On")
+            .accessibilityValue(state)
             .accessibilityIdentifier("editor-bypass-effect")
         }
         .padding(.leading, 14)
@@ -1203,7 +1214,7 @@ private struct HostEffectPowerButton: View {
         Button(action: action) {
             Image(systemName: "power")
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(isBypassed ? Color.secondary : Color.accentColor)
+                .foregroundStyle(HostAppearance.powerTint(isOn: !isBypassed))
                 .frame(width: 27, height: 29)
                 .background(hovered ? Color.primary.opacity(0.08) : .clear, in: .rect(cornerRadius: 6))
                 .contentShape(.rect)

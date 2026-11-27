@@ -32,6 +32,9 @@ final class Airwave3UITests: XCTestCase {
             XCTAssertTrue(addEffect.waitForExistence(timeout: 8))
             let frames = tabs.map(\.frame)
             XCTAssertTrue(frames.allSatisfy { !$0.isEmpty })
+            let globalPower = app.buttons["global-bypass"]
+            XCTAssertTrue(globalPower.exists)
+            XCTAssertLessThan(frames[2].maxX, globalPower.frame.minX)
 
             tabs[1].click()
             XCTAssertTrue(app.staticTexts["App Mixer"].waitForExistence(timeout: 4))
