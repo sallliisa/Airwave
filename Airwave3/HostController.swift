@@ -135,7 +135,13 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
         super.init()
         isEnabled = defaults.object(forKey: "ProcessingEnabled") == nil || defaults.bool(forKey: "ProcessingEnabled")
         do {
-            profiles = try store.load()
+            let saved = try store.load()
+            profiles = saved.mapValues { profile in
+                var profile = profile
+                profile.slots = profile.slots.map { $0.adoptingSpatialBypass() }
+                return profile
+            }
+            if profiles != saved { persistProfiles() }
         } catch {
             storageReadOnly = true
             storageError = "Saved chains could not be read. Their file is preserved."
@@ -205,6 +211,11 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
     var editingSlots: [EffectSlot] {
         guard let uid = editingDeviceUID else { return [] }
         return uid == currentDeviceUID ? slots : profiles[uid]?.slots ?? []
+    }
+
+    func effectSlot(_ id: UUID, for deviceUID: String) -> EffectSlot? {
+        let deviceSlots = deviceUID == currentDeviceUID ? slots : profiles[deviceUID]?.slots ?? []
+        return deviceSlots.first { $0.id == id }
     }
 
     var editingSlotIssues: [UUID: String] {
@@ -282,10 +293,18 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     func setEditingBypass(_ id: UUID, _ bypassed: Bool) {
-        guard let uid = editingDeviceUID, let index = editingSlots.firstIndex(where: { $0.id == id }),
-              editingSlots[index].migrationIssue == nil else { return }
-        if uid == currentDeviceUID { setBypass(id, bypassed) }
-        else { editProfile(uid) { $0[index].isBypassed = bypassed } }
+        guard let uid = editingDeviceUID else { return }
+        setBypass(id, bypassed, for: uid)
+    }
+
+    func setBypass(_ id: UUID, _ bypassed: Bool, for deviceUID: String) {
+        if deviceUID == currentDeviceUID {
+            setBypass(id, bypassed)
+        } else if let deviceSlots = profiles[deviceUID]?.slots,
+                  let index = deviceSlots.firstIndex(where: { $0.id == id }),
+                  deviceSlots[index].migrationIssue == nil {
+            editProfile(deviceUID) { $0[index].isBypassed = bypassed }
+        }
     }
 
     func resetProfile(_ uid: String) {
@@ -446,6 +465,11 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
                 window.title = slot.name
                 window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
                 window.isReleasedWhenClosed = false
+                let power = NSTitlebarAccessoryViewController()
+                power.layoutAttribute = .right
+                power.view = NSHostingView(rootView: HostEditorPowerButton(host: self, slot: slot, deviceUID: uid))
+                power.view.frame.size = NSSize(width: 38, height: 29)
+                window.addTitlebarAccessoryViewController(power)
                 if window.contentLayoutRect.width < 240 || window.contentLayoutRect.height < 120 {
                     window.setContentSize(NSSize(width: 420, height: 300))
                 }

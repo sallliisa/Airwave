@@ -55,6 +55,32 @@ final class SystemAudioHostTests: XCTestCase {
         XCTAssertEqual(try store.load(), restored)
     }
 
+    @MainActor
+    func testSavedSpatialCheckboxBecomesHostBypassWithoutChangingThePreset() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ProfileStore(url: root.appending(path: "profiles.plist"))
+        var slot = EffectSlot(EffectComponent(id: .airwaveSpatial, name: "Spatial", manufacturer: "Airwave"))
+        slot.state = try PropertyListSerialization.data(fromPropertyList: [
+            "AirwaveSpatial.bypass": true,
+            "AirwaveSpatial.bundledPreset": "room",
+        ], format: .binary, options: 0)
+        try store.save(["headphones": DeviceProfile(name: "Headphones", slots: [slot])])
+
+        let host = HostController(store: store, currentOutput: { throw CocoaError(.fileNoSuchFile) },
+                                  availableOutputs: { [] })
+        defer { host.shutdown() }
+        XCTAssertEqual(host.effectSlot(slot.id, for: "headphones")?.isBypassed, true)
+        host.setBypass(slot.id, false, for: "headphones")
+
+        let saved = try XCTUnwrap(store.load()["headphones"]?.slots.first)
+        let state = try XCTUnwrap(saved.state)
+        let document = try XCTUnwrap(PropertyListSerialization.propertyList(from: state, format: nil) as? [String: Any])
+        XCTAssertFalse(saved.isBypassed)
+        XCTAssertEqual(document["AirwaveSpatial.bypass"] as? Bool, false)
+        XCTAssertEqual(document["AirwaveSpatial.bundledPreset"] as? String, "room")
+    }
+
     func testUpdateConfigurationRequiresAHostFeedAndEd25519Key() {
         let key = Data(repeating: 11, count: 32).base64EncodedString()
         XCTAssertNil(HostUpdateConfiguration(feed: nil, publicKey: key))

@@ -55,6 +55,19 @@ struct EffectSlot: Identifiable, Codable, Equatable {
         manufacturer = effect.manufacturer
         isBypassed = false
     }
+
+    func adoptingSpatialBypass() -> Self {
+        guard component == .airwaveSpatial, let state,
+              var document = try? PropertyListSerialization.propertyList(from: state, format: nil) as? [String: Any],
+              document["AirwaveSpatial.bypass"] as? Bool == true else { return self }
+        document["AirwaveSpatial.bypass"] = false
+        guard let updated = try? PropertyListSerialization.data(fromPropertyList: document, format: .binary, options: 0)
+        else { return self }
+        var slot = self
+        slot.isBypassed = true
+        slot.state = updated
+        return slot
+    }
 }
 
 struct DeviceProfile: Codable, Equatable {

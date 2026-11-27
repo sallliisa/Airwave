@@ -205,6 +205,31 @@ final class Airwave3UITests: XCTestCase {
     }
 
     @MainActor
+    func testEffectCardAndControlsShareTheSamePowerState() throws {
+        try withApp(profiles: offlineProfile) { app, _ in
+            selectOfflineDevice(in: app)
+            addLowpass(to: app)
+            let mainWindow = app.windows["Airwave"]
+            let cardPower = mainWindow.buttons["bypass-effect"]
+            XCTAssertTrue(cardPower.waitForExistence(timeout: 5))
+            mainWindow.buttons["open-editor"].click()
+
+            let editor = app.windows["AULowpass"]
+            let editorPower = editor.buttons["editor-bypass-effect"]
+            XCTAssertTrue(editorPower.waitForExistence(timeout: 8))
+            XCTAssertEqual(editorPower.value as? String, "On")
+            editorPower.click()
+            XCTAssertEqual(editorPower.value as? String, "Off")
+            XCTAssertEqual(cardPower.value as? String, "Off")
+
+            mainWindow.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.03)).click()
+            cardPower.click()
+            XCTAssertEqual(cardPower.value as? String, "On")
+            XCTAssertEqual(editorPower.value as? String, "On")
+        }
+    }
+
+    @MainActor
     func testMissingEqualizerPresetCanBeRestoredFromTheAudioUnitControls() throws {
         let component = ["type": 0x61756678, "subtype": 0x45714150, "manufacturer": 0x536E6866]
         let profiles = try plist([offlineDeviceID: ["name": "Test Headphones", "slots": [[
@@ -222,6 +247,9 @@ final class Airwave3UITests: XCTestCase {
             controls.click()
             let editor = app.windows["Equalizer"]
             XCTAssertTrue(editor.waitForExistence(timeout: 8))
+            let power = editor.buttons["editor-bypass-effect"]
+            XCTAssertTrue(power.exists)
+            XCTAssertFalse(power.isEnabled)
             let picker = editor.descendants(matching: .any).matching(identifier: "eq-presets").firstMatch
             XCTAssertTrue(picker.waitForExistence(timeout: 5))
             picker.click()
@@ -229,6 +257,8 @@ final class Airwave3UITests: XCTestCase {
             XCTAssertTrue(replacement.waitForExistence(timeout: 4))
             replacement.click()
             XCTAssertTrue(issue.waitForNonExistence(timeout: 5))
+            XCTAssertTrue(power.isEnabled)
+            XCTAssertEqual(power.value as? String, "On")
 
             let bytes = try Data(contentsOf: profile)
             let saved = try XCTUnwrap(PropertyListSerialization.propertyList(from: bytes, format: nil) as? [String: Any])

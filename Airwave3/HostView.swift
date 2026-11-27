@@ -1153,6 +1153,49 @@ private struct EffectDrag: Codable, Transferable {
     }
 }
 
+@MainActor
+struct HostEditorPowerButton: View {
+    @ObservedObject var host: HostController
+    let slot: EffectSlot
+    let deviceUID: String
+
+    var body: some View {
+        let current = host.effectSlot(slot.id, for: deviceUID)
+        let bypassed = current?.isBypassed ?? true
+        HostEffectPowerButton(name: slot.name, isBypassed: bypassed) {
+            host.setBypass(slot.id, !bypassed, for: deviceUID)
+        }
+        .disabled(current == nil || current?.migrationIssue != nil)
+        .accessibilityIdentifier("editor-bypass-effect")
+        .frame(width: 38, height: 29)
+    }
+}
+
+private struct HostEffectPowerButton: View {
+    let name: String
+    let isBypassed: Bool
+    let action: () -> Void
+    @State private var hovered = false
+
+    private var actionTitle: String { isBypassed ? "Enable \(name)" : "Bypass \(name)" }
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "power")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(isBypassed ? Color.secondary : Color.accentColor)
+                .frame(width: 27, height: 29)
+                .background(hovered ? Color.primary.opacity(0.08) : .clear, in: .rect(cornerRadius: 6))
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+        .help(actionTitle)
+        .accessibilityLabel(actionTitle)
+        .accessibilityValue(isBypassed ? "Off" : "On")
+    }
+}
+
 private struct EffectRow: View {
     let slot: EffectSlot
     let issue: String?
@@ -1181,17 +1224,8 @@ private struct EffectRow: View {
                     .accessibilityIdentifier("effect-issue")
             }
             if slot.migrationIssue == nil {
-                Button(action: toggleBypass) {
-                    Image(systemName: "power")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(slot.isBypassed ? Color.secondary : Color.accentColor)
-                        .frame(width: 27, height: 29)
-                        .contentShape(.rect)
-                }
-                .buttonStyle(.plain)
-                .help(slot.isBypassed ? "Enable \(slot.name)" : "Bypass \(slot.name)")
-                .accessibilityLabel(slot.isBypassed ? "Enable \(slot.name)" : "Bypass \(slot.name)")
-                .accessibilityIdentifier("bypass-effect")
+                HostEffectPowerButton(name: slot.name, isBypassed: slot.isBypassed, action: toggleBypass)
+                    .accessibilityIdentifier("bypass-effect")
             }
 
             Button(action: openEditor) {

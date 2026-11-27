@@ -9,7 +9,6 @@ import os
 final class AirwaveSpatialViewController: AUViewController, AUAudioUnitFactory {
     private nonisolated let unit = OSAllocatedUnfairLock<AirwaveSpatialAudioUnit?>(uncheckedState: nil)
     private let picker = SpatialPresetPickerModel()
-    private var bypassObservation: NSKeyValueObservation?
     private var presetsObservation: NSKeyValueObservation?
 
     nonisolated func createAudioUnit(with componentDescription: AudioComponentDescription) throws -> AUAudioUnit {
@@ -39,16 +38,12 @@ final class AirwaveSpatialViewController: AUViewController, AUAudioUnitFactory {
 
     private func connectEditor() {
         NotificationCenter.default.removeObserver(self, name: AirwaveSpatialAudioUnit.presetDidChange, object: nil)
-        bypassObservation = nil
         presetsObservation = nil
         if let audioUnit = unit.withLockUnchecked({ $0 }) {
             NotificationCenter.default.addObserver(
                 self, selector: #selector(presetDidChange), name: AirwaveSpatialAudioUnit.presetDidChange,
                 object: audioUnit
             )
-            bypassObservation = audioUnit.observe(\.shouldBypassEffect) { [weak self] _, _ in
-                DispatchQueue.main.async { [weak self] in self?.refreshPicker() }
-            }
             presetsObservation = audioUnit.observe(\.userPresets) { [weak self] _, _ in
                 DispatchQueue.main.async { [weak self] in self?.refreshPicker() }
             }
@@ -70,8 +65,7 @@ final class AirwaveSpatialViewController: AUViewController, AUAudioUnitFactory {
             case .bundled(let preset): detachedName = preset.libraryName
             }
         }
-        picker.library = .init(presets: presets, selection: selected?.number,
-                               detachedName: detachedName, isBypassed: audioUnit.shouldBypassEffect)
+        picker.library = .init(presets: presets, selection: selected?.number, detachedName: detachedName)
     }
 
     @objc private nonisolated func presetDidChange(_ notification: Notification) {
@@ -89,9 +83,6 @@ final class AirwaveSpatialViewController: AUViewController, AUAudioUnitFactory {
             renamePreset(preset, in: audioUnit)
         case .delete(let preset):
             deletePreset(preset, from: audioUnit)
-        case .bypass(let isBypassed):
-            audioUnit.shouldBypassEffect = isBypassed
-            refreshPicker()
         }
     }
 
@@ -154,7 +145,6 @@ private final class SpatialPresetPickerModel: ObservableObject {
         let presets: [AUAudioUnitPreset]
         let selection: Int?
         let detachedName: String?
-        let isBypassed: Bool
     }
 
     @Published var library: Library?
@@ -167,7 +157,6 @@ private struct SpatialPresetPicker: View {
         case importWAV
         case rename(AUAudioUnitPreset)
         case delete(AUAudioUnitPreset)
-        case bypass(Bool)
     }
 
     @ObservedObject var model: SpatialPresetPickerModel
@@ -176,18 +165,9 @@ private struct SpatialPresetPicker: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("HRIR Presets")
-                    .font(.headline)
-                    .accessibilityAddTraits(.isHeader)
-                Spacer()
-                Toggle("Bypass", isOn: Binding(
-                    get: { model.library?.isBypassed ?? false },
-                    set: { perform(.bypass($0)) }
-                ))
-                .toggleStyle(.checkbox)
-                .controlSize(.small)
-            }
+            Text("HRIR Presets")
+                .font(.headline)
+                .accessibilityAddTraits(.isHeader)
 
             VStack(spacing: 0) {
                 rows
