@@ -175,21 +175,33 @@ final class Airwave3UITests: XCTestCase {
             selectOfflineDevice(in: app)
             addLowpass(to: app)
             addLowpass(to: app)
-            let names = app.staticTexts.matching(identifier: "effect-name")
-            XCTAssertTrue(names.element(boundBy: 1).waitForExistence(timeout: 5))
-            XCTAssertEqual(names.count, 2)
-            XCTAssertEqual(names.element(boundBy: 0).label, names.element(boundBy: 1).label)
+            let cards = app.buttons.matching(identifier: "open-editor")
+            XCTAssertTrue(cards.element(boundBy: 1).waitForExistence(timeout: 5))
+            XCTAssertEqual(cards.count, 2)
+            XCTAssertEqual(cards.element(boundBy: 0).label, cards.element(boundBy: 1).label)
 
             let bypasses = app.buttons.matching(identifier: "bypass-effect")
             bypasses.element(boundBy: 0).click()
             XCTAssertTrue(bypasses.element(boundBy: 0).label.hasPrefix("Enable "))
             XCTAssertTrue(bypasses.element(boundBy: 1).label.hasPrefix("Bypass "))
+            XCTAssertFalse(app.windows["AULowpass"].exists)
 
-            let source = names.element(boundBy: 0)
-                .coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5))
-                .withOffset(CGVector(dx: 110, dy: 0))
-            let target = names.element(boundBy: 1)
+            let more = app.descendants(matching: .any).matching(identifier: "effect-actions").firstMatch
+            more.click()
+            XCTAssertTrue(app.menuItems["Move Down"].waitForExistence(timeout: 4))
+            app.typeKey(.escape, modifierFlags: [])
+            XCTAssertFalse(app.windows["AULowpass"].exists)
+
+            let source = cards.element(boundBy: 0)
+                .coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.4))
+            let target = cards.element(boundBy: 1)
+                .coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.7))
+            let outsideChain = app.buttons["effects"]
                 .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            source.click(forDuration: 0.25, thenDragTo: outsideChain, withVelocity: .slow, thenHoldForDuration: 0.25)
+            XCTAssertTrue(bypasses.element(boundBy: 0).label.hasPrefix("Enable "))
+            XCTAssertFalse(app.windows["AULowpass"].exists)
+
             source.click(forDuration: 0.25, thenDragTo: target, withVelocity: .slow, thenHoldForDuration: 0.4)
             let moved = XCTNSPredicateExpectation(
                 predicate: NSPredicate(format: "label BEGINSWITH %@", "Enable "),
@@ -197,6 +209,12 @@ final class Airwave3UITests: XCTestCase {
             )
             XCTAssertEqual(XCTWaiter.wait(for: [moved], timeout: 4), .completed)
             XCTAssertTrue(bypasses.element(boundBy: 0).label.hasPrefix("Bypass "))
+            XCTAssertFalse(app.windows["AULowpass"].exists)
+
+            cards.element(boundBy: 1).click()
+            let editor = app.windows["AULowpass"]
+            XCTAssertTrue(editor.waitForExistence(timeout: 5))
+            XCTAssertEqual(editor.buttons["editor-bypass-effect"].value as? String, "Off")
 
             app.terminate()
             app.launch()

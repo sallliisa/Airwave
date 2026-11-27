@@ -333,7 +333,7 @@ private struct HostEffectsPage: View {
                 if host.editingSlots.isEmpty {
                     emptyChain
                 } else {
-                    effectChain
+                    EffectChain(host: host)
                         .id(host.editingDeviceUID)
                 }
             }
@@ -428,47 +428,6 @@ private struct HostEffectsPage: View {
             .padding(.horizontal, 12)
             .frame(maxWidth: .infinity, minHeight: HostAppearance.audioRowHeight, alignment: .leading)
             .background(HostAppearance.raised, in: .rect(cornerRadius: HostAppearance.cornerRadius))
-    }
-
-    private var effectChain: some View {
-        ScrollView {
-            LazyVStack(spacing: 0) {
-                ForEach(host.editingSlots) { slot in
-                    EffectRow(
-                        slot: slot,
-                        issue: host.editingSlotIssues[slot.id],
-                        canMoveUp: host.editingSlots.first?.id != slot.id,
-                        canMoveDown: host.editingSlots.last?.id != slot.id,
-                        openEditor: { host.openEditingEditor(slot.id) },
-                        toggleBypass: { host.setEditingBypass(slot.id, !slot.isBypassed) },
-                        remove: { host.removeEditing(slot.id) },
-                        move: { distance in move(slot.id, by: distance) },
-                        drop: { source in move(source, to: slot.id) }
-                    )
-                    if host.editingSlots.last?.id != slot.id {
-                        Divider().padding(.leading, 46)
-                    }
-                }
-            }
-            .background(HostAppearance.raised, in: .rect(cornerRadius: HostAppearance.cornerRadius))
-        }
-        .defaultScrollAnchor(.top)
-        .accessibilityIdentifier("effect-chain")
-    }
-
-    private func move(_ id: UUID, by distance: Int) {
-        guard let index = host.editingSlots.firstIndex(where: { $0.id == id }) else { return }
-        let destination = index + distance
-        guard host.editingSlots.indices.contains(destination) else { return }
-        host.moveEditing(from: IndexSet(integer: index), to: destination > index ? destination + 1 : destination)
-    }
-
-    private func move(_ id: UUID, to target: UUID) -> Bool {
-        guard id != target,
-              let source = host.editingSlots.firstIndex(where: { $0.id == id }),
-              let destination = host.editingSlots.firstIndex(where: { $0.id == target }) else { return false }
-        host.moveEditing(from: IndexSet(integer: source), to: destination > source ? destination + 1 : destination)
-        return true
     }
 }
 
@@ -1155,14 +1114,6 @@ private struct HostPageReveal: ViewModifier {
     }
 }
 
-private struct EffectDrag: Codable, Transferable {
-    var id: UUID
-
-    static var transferRepresentation: some TransferRepresentation {
-        CodableRepresentation(contentType: .json)
-    }
-}
-
 @MainActor
 struct HostEditorHeader: View {
     static let height: CGFloat = 44
@@ -1202,107 +1153,327 @@ struct HostEditorHeader: View {
     }
 }
 
-private struct HostEffectPowerButton: View {
-    let name: String
-    let isBypassed: Bool
-    let action: () -> Void
-    @State private var hovered = false
+@MainActor
+private struct EffectChain: View {
+    private struct Drag {
+        let id: UUID
+        let startY: CGFloat
+        let startScrollY: CGFloat
+        var location: CGPoint
 
-    private var actionTitle: String { isBypassed ? "Enable \(name)" : "Bypass \(name)" }
+        func displacement(at scrollY: CGFloat) -> CGFloat {
+            location.y - startY + scrollY - startScrollY
+        }
+    }
+
+    @ObservedObject var host: HostController
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var drag: Drag?
+    @State private var liftedID: UUID?
+    @State private var escapeMonitor: Any?
+    @State private var viewport = CGRect.zero
+    @State private var scrollY: CGFloat = 0
+    @State private var scrollPosition = ScrollPosition()
+
+    private let rowHeight = HostAppearance.audioRowHeight
+    private var slots: [EffectSlot] { host.editingSlots }
+    private var chainHeight: CGFloat { CGFloat(slots.count) * rowHeight }
+    private var spring: Animation? { reduceMotion ? nil : .interactiveSpring(duration: 0.24, extraBounce: 0) }
 
     var body: some View {
-        Button(action: action) {
-            Image(systemName: "power")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(HostAppearance.powerTint(isOn: !isBypassed))
-                .frame(width: 27, height: 29)
-                .background(hovered ? Color.primary.opacity(0.08) : .clear, in: .rect(cornerRadius: 6))
-                .contentShape(.rect)
+        let source = drag.flatMap { active in slots.firstIndex { $0.id == active.id } }
+        let target = source.flatMap { index in drag.map { insertionIndex(for: $0, from: index) } }
+        ScrollView {
+            ZStack(alignment: .top) {
+                ForEach(Array(slots.enumerated()), id: \.element.id) { index, slot in
+                    let isDragged = drag?.id == slot.id
+                    EffectRow(
+                        slot: slot,
+                        issue: host.editingSlotIssues[slot.id],
+                        isLifted: isDragged && !reduceMotion,
+                        hasDivider: index != slots.count - 1,
+                        canMoveUp: index > 0,
+                        canMoveDown: index < slots.count - 1,
+                        openEditor: { host.openEditingEditor(slot.id) },
+                        toggleBypass: { host.setEditingBypass(slot.id, !slot.isBypassed) },
+                        remove: { host.removeEditing(slot.id) },
+                        move: { distance in withAnimation(spring) { move(from: index, to: index + distance) } },
+                        startDrag: { start, location in startDrag(slot.id, from: start, at: location) },
+                        updateDrag: { drag?.location = $0 },
+                        endDrag: endDrag,
+                        canDrag: slots.count > 1
+                    )
+                    .offset(y: rowPosition(index, source: source, target: target))
+                    .zIndex(liftedID == slot.id ? 1 : 0)
+                    .animation(isDragged ? nil : spring, value: target)
+                }
+                if reduceMotion, let source, let target, target != source {
+                    let boundary = target > source ? target + 1 : target
+                    Capsule()
+                        .fill(Color.accentColor)
+                        .frame(height: 2)
+                        .padding(.horizontal, 6)
+                        .offset(y: min(chainHeight - 2, max(0, CGFloat(boundary) * rowHeight - 1)))
+                        .zIndex(2)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
+            .frame(height: chainHeight, alignment: .top)
+            .background(HostAppearance.raised, in: .rect(cornerRadius: HostAppearance.cornerRadius))
         }
-        .buttonStyle(.plain)
-        .onHover { hovered = $0 }
-        .help(actionTitle)
-        .accessibilityLabel(actionTitle)
-        .accessibilityValue(isBypassed ? "Off" : "On")
+        .defaultScrollAnchor(.top)
+        .scrollPosition($scrollPosition)
+        .onScrollGeometryChange(for: CGFloat.self, of: { $0.visibleRect.minY }) { _, y in scrollY = y }
+        .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { viewport = $0 }
+        .task(id: scrollStep) { await scrollWhileDragging(step: scrollStep) }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            finishDrag()
+        }
+        .onDisappear { removeEscapeMonitor() }
+        .accessibilityIdentifier("effect-chain")
+    }
+
+    private func rowPosition(_ index: Int, source: Int?, target: Int?) -> CGFloat {
+        let initial = CGFloat(index) * rowHeight
+        guard !reduceMotion, let drag, let source, let target else { return initial }
+        if index == source { return initial + drag.displacement(at: scrollY) }
+        if source < index, index <= target { return initial - rowHeight }
+        if target <= index, index < source { return initial + rowHeight }
+        return initial
+    }
+
+    private func insertionIndex(for drag: Drag, from source: Int) -> Int {
+        let sourceCenter = CGFloat(source) + 0.5
+        let center = sourceCenter + drag.displacement(at: scrollY) / rowHeight
+        let crossed = center < sourceCenter ? center + 0.5 : center - 0.5
+        return min(slots.count - 1, max(0, Int(floor(crossed))))
+    }
+
+    private var scrollStep: CGFloat {
+        guard let drag, viewport.contains(drag.location) else { return 0 }
+        if drag.location.y < viewport.minY + 28, scrollY > 0 { return -6 }
+        if drag.location.y > viewport.maxY - 28, scrollY < chainHeight - viewport.height { return 6 }
+        return 0
+    }
+
+    private func scrollWhileDragging(step: CGFloat) async {
+        guard step != 0 else { return }
+        while !Task.isCancelled, drag != nil {
+            scrollPosition.scrollTo(y: min(max(0, scrollY + step), max(0, chainHeight - viewport.height)))
+            try? await Task.sleep(for: .milliseconds(16))
+        }
+    }
+
+    private func startDrag(_ id: UUID, from start: CGPoint, at location: CGPoint) {
+        drag = Drag(id: id, startY: start.y, startScrollY: scrollY, location: location)
+        liftedID = reduceMotion ? nil : id
+        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.keyCode == 53 else { return event }
+            finishDrag()
+            return nil
+        }
+    }
+
+    private func endDrag(at location: CGPoint) {
+        guard var active = drag,
+              viewport.contains(location),
+              let source = slots.firstIndex(where: { $0.id == active.id }) else {
+            finishDrag()
+            return
+        }
+        active.location = location
+        finishDrag(to: insertionIndex(for: active, from: source))
+    }
+
+    private func finishDrag(to destination: Int? = nil) {
+        guard let active = drag else { return }
+        removeEscapeMonitor()
+        withAnimation(spring) {
+            drag = nil
+            if let destination, let source = slots.firstIndex(where: { $0.id == active.id }) {
+                move(from: source, to: destination)
+            }
+        } completion: {
+            if drag == nil, liftedID == active.id { liftedID = nil }
+        }
+    }
+
+    private func removeEscapeMonitor() {
+        if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
+        escapeMonitor = nil
+    }
+
+    private func move(from source: Int, to destination: Int) {
+        guard source != destination, slots.indices.contains(destination) else { return }
+        host.moveEditing(from: IndexSet(integer: source), to: destination > source ? destination + 1 : destination)
+    }
+}
+
+private struct EffectActionAppearance: ViewModifier {
+    static let size: CGFloat = 32
+
+    let hovered: Bool
+    let focused: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .frame(width: Self.size, height: Self.size)
+            .background(hovered ? HostAppearance.hover : .clear, in: .rect(cornerRadius: 6))
+            .overlay {
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(focused ? Color.accentColor : .clear, lineWidth: 2)
+                    .allowsHitTesting(false)
+            }
+            .contentShape(.rect)
     }
 }
 
 private struct EffectRow: View {
+    private enum Target: Hashable { case card, power, actions, issue }
+
     let slot: EffectSlot
     let issue: String?
+    let isLifted: Bool
+    let hasDivider: Bool
     let canMoveUp: Bool
     let canMoveDown: Bool
     let openEditor: () -> Void
     let toggleBypass: () -> Void
     let remove: () -> Void
     let move: (Int) -> Void
-    let drop: (UUID) -> Bool
-    @State private var isDropTarget = false
+    let startDrag: (CGPoint, CGPoint) -> Void
+    let updateDrag: (CGPoint) -> Void
+    let endDrag: (CGPoint) -> Void
+    let canDrag: Bool
+    @State private var hovered: Target?
+    @FocusState private var focus: Target?
+
+    private let actionSpacing: CGFloat = 2
+    private let actionInset: CGFloat = 8
+    private var showsPower: Bool { slot.migrationIssue == nil }
+    private var actionsWidth: CGFloat {
+        let count = CGFloat(1 + (showsPower ? 1 : 0) + (issue != nil ? 1 : 0))
+        return count * EffectActionAppearance.size + (count - 1) * actionSpacing + actionInset
+    }
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "line.3.horizontal")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.secondary)
-                .frame(width: 25, height: 32)
-                .accessibilityHidden(true)
-
-            labels
-            Spacer(minLength: 6)
-            if let issue {
-                HostNoticeButton(notice: .warning(issue))
-                    .accessibilityLabel("Issue with \(slot.name)")
-                    .accessibilityIdentifier("effect-issue")
-            }
-            if slot.migrationIssue == nil {
-                HostEffectPowerButton(name: slot.name, isBypassed: slot.isBypassed, action: toggleBypass)
-                    .accessibilityIdentifier("bypass-effect")
-            }
-
+        ZStack(alignment: .trailing) {
             Button(action: openEditor) {
-                Label("Controls", systemImage: "slider.horizontal.3")
+                HStack(spacing: 10) {
+                    Image(systemName: "line.3.horizontal")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 25, height: 32)
+                        .accessibilityHidden(true)
+                    labels
+                }
+                .padding(.leading, 12)
+                .padding(.trailing, actionsWidth + 12)
+                .frame(maxWidth: .infinity, minHeight: HostAppearance.audioRowHeight, alignment: .leading)
+                .contentShape(.rect)
             }
-            .controlSize(.small)
+            .buttonStyle(.plain)
+            .focused($focus, equals: .card)
+            .focusEffectDisabled()
             .help("Open \(slot.name) controls")
             .accessibilityLabel("Open \(slot.name) controls")
             .accessibilityIdentifier("open-editor")
-
-            Menu {
-                Button("Move Up") { move(-1) }
-                    .disabled(!canMoveUp)
-                Button("Move Down") { move(1) }
-                    .disabled(!canMoveDown)
-                Divider()
-                Button("Remove Effect", role: .destructive, action: remove)
-            } label: {
-                Image(systemName: "ellipsis")
+            .overlay {
+                EffectCardPointer(
+                    click: openEditor, start: startDrag, move: updateDrag, end: endDrag,
+                    canDrag: canDrag, hover: updateHover
+                )
+                .accessibilityHidden(true)
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("More actions for \(slot.name)")
-            .accessibilityLabel("More actions for \(slot.name)")
+
+            HStack(spacing: actionSpacing) {
+                if let issue {
+                    HostNoticeButton(notice: .warning(issue))
+                        .accessibilityLabel("Issue with \(slot.name)")
+                        .accessibilityIdentifier("effect-issue")
+                        .frame(width: EffectActionAppearance.size)
+                }
+                if showsPower { power }
+                moreActions
+            }
+            .padding(.trailing, actionInset)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .frame(minHeight: HostAppearance.audioRowHeight)
+        .frame(height: HostAppearance.audioRowHeight)
         .background {
-            RoundedRectangle(cornerRadius: HostAppearance.cornerRadius)
-                .fill(isDropTarget ? Color.accentColor.opacity(0.13) : .clear)
+            if isLifted {
+                HostAppearance.raised
+            }
+            if isLifted || hovered == .card {
+                HostAppearance.hover
+                    .opacity(isLifted ? 1 : 0.55)
+                    .clipShape(.rect(cornerRadius: HostAppearance.cornerRadius))
+            }
         }
+        .overlay(alignment: .bottom) {
+            if hasDivider, !isLifted { Divider().padding(.leading, 46).allowsHitTesting(false) }
+        }
+        .clipShape(.rect(cornerRadius: isLifted ? HostAppearance.cornerRadius : 0))
+        .shadow(color: isLifted ? .black.opacity(0.35) : .clear, radius: 9, y: 4)
         .overlay {
             RoundedRectangle(cornerRadius: HostAppearance.cornerRadius)
-                .strokeBorder(isDropTarget ? Color.accentColor : .clear)
+                .strokeBorder(focus == .card ? Color.accentColor : .clear, lineWidth: 2)
                 .allowsHitTesting(false)
         }
-        .contentShape(.rect)
-        .draggable(EffectDrag(id: slot.id))
-        .dropDestination(for: EffectDrag.self) { items, _ in
-            guard items.count == 1, let item = items.first else { return false }
-            return drop(item.id)
-        } isTargeted: { targeted in
-            isDropTarget = targeted
+    }
+
+    private var power: some View {
+        let title = slot.isBypassed ? "Enable \(slot.name)" : "Bypass \(slot.name)"
+        return Button(action: toggleBypass) {
+            Image(systemName: "power")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(HostAppearance.powerTint(isOn: !slot.isBypassed))
+                .modifier(EffectActionAppearance(hovered: hovered == .power, focused: focus == .power))
         }
+        .buttonStyle(.plain)
+        .focused($focus, equals: .power)
+        .focusEffectDisabled()
+        .help(title)
+        .accessibilityLabel(title)
+        .accessibilityValue(slot.isBypassed ? "Off" : "On")
+        .accessibilityIdentifier("bypass-effect")
+    }
+
+    private var moreActions: some View {
+        Menu {
+            Button("Move Up") { move(-1) }.disabled(!canMoveUp)
+            Button("Move Down") { move(1) }.disabled(!canMoveDown)
+            Divider()
+            Button("Remove Effect", role: .destructive, action: remove)
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 12, weight: .medium))
+                .frame(width: EffectActionAppearance.size, height: EffectActionAppearance.size)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .modifier(EffectActionAppearance(hovered: hovered == .actions, focused: focus == .actions))
+        .focused($focus, equals: .actions)
+        .focusEffectDisabled()
+        .help("More actions for \(slot.name)")
+        .accessibilityLabel("More actions for \(slot.name)")
+        .accessibilityIdentifier("effect-actions")
+    }
+
+    private func updateHover(_ point: CGPoint?, width: CGFloat) {
+        guard let point else {
+            hovered = nil
+            return
+        }
+        let size = EffectActionAppearance.size
+        let step = size + actionSpacing
+        let x = width - actionInset - point.x
+        let targets: [Target] = [.actions] + (showsPower ? [.power] : []) + (issue == nil ? [] : [.issue])
+        let control = abs(point.y - HostAppearance.audioRowHeight / 2) <= size / 2
+            ? targets.enumerated().first { (step * CGFloat($0.offset)..<(step * CGFloat($0.offset) + size)).contains(x) }?.element
+            : nil
+        hovered = control ?? .card
     }
 
     private var labels: some View {
@@ -1312,8 +1483,6 @@ private struct EffectRow: View {
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(slot.isBypassed ? Color.secondary : Color.primary)
                     .lineLimit(1)
-                    .help(slot.name)
-                    .accessibilityIdentifier("effect-name")
                 if slot.isBypassed {
                     Text("Bypassed")
                         .font(.caption)
@@ -1328,6 +1497,85 @@ private struct EffectRow: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct EffectCardPointer: NSViewRepresentable {
+    let click: () -> Void
+    let start: (CGPoint, CGPoint) -> Void
+    let move: (CGPoint) -> Void
+    let end: (CGPoint) -> Void
+    let canDrag: Bool
+    let hover: (CGPoint?, CGFloat) -> Void
+
+    func makeNSView(context: Context) -> PointerView { PointerView() }
+
+    func updateNSView(_ view: PointerView, context: Context) {
+        view.input = self
+    }
+
+    // Keep pointer tracking separate from the SwiftUI button so AppKit can deliver Escape during a drag.
+    final class PointerView: NSView {
+        var input: EffectCardPointer?
+        private var press: CGPoint?
+        private var dragging = false
+        private var pointerTracking: NSTrackingArea?
+
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            if let pointerTracking { removeTrackingArea(pointerTracking) }
+            let tracking = NSTrackingArea(
+                rect: .zero, options: [.inVisibleRect, .activeInKeyWindow, .mouseEnteredAndExited, .mouseMoved],
+                owner: self, userInfo: nil
+            )
+            addTrackingArea(tracking)
+            pointerTracking = tracking
+        }
+
+        override func mouseEntered(with event: NSEvent) { mouseMoved(with: event) }
+
+        override func mouseExited(with event: NSEvent) {
+            input?.hover(nil, bounds.width)
+        }
+
+        override func mouseMoved(with event: NSEvent) {
+            input?.hover(convert(event.locationInWindow, from: nil), bounds.width)
+        }
+
+        override func mouseDown(with event: NSEvent) {
+            press = location(event)
+            dragging = false
+        }
+
+        override func mouseDragged(with event: NSEvent) {
+            guard let input, let press else { return }
+            let current = location(event)
+            if dragging {
+                input.move(current)
+            } else if input.canDrag, hypot(current.x - press.x, current.y - press.y) >= 5 {
+                dragging = true
+                input.start(press, current)
+            }
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            guard let press else { return }
+            let current = location(event)
+            self.press = nil
+            if dragging {
+                dragging = false
+                input?.end(current)
+            } else if hypot(current.x - press.x, current.y - press.y) < 5,
+                      bounds.contains(convert(event.locationInWindow, from: nil)) {
+                input?.click()
+            }
+        }
+
+        private func location(_ event: NSEvent) -> CGPoint {
+            guard let content = window?.contentView else { return .zero }
+            let point = content.convert(event.locationInWindow, from: nil)
+            return CGPoint(x: point.x, y: content.isFlipped ? point.y : content.bounds.height - point.y)
+        }
     }
 }
 
