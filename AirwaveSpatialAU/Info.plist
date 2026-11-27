@@ -25,7 +25,7 @@
 					<key>manufacturer</key><string>Awve</string>
 					<key>name</key><string>Airwave: Spatial</string>
 					<key>description</key><string>HeSuVi HRIR convolution for headphones</string>
-					<key>version</key><integer>65536</integer>
+					<key>version</key><integer>65792</integer>
 					<key>sandboxSafe</key><true/>
 					<key>tags</key><array><string>Spatial</string><string>Effects</string></array>
 				</dict>

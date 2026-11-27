@@ -15,6 +15,8 @@ nonisolated final class SpatialRenderResources {
         var retired: SpatialProcessor?
     }
 
+    let layout: SpatialInputLayout
+    let sampleRate: Double
     private let maxFrames: Int
     private let inputInterleaved: Bool
     private let outputInterleaved: Bool
@@ -28,20 +30,38 @@ nonisolated final class SpatialRenderResources {
     private var transitionRemaining = 0
     private var bypassAmount: Float?
 
-    private let inputList = AudioBufferList.allocate(maximumBuffers: 2)
+    private let inputList: UnsafeMutableAudioBufferListPointer
     private let input: UnsafeMutablePointer<Float>
     private let interleavedInput: UnsafeMutablePointer<Float>?
+    private let downmixStorage: UnsafeMutablePointer<Float>?
+    private let inputChannels: UnsafeMutablePointer<UnsafePointer<Float>?>?
     private let wet: UnsafeMutablePointer<Float>
     private let previousWet: UnsafeMutablePointer<Float>
     private let outputStorage: UnsafeMutablePointer<Float>
 
-    init(processor: SpatialProcessor, maxFrames: Int, inputInterleaved: Bool, outputInterleaved: Bool) {
+    init(processor: SpatialProcessor, layout: SpatialInputLayout, sampleRate: Double, maxFrames: Int,
+         inputInterleaved: Bool, outputInterleaved: Bool) {
         self.processor = processor
+        self.layout = layout
+        self.sampleRate = sampleRate
         self.maxFrames = maxFrames
         self.inputInterleaved = inputInterleaved
         self.outputInterleaved = outputInterleaved
-        input = .allocate(capacity: 2 * maxFrames)
-        interleavedInput = inputInterleaved ? .allocate(capacity: 2 * maxFrames) : nil
+        let channels = layout.channelCount
+        inputList = AudioBufferList.allocate(maximumBuffers: inputInterleaved ? 1 : channels)
+        input = .allocate(capacity: channels * maxFrames)
+        interleavedInput = inputInterleaved ? .allocate(capacity: channels * maxFrames) : nil
+        if channels == 2 && layout.layout.channels == [.FL, .FR] {
+            downmixStorage = nil
+            inputChannels = nil
+        } else {
+            downmixStorage = .allocate(capacity: 2 * maxFrames)
+            let pointers = UnsafeMutablePointer<UnsafePointer<Float>?>.allocate(capacity: channels)
+            for channel in 0..<channels {
+                (pointers + channel).initialize(to: UnsafePointer(input + channel * maxFrames))
+            }
+            inputChannels = pointers
+        }
         wet = .allocate(capacity: 2 * maxFrames)
         previousWet = .allocate(capacity: 2 * maxFrames)
         outputStorage = .allocate(capacity: 2 * maxFrames)
@@ -51,6 +71,9 @@ nonisolated final class SpatialRenderResources {
         inputList.unsafeMutablePointer.deallocate()
         input.deallocate()
         interleavedInput?.deallocate()
+        downmixStorage?.deallocate()
+        inputChannels?.deinitialize(count: layout.channelCount)
+        inputChannels?.deallocate()
         wet.deallocate()
         previousWet.deallocate()
         outputStorage.deallocate()
@@ -95,12 +118,12 @@ nonisolated final class SpatialRenderResources {
 
         adoptPendingPreset()
         processor.process(
-            left: input, right: input + maxFrames,
+            input: input, channelStride: maxFrames,
             leftOutput: wet, rightOutput: wet + maxFrames, frameCount: frames
         )
         if transitionRemaining > 0, let previousProcessor {
             previousProcessor.process(
-                left: input, right: input + maxFrames,
+                input: input, channelStride: maxFrames,
                 leftOutput: previousWet, rightOutput: previousWet + maxFrames, frameCount: frames
             )
         }
@@ -124,35 +147,42 @@ nonisolated final class SpatialRenderResources {
     }
 
     private func prepareInput(frames: Int) {
+        let channels = layout.channelCount
         let channelBytes = UInt32(frames * MemoryLayout<Float>.stride)
-        inputList.unsafeMutablePointer.pointee.mNumberBuffers = inputInterleaved ? 1 : 2
+        inputList.unsafeMutablePointer.pointee.mNumberBuffers = inputInterleaved ? 1 : UInt32(channels)
         if let interleavedInput {
-            inputList[0] = AudioBuffer(mNumberChannels: 2, mDataByteSize: 2 * channelBytes, mData: interleavedInput)
+            inputList[0] = AudioBuffer(mNumberChannels: UInt32(channels), mDataByteSize: UInt32(channels) * channelBytes,
+                                       mData: interleavedInput)
         } else {
-            inputList[0] = AudioBuffer(mNumberChannels: 1, mDataByteSize: channelBytes, mData: input)
-            inputList[1] = AudioBuffer(mNumberChannels: 1, mDataByteSize: channelBytes, mData: input + maxFrames)
+            for channel in 0..<channels {
+                inputList[channel] = AudioBuffer(mNumberChannels: 1, mDataByteSize: channelBytes,
+                                                 mData: input + channel * maxFrames)
+            }
         }
     }
 
     private func readInput(frames: Int, silent: Bool) -> Bool {
-        let right = input + maxFrames
+        let channels = layout.channelCount
         let channelBytes = frames * MemoryLayout<Float>.stride
         if silent {
-            memset(input, 0, channelBytes)
-            memset(right, 0, channelBytes)
+            for channel in 0..<channels {
+                memset(input + channel * maxFrames, 0, channelBytes)
+            }
             return true
         }
         if inputInterleaved {
-            guard inputList.count == 1, inputList[0].mNumberChannels == 2,
-                  inputList[0].mDataByteSize >= 2 * channelBytes,
+            guard inputList.count == 1, inputList[0].mNumberChannels == channels,
+                  inputList[0].mDataByteSize >= channels * channelBytes,
                   let source = inputList[0].mData?.assumingMemoryBound(to: Float.self) else { return false }
-            for frame in 0..<frames {
-                input[frame] = source[2 * frame]
-                right[frame] = source[2 * frame + 1]
+            for channel in 0..<channels {
+                let destination = input + channel * maxFrames
+                for frame in 0..<frames {
+                    destination[frame] = source[channels * frame + channel]
+                }
             }
         } else {
-            guard inputList.count == 2 else { return false }
-            for channel in 0..<2 {
+            guard inputList.count == channels else { return false }
+            for channel in 0..<channels {
                 let buffer = inputList[channel]
                 guard buffer.mNumberChannels == 1, buffer.mDataByteSize >= channelBytes,
                       let source = buffer.mData?.assumingMemoryBound(to: Float.self) else { return false }
@@ -189,9 +219,17 @@ nonisolated final class SpatialRenderResources {
         let stride = outputInterleaved ? 2 : 1
         let fadeStep = 1 / Float(fadeFrames)
         var amount = bypassAmount ?? (bypass ? 1 : 0)
+        let dry = downmixStorage ?? input
+        if (bypass || amount > 0), let downmixStorage, let inputChannels {
+            StereoDownmixGains.downmix(
+                inputChannels: UnsafePointer(inputChannels), inputChannelCount: layout.channelCount,
+                inputOffset: 0, inputSpeakers: layout.layout.channels, outputLeft: downmixStorage,
+                outputRight: downmixStorage + maxFrames, frameCount: frames
+            )
+        }
 
         if transitionRemaining == 0, amount == (bypass ? 1 : 0) {
-            let source = bypass ? input : wet
+            let source = bypass ? dry : wet
             if outputInterleaved {
                 for i in 0..<frames {
                     outputLeft[2 * i] = source[i]
@@ -216,8 +254,13 @@ nonisolated final class SpatialRenderResources {
             }
 
             amount = bypass ? min(1, amount + fadeStep) : max(0, amount - fadeStep)
-            outputLeft[stride * frame] = left * (1 - amount) + input[frame] * amount
-            outputRight[stride * frame] = right * (1 - amount) + input[maxFrames + frame] * amount
+            if amount == 0 {
+                outputLeft[stride * frame] = left
+                outputRight[stride * frame] = right
+            } else {
+                outputLeft[stride * frame] = left * (1 - amount) + dry[frame] * amount
+                outputRight[stride * frame] = right * (1 - amount) + dry[maxFrames + frame] * amount
+            }
         }
         bypassAmount = amount
     }

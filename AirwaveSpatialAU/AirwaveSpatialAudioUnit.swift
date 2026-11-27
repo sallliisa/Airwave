@@ -7,22 +7,32 @@ import Synchronization
 nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
     static let presetDidChange = Notification.Name("AirwaveSpatialPresetDidChange")
 
+    enum BundledPreset: String, CaseIterable {
+        case neutral, room, stage
+
+        var title: String { rawValue.capitalized }
+
+        var url: URL? {
+            Bundle(for: AirwaveSpatialAudioUnit.self).url(forResource: title + "SH1.0", withExtension: "wav")
+        }
+    }
+
     enum PresetSelection: Equatable {
-        case neutral
+        case bundled(BundledPreset)
         case imported(name: String)
     }
 
     private enum Preset {
-        case neutral
+        case bundled(BundledPreset)
         case imported(name: String, wav: Data)
 
-        func prepare(sampleRate: Double) throws -> SpatialProcessor {
+        func prepare(sampleRate: Double, layout: SpatialInputLayout) throws -> SpatialProcessor {
             let url: URL
             let temporaryURL: URL?
             switch self {
-            case .neutral:
-                guard let resource = AirwaveSpatialAudioUnit.neutralURL else {
-                    throw SpatialAudioUnitError.missingPreset
+            case .bundled(let preset):
+                guard let resource = preset.url else {
+                    throw SpatialAudioUnitError.missingPreset(preset.title)
                 }
                 url = resource
                 temporaryURL = nil
@@ -34,17 +44,17 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
             defer {
                 if let temporaryURL { try? FileManager.default.removeItem(at: temporaryURL) }
             }
-            return try SpatialProcessor(url: url, sampleRate: sampleRate)
+            return try SpatialProcessor(url: url, sampleRate: sampleRate, layout: layout)
         }
     }
 
     private struct State {
-        var preset: Preset = .neutral
+        var preset: Preset = .bundled(.neutral)
         var resources: SpatialRenderResources?
-        var sampleRate: Double = 48_000
     }
 
     private enum StateKey {
+        static let bundledPreset = "AirwaveSpatial.bundledPreset"
         static let presetName = "AirwaveSpatial.presetName"
         static let impulseResponse = "AirwaveSpatial.impulseResponse"
         static let bypass = "AirwaveSpatial.bypass"
@@ -63,11 +73,13 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
             throw SpatialAudioUnitError.unsupportedFormat
         }
         inputBus = try AUAudioUnitBus(format: format)
+        inputBus.maximumChannelCount = AUAudioChannelCount(SpatialInputLayout.maximumChannelCount)
         outputBus = try AUAudioUnitBus(format: format)
+        outputBus.supportedChannelCounts = [2]
         try super.init(componentDescription: componentDescription, options: options)
         inputs = AUAudioUnitBusArray(audioUnit: self, busType: .input, busses: [inputBus])
         outputs = AUAudioUnitBusArray(audioUnit: self, busType: .output, busses: [outputBus])
-        if let url = Self.neutralURL, let header = try? WAVLoader.headerInfo(from: url) {
+        if let url = BundledPreset.neutral.url, let header = try? WAVLoader.headerInfo(from: url) {
             setTail(frames: max(0, header.frameCount - 1), sampleRate: header.sampleRate)
         }
     }
@@ -76,14 +88,12 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
         renderAccess.resources.store(nil, ordering: .releasing)
     }
 
-    private static var neutralURL: URL? {
-        Bundle(for: AirwaveSpatialAudioUnit.self).url(forResource: "NeutralSH1.0", withExtension: "wav")
-    }
-
     override var inputBusses: AUAudioUnitBusArray { inputs }
     override var outputBusses: AUAudioUnitBusArray { outputs }
-    override var channelCapabilities: [NSNumber]? { [2, 2] }
-    override var canProcessInPlace: Bool { true }
+    override var channelCapabilities: [NSNumber]? {
+        [NSNumber(value: -SpatialInputLayout.maximumChannelCount), 2]
+    }
+    override var canProcessInPlace: Bool { inputBus.format.channelCount == outputBus.format.channelCount }
     override var latency: TimeInterval { 0 }
     override var tailTime: TimeInterval {
         Double(bitPattern: tail.load(ordering: .relaxed))
@@ -99,7 +109,13 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
             let preset = state.withLockUnchecked { $0.preset }
             var snapshot = super.fullState ?? [:]
             snapshot[StateKey.bypass] = shouldBypassEffect
-            if case .imported(let name, let wav) = preset {
+            switch preset {
+            case .bundled(let choice):
+                snapshot[StateKey.bundledPreset] = choice.rawValue
+                snapshot[StateKey.presetName] = nil
+                snapshot[StateKey.impulseResponse] = nil
+            case .imported(let name, let wav):
+                snapshot[StateKey.bundledPreset] = nil
                 snapshot[StateKey.presetName] = name
                 snapshot[StateKey.impulseResponse] = wav
             }
@@ -118,21 +134,22 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
                     // Fall back to a playable preset when a host document contains invalid audio data.
                 }
             }
-            try? selectPreset(.neutral)
+            let bundled = (newValue?[StateKey.bundledPreset] as? String).flatMap(BundledPreset.init(rawValue:))
+            try? selectPreset(.bundled(bundled ?? .neutral))
         }
     }
 
     var presetSelection: PresetSelection {
         state.withLockUnchecked { current in
             switch current.preset {
-            case .neutral: .neutral
+            case .bundled(let preset): .bundled(preset)
             case .imported(let name, _): .imported(name: name)
             }
         }
     }
 
-    func useNeutralPreset() throws {
-        try selectPreset(.neutral)
+    func useBundledPreset(_ preset: BundledPreset) throws {
+        try selectPreset(.bundled(preset))
     }
 
     func importPreset(from url: URL) throws {
@@ -150,26 +167,31 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
 
     private func selectPreset(_ preset: Preset) throws {
         try state.withLockUnchecked { current in
-            let sampleRate = current.resources == nil ? outputBus.format.sampleRate : current.sampleRate
-            let processor = try preset.prepare(sampleRate: sampleRate)
+            guard let layout = current.resources?.layout ?? SpatialInputLayout(format: inputBus.format) else {
+                throw SpatialAudioUnitError.unsupportedFormat
+            }
+            let sampleRate = current.resources?.sampleRate ?? outputBus.format.sampleRate
+            let processor = try preset.prepare(sampleRate: sampleRate, layout: layout)
             if let resources = current.resources {
                 resources.publish(processor)
             }
             current.preset = preset
-            current.sampleRate = sampleRate
             setTail(frames: processor.tailFrames, sampleRate: sampleRate)
         }
         NotificationCenter.default.post(name: Self.presetDidChange, object: self)
     }
 
     override func shouldChange(to format: AVAudioFormat, for bus: AUAudioUnitBus) -> Bool {
-        Self.supports(format) && super.shouldChange(to: format, for: bus)
+        Self.supportsPCM(format)
+            && (bus === inputBus ? SpatialInputLayout(format: format) != nil : format.channelCount == 2)
+            && super.shouldChange(to: format, for: bus)
     }
 
     override func allocateRenderResources() throws {
         let input = inputBus.format
         let output = outputBus.format
-        guard Self.supports(input), Self.supports(output), input.sampleRate == output.sampleRate else {
+        guard Self.supportsPCM(input), Self.supportsPCM(output), output.channelCount == 2,
+              input.sampleRate == output.sampleRate, let layout = SpatialInputLayout(format: input) else {
             throw SpatialAudioUnitError.unsupportedFormat
         }
 
@@ -180,15 +202,16 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
         try super.allocateRenderResources()
         do {
             try state.withLockUnchecked { current in
-                let processor = try current.preset.prepare(sampleRate: output.sampleRate)
+                let processor = try current.preset.prepare(sampleRate: output.sampleRate, layout: layout)
                 let resources = SpatialRenderResources(
                     processor: processor,
+                    layout: layout,
+                    sampleRate: output.sampleRate,
                     maxFrames: maxFrames,
                     inputInterleaved: input.isInterleaved,
                     outputInterleaved: output.isInterleaved
                 )
                 current.resources = resources
-                current.sampleRate = output.sampleRate
                 setTail(frames: processor.tailFrames, sampleRate: output.sampleRate)
                 renderAccess.resources.store(Unmanaged.passUnretained(resources).toOpaque(), ordering: .releasing)
             }
@@ -231,8 +254,8 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
         }
     }
 
-    private static func supports(_ format: AVAudioFormat) -> Bool {
-        format.commonFormat == .pcmFormatFloat32 && format.channelCount == 2
+    private static func supportsPCM(_ format: AVAudioFormat) -> Bool {
+        format.commonFormat == .pcmFormatFloat32
             && format.sampleRate.isFinite && format.sampleRate > 0
     }
 
@@ -244,7 +267,7 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
 private nonisolated enum SpatialAudioUnitError: LocalizedError, CustomNSError {
     case unsupportedFormat
     case unsupportedFrameCount
-    case missingPreset
+    case missingPreset(String)
 
     static let errorDomain = NSOSStatusErrorDomain
 
@@ -258,9 +281,9 @@ private nonisolated enum SpatialAudioUnitError: LocalizedError, CustomNSError {
 
     var errorDescription: String? {
         switch self {
-        case .unsupportedFormat: "Airwave Spatial requires stereo 32-bit floating-point audio."
+        case .unsupportedFormat: "Airwave Spatial requires 32-bit floating-point input and stereo output at the same sample rate."
         case .unsupportedFrameCount: "The host requested an unsupported render buffer size."
-        case .missingPreset: "The bundled Neutral preset is missing."
+        case .missingPreset(let name): "The bundled \(name) preset is missing."
         }
     }
 }

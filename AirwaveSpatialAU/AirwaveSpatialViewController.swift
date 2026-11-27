@@ -5,9 +5,9 @@ import UniformTypeIdentifiers
 import os
 
 final class AirwaveSpatialViewController: AUViewController, AUAudioUnitFactory {
-    private enum PresetMenuItem: Int {
-        case neutral, imported, importWAV
-    }
+    private typealias BundledPreset = AirwaveSpatialAudioUnit.BundledPreset
+    private static let importWAVTitle = "Import WAV…"
+    private static let importWAVTag = 1
 
     private nonisolated let unit = OSAllocatedUnfairLock<AirwaveSpatialAudioUnit?>(uncheckedState: nil)
     private let presetMenu = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -89,22 +89,26 @@ final class AirwaveSpatialViewController: AUViewController, AUAudioUnitFactory {
     private func refreshPresetMenu() {
         let selection = unit.withLockUnchecked { $0?.presetSelection }
         presetMenu.removeAllItems()
-        addPresetItem("Neutral", choice: .neutral)
-        var selected = PresetMenuItem.neutral
-        if case .imported(let name)? = selection {
-            let title = ["Neutral", "Import WAV…"].contains(name) ? "\(name) (Imported)" : name
-            addPresetItem(title, choice: .imported)
-            selected = .imported
+        for preset in BundledPreset.allCases {
+            presetMenu.addItem(withTitle: preset.title)
+            presetMenu.lastItem?.representedObject = preset.rawValue
+        }
+        let title: String
+        switch selection {
+        case .bundled(let preset):
+            title = preset.title
+        case .imported(let name):
+            let reservedTitles = BundledPreset.allCases.map(\.title) + [Self.importWAVTitle]
+            title = reservedTitles.contains(name) ? "\(name) (Imported)" : name
+            presetMenu.addItem(withTitle: title)
+        case nil:
+            title = BundledPreset.neutral.title
         }
         presetMenu.menu?.addItem(.separator())
-        addPresetItem("Import WAV…", choice: .importWAV)
-        presetMenu.selectItem(withTag: selected.rawValue)
+        presetMenu.addItem(withTitle: Self.importWAVTitle)
+        presetMenu.lastItem?.tag = Self.importWAVTag
+        presetMenu.selectItem(withTitle: title)
         presetMenu.isEnabled = selection != nil
-    }
-
-    private func addPresetItem(_ title: String, choice: PresetMenuItem) {
-        presetMenu.addItem(withTitle: title)
-        presetMenu.lastItem?.tag = choice.rawValue
     }
 
     private func refreshBypass() {
@@ -125,17 +129,14 @@ final class AirwaveSpatialViewController: AUViewController, AUAudioUnitFactory {
     }
 
     @objc private func selectPreset() {
-        guard let choice = PresetMenuItem(rawValue: presetMenu.selectedTag()),
+        guard let item = presetMenu.selectedItem,
               let audioUnit = unit.withLockUnchecked({ $0 }) else { return }
         refreshPresetMenu()
-        switch choice {
-        case .neutral:
-            guard audioUnit.presetSelection != .neutral else { return }
-            updatePreset { try audioUnit.useNeutralPreset() }
-        case .imported:
-            break
-        case .importWAV:
+        if item.tag == Self.importWAVTag {
             importPreset()
+        } else if let id = item.representedObject as? String, let preset = BundledPreset(rawValue: id),
+                  audioUnit.presetSelection != .bundled(preset) {
+            updatePreset { try audioUnit.useBundledPreset(preset) }
         }
     }
 

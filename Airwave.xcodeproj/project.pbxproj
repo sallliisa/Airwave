@@ -9,6 +9,8 @@
 /* Begin PBXBuildFile section */
 		A02000000000000000000001 /* AirwaveSpatialAU.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = A02000000000000000000002 /* AirwaveSpatialAU.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		A02000000000000000000003 /* NeutralSH1.0.wav in Resources */ = {isa = PBXBuildFile; fileRef = A02000000000000000000004 /* NeutralSH1.0.wav */; };
+		A0200000000000000000004B /* StageSH1.0.wav in Resources */ = {isa = PBXBuildFile; fileRef = A0200000000000000000005B /* StageSH1.0.wav */; };
+		A0200000000000000000004A /* RoomSH1.0.wav in Resources */ = {isa = PBXBuildFile; fileRef = A0200000000000000000005A /* RoomSH1.0.wav */; };
 		A02000000000000000000030 /* ConvolutionEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02000000000000000000020 /* ConvolutionEngine.swift */; };
 		A02000000000000000000031 /* FFTSetupManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02000000000000000000021 /* FFTSetupManager.swift */; };
 		A02000000000000000000032 /* HRIRRenderPlan.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02000000000000000000022 /* HRIRRenderPlan.swift */; };
@@ -82,6 +84,21 @@
 		A040000000000000000000C2 /* VirtualSpeaker.swift in Sources */ = { isa = PBXBuildFile; fileRef = A04000000000000000000050; };
 		A040000000000000000000C3 /* InputLayoutResolution.swift in Sources */ = { isa = PBXBuildFile; fileRef = A04000000000000000000051; };
 		A040000000000000000000C4 /* EqualizerAUState.swift in Sources */ = { isa = PBXBuildFile; fileRef = A04000000000000000000062; };
+		A05000000000000000000040 /* Spatial AU test source */ = { isa = PBXBuildFile; fileRef = A02000000000000000000020; };
+		A05000000000000000000041 /* Spatial AU test source */ = { isa = PBXBuildFile; fileRef = A02000000000000000000021; };
+		A05000000000000000000042 /* Spatial AU test source */ = { isa = PBXBuildFile; fileRef = A02000000000000000000022; };
+		A05000000000000000000043 /* Spatial AU test source */ = { isa = PBXBuildFile; fileRef = A02000000000000000000023; };
+		A05000000000000000000044 /* Spatial AU test source */ = { isa = PBXBuildFile; fileRef = A02000000000000000000024; };
+		A05000000000000000000045 /* Spatial AU test source */ = { isa = PBXBuildFile; fileRef = A02000000000000000000025; };
+		A05000000000000000000046 /* Spatial AU test source */ = { isa = PBXBuildFile; fileRef = A02000000000000000000026; };
+		A05000000000000000000047 /* Spatial AU test source */ = { isa = PBXBuildFile; fileRef = A02000000000000000000027; };
+		A05000000000000000000048 /* Spatial AU test source */ = { isa = PBXBuildFile; fileRef = A02000000000000000000028; };
+		A05000000000000000000049 /* Spatial AU test source */ = { isa = PBXBuildFile; fileRef = A05000000000000000000020; };
+		A0500000000000000000004A /* Spatial AU test source */ = { isa = PBXBuildFile; fileRef = A05000000000000000000021; };
+		A0500000000000000000004B /* Spatial AU test source */ = { isa = PBXBuildFile; fileRef = A05000000000000000000022; };
+		A05000000000000000000060 /* Spatial AU test preset */ = { isa = PBXBuildFile; fileRef = A02000000000000000000004; };
+		A05000000000000000000061 /* Spatial AU test preset */ = { isa = PBXBuildFile; fileRef = A0200000000000000000005A; };
+		A05000000000000000000062 /* Spatial AU test preset */ = { isa = PBXBuildFile; fileRef = A0200000000000000000005B; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -122,6 +139,8 @@
 /* Begin PBXFileReference section */
 		A02000000000000000000002 /* AirwaveSpatialAU.appex */ = {isa = PBXFileReference; explicitFileType = wrapper.app-extension; includeInIndex = 0; path = AirwaveSpatialAU.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		A02000000000000000000004 /* NeutralSH1.0.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = NeutralSH1.0.wav; path = assets/hrtf/NeutralSH1.0.wav; sourceTree = SOURCE_ROOT; };
+		A0200000000000000000005B /* StageSH1.0.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = StageSH1.0.wav; path = assets/hrtf/StageSH1.0.wav; sourceTree = SOURCE_ROOT; };
+		A0200000000000000000005A /* RoomSH1.0.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = RoomSH1.0.wav; path = assets/hrtf/RoomSH1.0.wav; sourceTree = SOURCE_ROOT; };
 		A02000000000000000000020 /* ConvolutionEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ConvolutionEngine.swift; path = Airwave/ConvolutionEngine.swift; sourceTree = SOURCE_ROOT; };
 		A02000000000000000000021 /* FFTSetupManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = FFTSetupManager.swift; path = Airwave/FFTSetupManager.swift; sourceTree = SOURCE_ROOT; };
 		A02000000000000000000022 /* HRIRRenderPlan.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = HRIRRenderPlan.swift; path = Airwave/HRIRRenderPlan.swift; sourceTree = SOURCE_ROOT; };
@@ -182,6 +201,10 @@
 		A04000000000000000000061 /* EqualizerRenderResources.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirwaveEqualizerAU/EqualizerRenderResources.swift; sourceTree = SOURCE_ROOT; };
 		A04000000000000000000062 /* EqualizerAUState.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirwaveEqualizerAU/EqualizerAUState.swift; sourceTree = SOURCE_ROOT; };
 		A04000000000000000000063 /* EqualizerViewController.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirwaveEqualizerAU/EqualizerViewController.swift; sourceTree = SOURCE_ROOT; };
+		A05000000000000000000001 /* AirwaveSpatialAUTests.xctest */ = { isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AirwaveSpatialAUTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A05000000000000000000020 /* AirwaveSpatialAudioUnit.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirwaveSpatialAU/AirwaveSpatialAudioUnit.swift; sourceTree = SOURCE_ROOT; };
+		A05000000000000000000021 /* SpatialProcessor.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirwaveSpatialAU/SpatialProcessor.swift; sourceTree = SOURCE_ROOT; };
+		A05000000000000000000022 /* SpatialRenderResources.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirwaveSpatialAU/SpatialRenderResources.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -220,6 +243,7 @@
 		A0300000000000000000000B /* Airwave3Tests */ = { isa = PBXFileSystemSynchronizedRootGroup; path = Airwave3Tests; sourceTree = "<group>"; };
 		A04000000000000000000007 /* AirwaveEqualizerAU */ = { isa = PBXFileSystemSynchronizedRootGroup; exceptions = (A04000000000000000000006, ); path = AirwaveEqualizerAU; sourceTree = "<group>"; };
 		A04000000000000000000008 /* AirwaveEqualizerAUTests */ = { isa = PBXFileSystemSynchronizedRootGroup; path = AirwaveEqualizerAUTests; sourceTree = "<group>"; };
+		A05000000000000000000002 /* AirwaveSpatialAUTests */ = { isa = PBXFileSystemSynchronizedRootGroup; path = AirwaveSpatialAUTests; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -241,6 +265,7 @@
 		A03000000000000000000013 /* Frameworks */ = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (A03000000000000000000001, ); runOnlyForDeploymentPostprocessing = 0; };
 		A03000000000000000000017 /* Frameworks */ = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		A0400000000000000000000E /* Frameworks */ = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A05000000000000000000005 /* Frameworks */ = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -257,6 +282,8 @@
 				A02000000000000000000027 /* VirtualSpeaker.swift */,
 				A02000000000000000000028 /* WAVLoader.swift */,
 				A02000000000000000000004 /* NeutralSH1.0.wav */,
+				A0200000000000000000005A /* RoomSH1.0.wav */,
+				A0200000000000000000005B /* StageSH1.0.wav */,
 			);
 			name = "Shared HRIR sources";
 			sourceTree = "<group>";
@@ -269,6 +296,7 @@
 				A0300000000000000000000B /* Airwave3Tests */,
 				A04000000000000000000007 /* AirwaveEqualizerAU */,
 				A04000000000000000000008 /* AirwaveEqualizerAUTests */,
+				A05000000000000000000002 /* AirwaveSpatialAUTests */,
 				A04000000000000000000018 /* Shared effect sources */,
 				A03000000000000000000005 /* Airwave assets */,
 				A03000000000000000000006 /* Airwave icon */,
@@ -288,6 +316,7 @@
 				A03000000000000000000008 /* Airwave3Tests.xctest */,
 				A04000000000000000000001 /* AirwaveEqualizerAU.appex */,
 				A04000000000000000000002 /* AirwaveEqualizerAUTests.xctest */,
+				A05000000000000000000001 /* AirwaveSpatialAUTests.xctest */,
 				A02000000000000000000002 /* AirwaveSpatialAU.appex */,
 				A00100000000000000000001 /* AirwaveTests.xctest */,
 			);
@@ -387,6 +416,7 @@
 		A03000000000000000000011 /* Airwave3Tests */ = { isa = PBXNativeTarget; buildConfigurationList = A0300000000000000000001D; buildPhases = (A03000000000000000000016, A03000000000000000000017, A03000000000000000000018, ); buildRules = (); dependencies = (A0300000000000000000000F, ); fileSystemSynchronizedGroups = (A0300000000000000000000B, ); name = Airwave3Tests; productName = Airwave3Tests; productReference = A03000000000000000000008; productType = "com.apple.product-type.bundle.unit-test"; };
 		A04000000000000000000009 /* AirwaveEqualizerAU */ = { isa = PBXNativeTarget; buildConfigurationList = A04000000000000000000013; buildPhases = (A0400000000000000000000B, A0400000000000000000000C, ); buildRules = (); dependencies = (); fileSystemSynchronizedGroups = (A04000000000000000000007, ); name = AirwaveEqualizerAU; productName = AirwaveEqualizerAU; productReference = A04000000000000000000001; productType = "com.apple.product-type.app-extension"; };
 		A0400000000000000000000A /* AirwaveEqualizerAUTests */ = { isa = PBXNativeTarget; buildConfigurationList = A04000000000000000000014; buildPhases = (A0400000000000000000000D, A0400000000000000000000E, A0400000000000000000000F, ); buildRules = (); dependencies = (); fileSystemSynchronizedGroups = (A04000000000000000000008, ); name = AirwaveEqualizerAUTests; productName = AirwaveEqualizerAUTests; productReference = A04000000000000000000002; productType = "com.apple.product-type.bundle.unit-test"; };
+		A05000000000000000000003 /* AirwaveSpatialAUTests */ = { isa = PBXNativeTarget; buildConfigurationList = A05000000000000000000009; buildPhases = (A05000000000000000000004, A05000000000000000000005, A05000000000000000000006, ); buildRules = (); dependencies = (); fileSystemSynchronizedGroups = (A05000000000000000000002, ); name = AirwaveSpatialAUTests; productName = AirwaveSpatialAUTests; productReference = A05000000000000000000001; productType = "com.apple.product-type.bundle.unit-test"; };
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -430,6 +460,7 @@
 				A03000000000000000000011 /* Airwave3Tests */,
 				A04000000000000000000009 /* AirwaveEqualizerAU */,
 				A0400000000000000000000A /* AirwaveEqualizerAUTests */,
+				A05000000000000000000003 /* AirwaveSpatialAUTests */,
 			);
 		};
 /* End PBXProject section */
@@ -438,7 +469,7 @@
 		A0200000000000000000000D /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
-			files = (A02000000000000000000003 /* NeutralSH1.0.wav in Resources */, );
+			files = (A02000000000000000000003 /* NeutralSH1.0.wav in Resources */, A0200000000000000000004A /* RoomSH1.0.wav in Resources */, A0200000000000000000004B /* StageSH1.0.wav in Resources */, );
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		25B21E7C2ECCDD9B00FE4B05 /* Resources */ = {
@@ -460,6 +491,7 @@
 		A03000000000000000000018 /* Resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		A0400000000000000000000C /* Resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		A0400000000000000000000F /* Resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A05000000000000000000006 /* Resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A05000000000000000000060, A05000000000000000000061, A05000000000000000000062, ); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -517,6 +549,7 @@
 		A03000000000000000000016 /* Sources */ = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		A0400000000000000000000B /* Sources */ = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A04000000000000000000070, A04000000000000000000071, A04000000000000000000072, A04000000000000000000073, A04000000000000000000074, A04000000000000000000075, A04000000000000000000076, A04000000000000000000077, A04000000000000000000078, A04000000000000000000079, A0400000000000000000007A, A0400000000000000000007B, A0400000000000000000007C, A0400000000000000000007D, ); runOnlyForDeploymentPostprocessing = 0; };
 		A0400000000000000000000D /* Sources */ = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A04000000000000000000090, A04000000000000000000091, A04000000000000000000092, A04000000000000000000093, A04000000000000000000094, A04000000000000000000095, A04000000000000000000096, A04000000000000000000097, A04000000000000000000098, A04000000000000000000099, A0400000000000000000009A, A0400000000000000000009B, A0400000000000000000009C, A0400000000000000000009D, A0400000000000000000009E, A0400000000000000000009F, A040000000000000000000A0, A040000000000000000000A1, ); runOnlyForDeploymentPostprocessing = 0; };
+		A05000000000000000000004 /* Sources */ = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A05000000000000000000040, A05000000000000000000041, A05000000000000000000042, A05000000000000000000043, A05000000000000000000044, A05000000000000000000045, A05000000000000000000046, A05000000000000000000047, A05000000000000000000048, A05000000000000000000049, A0500000000000000000004A, A0500000000000000000004B, ); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -860,6 +893,8 @@
 		A04000000000000000000011 /* Release */ = { isa = XCBuildConfiguration; buildSettings = { CODE_SIGN_IDENTITY = "-"; CODE_SIGN_STYLE = Manual; CURRENT_PROJECT_VERSION = 3000000; MACOSX_DEPLOYMENT_TARGET = 15.0; MARKETING_VERSION = 3.0.0; SWIFT_VERSION = 5.0; APPLICATION_EXTENSION_API_ONLY = YES; ENABLE_APP_SANDBOX = YES; ENABLE_HARDENED_RUNTIME = YES; CODE_SIGN_ENTITLEMENTS = AirwaveEqualizerAU/AirwaveEqualizerAU.entitlements; INFOPLIST_FILE = AirwaveEqualizerAU/Info.plist; PRODUCT_BUNDLE_IDENTIFIER = com.southneuhof.Airwave.Equalizer; PRODUCT_NAME = AirwaveEqualizerAU; SKIP_INSTALL = YES; }; name = Release; };
 		A04000000000000000000012 /* Debug */ = { isa = XCBuildConfiguration; buildSettings = { CODE_SIGN_IDENTITY = "-"; CODE_SIGN_STYLE = Manual; CURRENT_PROJECT_VERSION = 3000000; MACOSX_DEPLOYMENT_TARGET = 15.0; MARKETING_VERSION = 3.0.0; SWIFT_VERSION = 5.0; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = com.southneuhof.AirwaveEqualizerAUTests; PRODUCT_NAME = AirwaveEqualizerAUTests; }; name = Debug; };
 		A04000000000000000000017 /* Release */ = { isa = XCBuildConfiguration; buildSettings = { CODE_SIGN_IDENTITY = "-"; CODE_SIGN_STYLE = Manual; CURRENT_PROJECT_VERSION = 3000000; MACOSX_DEPLOYMENT_TARGET = 15.0; MARKETING_VERSION = 3.0.0; SWIFT_VERSION = 5.0; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = com.southneuhof.AirwaveEqualizerAUTests; PRODUCT_NAME = AirwaveEqualizerAUTests; }; name = Release; };
+		A05000000000000000000007 /* Debug */ = { isa = XCBuildConfiguration; buildSettings = { CODE_SIGN_IDENTITY = "-"; CODE_SIGN_STYLE = Manual; GENERATE_INFOPLIST_FILE = YES; MACOSX_DEPLOYMENT_TARGET = 15.0; PRODUCT_BUNDLE_IDENTIFIER = com.southneuhof.AirwaveSpatialAUTests; PRODUCT_NAME = AirwaveSpatialAUTests; SWIFT_VERSION = 5.0; }; name = Debug; };
+		A05000000000000000000008 /* Release */ = { isa = XCBuildConfiguration; buildSettings = { CODE_SIGN_IDENTITY = "-"; CODE_SIGN_STYLE = Manual; GENERATE_INFOPLIST_FILE = YES; MACOSX_DEPLOYMENT_TARGET = 15.0; PRODUCT_BUNDLE_IDENTIFIER = com.southneuhof.AirwaveSpatialAUTests; PRODUCT_NAME = AirwaveSpatialAUTests; SWIFT_VERSION = 5.0; }; name = Release; };
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -903,6 +938,7 @@
 		A0300000000000000000001D /* Airwave3Tests configurations */ = { isa = XCConfigurationList; buildConfigurations = (A0300000000000000000001B, A0300000000000000000001E, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 		A04000000000000000000013 /* Equalizer extension configurations */ = { isa = XCConfigurationList; buildConfigurations = (A04000000000000000000010, A04000000000000000000011, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 		A04000000000000000000014 /* Equalizer test configurations */ = { isa = XCConfigurationList; buildConfigurations = (A04000000000000000000012, A04000000000000000000017, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		A05000000000000000000009 /* Spatial AU test configurations */ = { isa = XCConfigurationList; buildConfigurations = (A05000000000000000000007, A05000000000000000000008, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
