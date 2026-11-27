@@ -2,9 +2,9 @@ name: Airwave v3 CI
 
 on:
   push:
-    branches: [codex/airwave-v3, 'codex/airwave-v3-*']
+    branches: [airwave-v3, codex/airwave-v3, 'codex/airwave-v3-*']
   pull_request:
-    branches: [codex/airwave-v3, 'codex/airwave-v3-*']
+    branches: [airwave-v3, codex/airwave-v3, 'codex/airwave-v3-*']
 
 permissions:
   contents: read
