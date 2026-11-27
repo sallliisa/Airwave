@@ -601,6 +601,7 @@ private struct HostDevicesPage: View {
     }
 
     @State private var action: Action?
+    @State private var configuringOutput: HostDeviceTarget?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -629,6 +630,8 @@ private struct HostDevicesPage: View {
                                 .controlSize(.small)
                                 .accessibilityIdentifier("edit-device.\(device.id)")
                                 Menu {
+                                    Button("Configure Output…") { configuringOutput = device }
+                                        .disabled(!(2...16).contains(device.outputChannelCount) && device.outputChannels == nil)
                                     Button("Reset Effect Chain…") { action = .reset(device) }
                                         .disabled(!device.hasProfile)
                                     Button("Forget Device…", role: .destructive) { action = .forget(device) }
@@ -651,6 +654,9 @@ private struct HostDevicesPage: View {
         }
         .frame(maxWidth: 680, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .top)
+        .sheet(item: $configuringOutput) { target in
+            HostOutputConfigurationView(host: host, target: target)
+        }
         .confirmationDialog("Manage Effect Chain", isPresented: Binding(
             get: { action != nil },
             set: { if !$0 { action = nil } }
@@ -664,6 +670,91 @@ private struct HostDevicesPage: View {
             Button("Cancel", role: .cancel) {}
         } message: { action in
             Text("This removes all saved effects from \(action.device.name).")
+        }
+    }
+}
+
+private struct HostOutputConfigurationView: View {
+    @ObservedObject var host: HostController
+    let target: HostDeviceTarget
+    @Environment(\.dismiss) private var dismiss
+    @State private var left: Int
+    @State private var right: Int
+    @State private var error: String?
+
+    init(host: HostController, target: HostDeviceTarget) {
+        self.host = host
+        self.target = target
+        let pair = target.outputChannels ?? target.preferredOutputChannels ?? StereoOutputChannels(left: 1, right: 2)
+        _left = State(initialValue: pair.left)
+        _right = State(initialValue: pair.right)
+    }
+
+    private var current: HostDeviceTarget? { host.editingDevices.first { $0.id == target.id } }
+    private var channelCount: Int { current?.outputChannelCount ?? 0 }
+    private var available: Bool { (2...16).contains(channelCount) }
+    private var pair: StereoOutputChannels { StereoOutputChannels(left: left, right: right) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Configure Output")
+                .font(.title2.weight(.semibold))
+            Text(target.name)
+                .foregroundStyle(.secondary)
+            Form {
+                picker("Left output", selection: $left)
+                picker("Right output", selection: $right)
+            }
+            .disabled(!available)
+            if let message = error ?? validationMessage {
+                Text(message)
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+            }
+
+            HStack {
+                Button("Use macOS Default") { save(nil) }
+                    .disabled(current?.outputChannels == nil)
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Save") { save(pair) }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(validationMessage != nil)
+            }
+        }
+        .padding(20)
+        .frame(width: 400)
+        .onChange(of: left) { error = nil }
+        .onChange(of: right) { error = nil }
+    }
+
+    private var validationMessage: String? {
+        if !available { return "Reconnect this output to choose its channels." }
+        if left == right { return "Choose different channels for left and right." }
+        if !pair.isInRange(channelCount: channelCount) { return "The saved channel pair is unavailable on this output." }
+        return nil
+    }
+
+    private func picker(_ title: String, selection: Binding<Int>) -> some View {
+        Picker(title, selection: selection) {
+            if available {
+                ForEach(1...channelCount, id: \.self) { channel in
+                    Text("Channel \(channel)").tag(channel)
+                }
+            }
+            if !(available && (1...channelCount).contains(selection.wrappedValue)) {
+                Text("Channel \(selection.wrappedValue) (Unavailable)").tag(selection.wrappedValue)
+            }
+        }
+    }
+
+    private func save(_ pair: StereoOutputChannels?) {
+        do {
+            try host.configureOutput(for: target.id, channels: pair)
+            dismiss()
+        } catch {
+            self.error = error.localizedDescription
         }
     }
 }

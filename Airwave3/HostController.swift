@@ -13,6 +13,9 @@ struct HostDeviceTarget: Identifiable, Equatable {
     let isCurrent: Bool
     let isConnected: Bool
     let hasProfile: Bool
+    let outputChannels: StereoOutputChannels?
+    let outputChannelCount: Int
+    let preferredOutputChannels: StereoOutputChannels?
 }
 
 enum CaptureCheckStatus: Equatable {
@@ -86,6 +89,7 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
     private var storageReadOnly = false
     private var output: OutputDevice?
     private var effects: [UUID: LiveEffect] = [:]
+    private var spatialLayouts: [UUID: InputLayout] = [:]
     private var loadTasks: [UUID: Task<Void, Never>] = [:]
     private var playback: Playback = .native
     private var pendingCleanup: SystemAudioRoute?
@@ -157,7 +161,10 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
                     name: connected[uid]?.name ?? (uid == currentDeviceUID ? outputName : profiles[uid]?.name) ?? uid,
                     isCurrent: uid == currentDeviceUID,
                     isConnected: connected[uid] != nil || uid == currentDeviceUID,
-                    hasProfile: profiles[uid] != nil
+                    hasProfile: profiles[uid] != nil,
+                    outputChannels: profiles[uid]?.outputChannels,
+                    outputChannelCount: connected[uid]?.routing?.outputChannelCount ?? 0,
+                    preferredOutputChannels: connected[uid]?.routing?.preferredStereoChannels
                 )
             }
             .sorted { lhs, rhs in
@@ -186,6 +193,35 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
     func selectEditingDevice(_ uid: String) {
         guard editingDevices.contains(where: { $0.id == uid }) else { return }
         editingDeviceUID = uid
+    }
+
+    func configureOutput(for uid: String, channels: StereoOutputChannels?) throws {
+        let saved = profiles[uid]?.outputChannels
+        guard saved != channels else { return }
+        if let channels {
+            guard let output = connected[uid]?.routing else {
+                throw SystemAudioRouteError.unsupportedOutput("Connect this output to configure its channels.")
+            }
+            if case .unsupported(let reason) = OutputRoutingResolver.resolve(output: output, channels: channels) {
+                throw SystemAudioRouteError.unsupportedOutput(reason)
+            }
+        }
+        var profile = profiles[uid] ?? DeviceProfile(name: connected[uid]?.name ?? uid,
+                                                     sampleRate: connected[uid]?.sampleRate, slots: [])
+        profile.outputChannels = channels
+        var updated = profiles
+        updated[uid] = profile
+        guard !storageReadOnly else {
+            throw SystemAudioRouteError.unsupportedOutput(storageError ?? "Saved chains cannot be written.")
+        }
+        try store.save(updated)
+        profiles = updated
+        storageError = nil
+        if uid == currentDeviceUID {
+            recoveryAttempted = false
+            setPlayback(.native)
+            updatePlayback()
+        }
     }
 
     func selectCurrentOutputForEditing() {
@@ -228,6 +264,7 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
             loadTasks.values.forEach { $0.cancel() }
             loadTasks.removeAll()
             effects.removeAll()
+            spatialLayouts.removeAll()
             slotIssues.removeAll()
             slots.removeAll()
             saveProfile()
@@ -293,6 +330,7 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
         editors[id]?.window.close()
         loadTasks.removeValue(forKey: id)?.cancel()
         effects.removeValue(forKey: id)
+        spatialLayouts.removeValue(forKey: id)
         slotIssues[id] = nil
         slots.removeAll { $0.id == id }
         saveProfile()
@@ -331,7 +369,9 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
 
         let token = UUID()
         openingEditors[id] = token
-        let rate = connected[uid]?.sampleRate ?? profiles[uid]?.sampleRate ?? 48_000
+        let device = connected[uid]
+        let rate = device?.sampleRate ?? profiles[uid]?.sampleRate ?? 48_000
+        let name = device?.name ?? profiles[uid]?.name ?? uid
         Task { [weak self] in
             guard let self else { return }
             defer { if self.openingEditors[id] == token { self.openingEditors[id] = nil } }
@@ -340,7 +380,8 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
                 if let live = self.effects[id], active { effect = live }
                 else {
                     effect = try await LiveEffect.load(
-                        slot, sampleRate: rate, maximumFrames: SystemAudioRoute.maximumFrames
+                        slot, sampleRate: rate, maximumFrames: SystemAudioRoute.maximumFrames,
+                        equalizerOutput: (uid: uid, name: name, channelCount: device?.capturedChannelCount)
                     )
                 }
                 let custom = await effect.unit.requestViewController()
@@ -489,6 +530,7 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
         loadTasks.values.forEach { $0.cancel() }
         loadTasks.removeAll()
         effects.removeAll()
+        spatialLayouts.removeAll()
         slotIssues.removeAll()
         chain.replace(with: [])
         output = next
@@ -507,8 +549,37 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
         updatePlayback()
     }
 
+    private func spatialLayout(for slot: EffectSlot) -> InputLayout? {
+        guard slot.component == .airwaveSpatial, let layout = output?.captureLayout, layout.channels.count > 2,
+              slots.first(where: { !$0.isBypassed })?.id == slot.id else { return nil }
+        return layout
+    }
+
+    private func reconcileSpatialLayouts() {
+        for index in slots.indices where slots[index].component == .airwaveSpatial {
+            let id = slots[index].id
+            guard spatialLayouts[id] != spatialLayout(for: slots[index]) else { continue }
+            if let effect = effects[id] {
+                do {
+                    slots[index].state = try effect.saveState(previous: slots[index].state)
+                    saveProfile()
+                } catch {
+                    slotIssues[id] = "Audio Unit settings could not be saved."
+                    continue
+                }
+            }
+            editors[id]?.window.close()
+            openingEditors[id] = nil
+            effects[id] = nil
+            loadTasks.removeValue(forKey: id)?.cancel()
+            prepare(slots[index])
+        }
+    }
+
     private func prepare(_ slot: EffectSlot) {
         guard let output, loadTasks[slot.id] == nil else { return }
+        let layout = spatialLayout(for: slot)
+        spatialLayouts[slot.id] = layout
         if !components.contains(where: { $0.id == slot.component }) {
             slotIssues[slot.id] = "Audio Unit unavailable. Install it and rescan."
             return
@@ -517,7 +588,10 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
         loadTasks[slot.id] = Task { [weak self] in
             do {
                 let effect = try await LiveEffect.load(
-                    slot, sampleRate: output.sampleRate, maximumFrames: SystemAudioRoute.maximumFrames
+                    slot, sampleRate: output.sampleRate, maximumFrames: SystemAudioRoute.maximumFrames,
+                    spatialLayout: layout, equalizerOutput: (
+                        uid: output.uid, name: output.name, channelCount: output.capturedChannelCount
+                    )
                 )
                 guard let self, !Task.isCancelled else { return }
                 self.effects[slot.id] = effect
@@ -548,6 +622,7 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
 
     private func updatePlayback() {
         guard !suspendedForSleep, pendingCleanup == nil else { return }
+        reconcileSpatialLayouts()
         let active = slots.compactMap { slot -> LiveEffect? in
             guard !slot.isBypassed, let effect = effects[slot.id],
                   effect.stage.failure.load(ordering: .relaxed) == noErr else { return nil }
@@ -559,7 +634,9 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
             status = storageError ?? "Connect an audio output"
             return
         }
-        guard isEnabled, !active.isEmpty || mixerRequiresRouting else {
+        let outputChannels = profiles[output.uid]?.outputChannels
+        let processingStatus = active.isEmpty && !mixerRequiresRouting ? "Routing audio" : "Processing system audio"
+        guard isEnabled, !active.isEmpty || mixerRequiresRouting || outputChannels != nil else {
             if case .checking(_, _, true, _) = playback { return }
             setPlayback(.native)
             status = storageError ?? (isEnabled && !loadTasks.isEmpty ? "Loading Audio Units…" : "Normal macOS playback")
@@ -568,7 +645,7 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
         switch playback {
         case .processing(let route):
             if mixerSources == routedMixerSources {
-                if rejectedMixerSources != nil { status = storageError ?? "Processing system audio" }
+                status = storageError ?? processingStatus
                 rejectedMixerSources = nil
                 return
             }
@@ -577,7 +654,7 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
                 if try route.retarget(to: mixerSources) {
                     routedMixerSources = mixerSources
                     rejectedMixerSources = nil
-                    status = storageError ?? "Processing system audio"
+                    status = storageError ?? processingStatus
                     return
                 }
             } catch {
@@ -591,7 +668,10 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
         }
         if captureVerified {
             do {
-                let route = try SystemAudioRoute(output: output, appSources: mixerSources, render: chain.render)
+                let route = try SystemAudioRoute(
+                    output: output, appSources: mixerSources, outputChannels: outputChannels,
+                    capturedRender: chain.renderCaptured, render: chain.render
+                )
                 setPlayback(.native)
                 guard pendingCleanup == nil else { return }
                 try start(route)
@@ -600,7 +680,7 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
                 lastCallbacks = chain.callbacks.load(ordering: .relaxed)
                 lastCallbackTime = Date()
                 captureCheck = .verified
-                status = storageError ?? "Processing system audio"
+                status = storageError ?? processingStatus
             } catch {
                 if case .processing = playback {
                     rejectedMixerSources = mixerSources
@@ -623,7 +703,10 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
         if explicit { captureCheck = .checking }
         let signal = CaptureSignal()
         do {
-            let route = try SystemAudioRoute(output: output, verification: true, render: signal.inspect)
+            let route = try SystemAudioRoute(
+                output: output, verification: true, outputChannels: profiles[output.uid]?.outputChannels,
+                render: signal.inspect
+            )
             try start(route)
             playback = .checking(route, signal, explicit: explicit, started: Date())
             status = explicit ? "Checking system audio capture…" : "Play audio to enable processing"
@@ -744,7 +827,11 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
 
     private func saveProfile() {
         guard let output else { return }
-        profiles[output.uid] = DeviceProfile(name: output.name, sampleRate: output.sampleRate, slots: slots)
+        var profile = profiles[output.uid] ?? DeviceProfile(name: output.name, sampleRate: output.sampleRate, slots: [])
+        profile.name = output.name
+        profile.sampleRate = output.sampleRate
+        profile.slots = slots
+        profiles[output.uid] = profile
         persistProfiles()
     }
 

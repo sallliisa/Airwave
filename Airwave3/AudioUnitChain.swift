@@ -55,7 +55,10 @@ final class LiveEffect {
     let stage: EffectRenderStage
 
     @MainActor
-    static func load(_ slot: EffectSlot, sampleRate: Double, maximumFrames: UInt32) async throws -> LiveEffect {
+    static func load(
+        _ slot: EffectSlot, sampleRate: Double, maximumFrames: UInt32,
+        spatialLayout: InputLayout? = nil, equalizerOutput: (uid: String, name: String, channelCount: Int?)? = nil
+    ) async throws -> LiveEffect {
         let unit = try await AUAudioUnit.instantiate(with: slot.component.description, options: [])
         try Task.checkCancellation()
         guard unit.inputBusses.count == 1, unit.outputBusses.count == 1 else {
@@ -64,24 +67,46 @@ final class LiveEffect {
         guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2) else {
             throw EffectError.invalidFormat
         }
-        if let state = slot.state {
-            guard let dictionary = try PropertyListSerialization.propertyList(from: state, format: nil) as? [String: Any] else {
+        var state: [String: Any]?
+        if let data = slot.state {
+            guard let dictionary = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else {
                 throw EffectError.invalidState
             }
-            unit.fullStateForDocument = dictionary
+            state = dictionary
         }
-        try unit.inputBusses[0].setFormat(format)
+        if slot.component == .airwaveEqualizer, let equalizerOutput {
+            let previousContext = try EqualizerAUState(state).context
+            let context = EqualizerAUState.OutputContext(
+                deviceName: equalizerOutput.name, deviceUID: equalizerOutput.uid,
+                inputChannelCount: equalizerOutput.channelCount ?? previousContext?.inputChannelCount ?? 2
+            )
+            state = EqualizerAUState.settingOutputContext(context, in: state)
+        }
+        if slot.component != .airwaveEqualizer, let state { unit.fullStateForDocument = state }
+        let inputFormat: AVAudioFormat
+        if slot.component == .airwaveSpatial, let spatialLayout {
+            guard let multichannel = spatialLayout.audioFormat(sampleRate: sampleRate) else {
+                throw EffectError.invalidFormat
+            }
+            inputFormat = multichannel
+        } else {
+            inputFormat = format
+        }
+        try unit.inputBusses[0].setFormat(inputFormat)
         try unit.outputBusses[0].setFormat(format)
         unit.maximumFramesToRender = maximumFrames
         unit.inputBusses[0].isEnabled = true
+        if slot.component == .airwaveEqualizer, let state { unit.fullStateForDocument = state }
         try unit.allocateRenderResources()
-        return LiveEffect(slotID: slot.id, unit: unit, maximumFrames: maximumFrames)
+        return LiveEffect(slotID: slot.id, unit: unit, maximumFrames: maximumFrames,
+                          inputChannelCount: Int(inputFormat.channelCount))
     }
 
-    private init(slotID: UUID, unit: AUAudioUnit, maximumFrames: UInt32) {
+    private init(slotID: UUID, unit: AUAudioUnit, maximumFrames: UInt32, inputChannelCount: Int) {
         self.slotID = slotID
         self.unit = unit
-        stage = EffectRenderStage(render: unit.renderBlock, maximumFrames: maximumFrames)
+        stage = EffectRenderStage(render: unit.renderBlock, maximumFrames: maximumFrames,
+                                  inputChannelCount: inputChannelCount)
     }
 
     func saveState(previous: Data?) throws -> Data? {
@@ -98,6 +123,7 @@ final class EffectRenderStage {
     private struct Input {
         var left: UnsafePointer<Float>?
         var right: UnsafePointer<Float>?
+        var channels: UnsafePointer<UnsafePointer<Float>?>?
         var frames: UInt32 = 0
         var sampleTime: Float64?
     }
@@ -109,17 +135,19 @@ final class EffectRenderStage {
     private let storage: UnsafeMutablePointer<Float>
     private let pullStorage: UnsafeMutablePointer<Float>
     private let maximumFrames: UInt32
+    let inputChannelCount: Int
     let failure = Atomic<OSStatus>(noErr)
 
-    init(render: @escaping AURenderBlock, maximumFrames: UInt32) {
+    init(render: @escaping AURenderBlock, maximumFrames: UInt32, inputChannelCount: Int = 2) {
         renderBlock = render
         self.maximumFrames = maximumFrames
+        self.inputChannelCount = inputChannelCount
         input = .allocate(capacity: 1)
         input.initialize(to: Input())
         output = AudioBufferList.allocate(maximumBuffers: 2)
         output.count = 2
         storage = .allocate(capacity: Int(maximumFrames) * 2)
-        pullStorage = .allocate(capacity: Int(maximumFrames) * 2)
+        pullStorage = .allocate(capacity: Int(maximumFrames) * inputChannelCount)
         let pullStorage = self.pullStorage
         let input = self.input
         pullInput = { _, time, frames, bus, bufferList in
@@ -139,10 +167,11 @@ final class EffectRenderStage {
                 return kAudioUnitErr_TooManyFramesToProcess
             }
             let destination = UnsafeMutableAudioBufferListPointer(bufferList)
-            guard destination.count == 2 else { return kAudioUnitErr_FormatNotSupported }
+            guard destination.count == inputChannelCount else { return kAudioUnitErr_FormatNotSupported }
             let byteCount = Int(frames) * MemoryLayout<Float>.size
-            for index in 0..<2 {
-                let source = (index == 0 ? left : right).advanced(by: offset)
+            for index in 0..<inputChannelCount {
+                let channel = sourceBlock.channels.map { $0[index] } ?? (index == 0 ? left : right)
+                guard let source = channel?.advanced(by: offset) else { return kAudioUnitErr_FormatNotSupported }
                 if let data = destination[index].mData {
                     guard destination[index].mDataByteSize >= byteCount else {
                         return kAudioUnitErr_TooManyFramesToProcess
@@ -164,11 +193,22 @@ final class EffectRenderStage {
 
     func process(
         _ time: UnsafePointer<AudioTimeStamp>, left: UnsafePointer<Float>,
-        right: UnsafePointer<Float>, frames: UInt32
+        right: UnsafePointer<Float>, frames: UInt32,
+        captured: UnsafeBufferPointer<UnsafePointer<Float>?>? = nil
     ) -> (UnsafePointer<Float>, UnsafePointer<Float>)? {
         guard frames <= maximumFrames, failure.load(ordering: .relaxed) == noErr else { return nil }
+        let channels: UnsafePointer<UnsafePointer<Float>?>?
+        if inputChannelCount == 2 {
+            channels = nil
+        } else {
+            guard let captured, captured.count == inputChannelCount, let base = captured.baseAddress else {
+                failure.store(kAudioUnitErr_FormatNotSupported, ordering: .relaxed)
+                return nil
+            }
+            channels = base
+        }
         let sampleTime = time.pointee.mFlags.contains(.sampleTimeValid) ? time.pointee.mSampleTime : nil
-        input.pointee = Input(left: left, right: right, frames: frames, sampleTime: sampleTime)
+        input.pointee = Input(left: left, right: right, channels: channels, frames: frames, sampleTime: sampleTime)
         let rightOutput = storage.advanced(by: Int(maximumFrames))
         let bytes = frames * UInt32(MemoryLayout<Float>.size)
         output.count = 2
@@ -236,6 +276,14 @@ final class RenderChain {
         _ inputRight: UnsafePointer<Float>, _ outputLeft: UnsafeMutablePointer<Float>,
         _ outputRight: UnsafeMutablePointer<Float>, _ frames: UInt32
     ) {
+        renderCaptured(time, nil, inputLeft, inputRight, outputLeft, outputRight, frames)
+    }
+
+    func renderCaptured(
+        _ time: UnsafePointer<AudioTimeStamp>, _ captured: UnsafeBufferPointer<UnsafePointer<Float>?>?,
+        _ inputLeft: UnsafePointer<Float>, _ inputRight: UnsafePointer<Float>,
+        _ outputLeft: UnsafeMutablePointer<Float>, _ outputRight: UnsafeMutablePointer<Float>, _ frames: UInt32
+    ) {
         _ = readers.wrappingAdd(1, ordering: .sequentiallyConsistent)
         defer {
             _ = readers.wrappingSubtract(1, ordering: .sequentiallyConsistent)
@@ -246,8 +294,9 @@ final class RenderChain {
         var right = inputRight
         if let pointer = current.load(ordering: .sequentiallyConsistent) {
             let snapshot = Unmanaged<Snapshot>.fromOpaque(pointer).takeUnretainedValue()
-            for effect in snapshot.effects {
-                if let result = effect.stage.process(time, left: left, right: right, frames: frames) {
+            for (index, effect) in snapshot.effects.enumerated() {
+                if let result = effect.stage.process(time, left: left, right: right, frames: frames,
+                                                     captured: index == 0 ? captured : nil) {
                     (left, right) = result
                 }
             }
@@ -262,5 +311,50 @@ final class RenderChain {
             Unmanaged<Snapshot>.fromOpaque(pointer).release()
         }
         for pointer in retired { Unmanaged<Snapshot>.fromOpaque(pointer).release() }
+    }
+}
+
+private extension InputLayout {
+    func audioFormat(sampleRate: Double) -> AVAudioFormat? {
+        let header = MemoryLayout<AudioChannelLayout>.offset(of: \.mChannelDescriptions)!
+        let storage = UnsafeMutableRawPointer.allocate(
+            byteCount: header + channels.count * MemoryLayout<AudioChannelDescription>.stride,
+            alignment: MemoryLayout<AudioChannelLayout>.alignment
+        )
+        defer { storage.deallocate() }
+        let layout = storage.bindMemory(to: AudioChannelLayout.self, capacity: 1)
+        layout.pointee.mChannelLayoutTag = kAudioChannelLayoutTag_UseChannelDescriptions
+        layout.pointee.mChannelBitmap = []
+        layout.pointee.mNumberChannelDescriptions = UInt32(channels.count)
+        let descriptions = storage.advanced(by: header).bindMemory(to: AudioChannelDescription.self, capacity: channels.count)
+        for (index, speaker) in channels.enumerated() {
+            descriptions[index] = AudioChannelDescription(mChannelLabel: speaker.coreAudioLabel, mChannelFlags: [],
+                                                           mCoordinates: (0, 0, 0))
+        }
+        return AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, interleaved: false,
+                             channelLayout: AVAudioChannelLayout(layout: layout))
+    }
+}
+
+private extension VirtualSpeaker {
+    var coreAudioLabel: AudioChannelLabel {
+        switch self {
+        case .FL: kAudioChannelLabel_Left
+        case .FR: kAudioChannelLabel_Right
+        case .FC: kAudioChannelLabel_Center
+        case .LFE: kAudioChannelLabel_LFEScreen
+        case .BL: kAudioChannelLabel_LeftSurroundDirect
+        case .BR: kAudioChannelLabel_RightSurroundDirect
+        case .SL: kAudioChannelLabel_LeftSurround
+        case .SR: kAudioChannelLabel_RightSurround
+        case .TFL: kAudioChannelLabel_VerticalHeightLeft
+        case .TFR: kAudioChannelLabel_VerticalHeightRight
+        case .TBL: kAudioChannelLabel_TopBackLeft
+        case .TBR: kAudioChannelLabel_TopBackRight
+        case .FLC: kAudioChannelLabel_LeftCenter
+        case .FRC: kAudioChannelLabel_RightCenter
+        case .BC: kAudioChannelLabel_CenterSurround
+        case .custom: kAudioChannelLabel_Unknown
+        }
     }
 }

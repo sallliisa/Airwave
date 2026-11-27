@@ -1,4 +1,5 @@
 import Accelerate
+import AudioToolbox
 import CoreAudio
 import Foundation
 import OSLog
@@ -9,7 +10,31 @@ struct OutputDevice: Equatable {
     let uid: String
     let name: String
     let sampleRate: Double
+    let routing: OutputDeviceDescriptor?
+
+    init(id: AudioDeviceID, uid: String, name: String, sampleRate: Double, routing: OutputDeviceDescriptor? = nil) {
+        self.id = id
+        self.uid = uid
+        self.name = name
+        self.sampleRate = sampleRate
+        self.routing = routing
+    }
+
+    var captureLayout: InputLayout? {
+        guard let routing, case .resolved(let route) = OutputRoutingResolver.resolve(output: routing) else { return nil }
+        return route.inputLayout
+    }
+
+    var capturedChannelCount: Int? {
+        captureLayout?.channels.count ?? routing.map { min($0.outputChannelCount, 2) }
+    }
 }
+
+typealias CapturedRender = (
+    UnsafePointer<AudioTimeStamp>, UnsafeBufferPointer<UnsafePointer<Float>?>?,
+    UnsafePointer<Float>, UnsafePointer<Float>, UnsafeMutablePointer<Float>,
+    UnsafeMutablePointer<Float>, UInt32
+) -> Void
 
 typealias StereoRender = (
     UnsafePointer<AudioTimeStamp>, UnsafePointer<Float>, UnsafePointer<Float>,
@@ -135,18 +160,38 @@ final class SystemAudioRoute {
     }
 
     private static func describeOutput(_ id: AudioDeviceID) throws -> OutputDevice {
-        try OutputDevice(
-            id: id,
-            uid: HAL.string(kAudioDevicePropertyDeviceUID, of: id),
-            name: HAL.string(kAudioObjectPropertyName, of: id),
-            sampleRate: HAL.read(kAudioDevicePropertyNominalSampleRate, of: id, as: Double.self)
+        let uid = try HAL.string(kAudioDevicePropertyDeviceUID, of: id)
+        let name = try HAL.string(kAudioObjectPropertyName, of: id)
+        let sampleRate = try HAL.read(kAudioDevicePropertyNominalSampleRate, of: id, as: Double.self)
+        let transport = try HAL.read(kAudioDevicePropertyTransportType, of: id, as: UInt32.self)
+        let scope = kAudioObjectPropertyScopeOutput
+        let channelCount = ((try? HAL.channelWidths(of: id, scope: scope)) ?? []).reduce(0, +)
+        let streams = (try? HAL.streams(of: id, scope: scope)) ?? []
+        let ranges = streams.enumerated().compactMap { index, stream -> OutputStreamDescriptor? in
+            guard let start = try? HAL.read(kAudioStreamPropertyStartingChannel, of: stream, as: UInt32.self),
+                  let format = try? HAL.read(kAudioStreamPropertyVirtualFormat, of: stream, as: AudioStreamBasicDescription.self)
+            else { return nil }
+            return OutputStreamDescriptor(streamIndex: index, startingChannel: Int(start), channelCount: Int(format.mChannelsPerFrame))
+        }
+        let preferred = HAL.preferredStereoChannels(of: id, channelCount: channelCount)
+        let descriptor = OutputDeviceDescriptor(
+            id: .init(UInt64(id)), uid: uid, name: name, transport: "",
+            channelLabels: channelCount > 2 ? HAL.channelLabels(of: id, channelCount: channelCount) : nil,
+            outputChannelCount: channelCount, nominalSampleRate: sampleRate,
+            isVirtual: transport == kAudioDeviceTransportTypeVirtual,
+            isAggregate: transport == kAudioDeviceTransportTypeAggregate,
+            outputStreamCount: streams.count, outputStreams: ranges,
+            preferredStereoChannels: StereoOutputChannels(left: preferred.0 + 1, right: preferred.1 + 1)
         )
+        return OutputDevice(id: id, uid: uid, name: name, sampleRate: sampleRate, routing: descriptor)
     }
 
     init(output: OutputDevice, verification: Bool = false, appSources: [AppMixerSource] = [],
+         outputChannels: StereoOutputChannels? = nil, capturedRender: CapturedRender? = nil,
          render: @escaping StereoRender) throws {
         do {
-            try prepare(output: output, verification: verification, appSources: appSources, render: render)
+            try prepare(output: output, verification: verification, appSources: appSources,
+                        outputChannels: outputChannels, capturedRender: capturedRender, render: render)
         } catch {
             stop()
             throw error
@@ -223,24 +268,26 @@ final class SystemAudioRoute {
     }
 
     private func prepare(output: OutputDevice, verification: Bool, appSources: [AppMixerSource],
+                         outputChannels: StereoOutputChannels?, capturedRender: CapturedRender?,
                          render: @escaping StereoRender) throws {
         let transport = try HAL.read(kAudioDevicePropertyTransportType, of: output.id, as: UInt32.self)
         guard transport != kAudioDeviceTransportTypeAggregate, transport != kAudioDeviceTransportTypeVirtual else {
             throw SystemAudioRouteError.unsupportedOutput("\(output.name) uses a virtual or aggregate audio route.")
         }
-        let destination = try DeviceDestination(output)
+        let destination = try DeviceDestination(output, pair: outputChannels,
+                                                preserveCapture: capturedRender != nil || outputChannels != nil)
         let sources = verification ? [] : appSources
         let host = verification ? nil : try HAL.processID()
         self.hostProcess = host
         self.appSources = sources
         let excluded = try host.map { try Self.excludedProcesses(host: $0, sources: sources) } ?? []
-        let remainder = CATapDescription(excludingProcesses: excluded, deviceUID: output.uid, stream: destination.stream)
+        let remainder = CATapDescription(excludingProcesses: excluded, deviceUID: output.uid, stream: destination.capture.stream)
         var formats = [try createTap(remainder, name: "Airwave", gain: nil,
-                                     output: output, destination: destination, verification: verification)]
+                                     output: output, source: destination.capture, verification: verification)]
         for source in sources {
-            let description = CATapDescription(processes: source.processIDs, deviceUID: output.uid, stream: destination.stream)
+            let description = CATapDescription(processes: source.processIDs, deviceUID: output.uid, stream: destination.capture.stream)
             formats.append(try createTap(description, name: "Airwave: \(source.id)", gain: source.gain,
-                                         output: output, destination: destination, verification: verification))
+                                         output: output, source: destination.capture, verification: verification))
         }
 
         let composition: [String: Any] = [
@@ -279,19 +326,31 @@ final class SystemAudioRoute {
         }
         var tapStart = deviceInputs.reduce(0, +)
         var tapInputs: [StereoTapInput] = []
+        var wideInputs: [MultichannelTapInput] = []
+        let inputLayout = destination.capture.layout
         for format in formats {
-            guard let left = BufferChannel.at(tapStart, widths: aggregateInputs), left.offset == 0,
-                  let right = BufferChannel.at(tapStart + format.channels - 1, widths: aggregateInputs),
-                  right.offset == right.stride - 1 else {
+            guard let first = BufferChannel.at(tapStart, widths: aggregateInputs), first.offset == 0,
+                  let last = BufferChannel.at(tapStart + format.channels - 1, widths: aggregateInputs),
+                  last.offset == last.stride - 1 else {
                 throw SystemAudioRouteError.unsupportedOutput("Core Audio did not expose the system audio tap channels.")
             }
-            tapInputs.append(StereoTapInput(left: left, right: right, gain: format.gain))
+            let localChannels = destination.capture.sourceIndices ?? [0, format.channels - 1]
+            let channels = localChannels.compactMap { BufferChannel.at(tapStart + $0, widths: aggregateInputs) }
+            guard channels.count == localChannels.count else {
+                throw SystemAudioRouteError.unsupportedOutput("Core Audio did not expose the selected source channels.")
+            }
+            if channels.count == 2 {
+                tapInputs.append(StereoTapInput(left: channels[0], right: channels[1], gain: format.gain))
+            } else {
+                wideInputs.append(MultichannelTapInput(channels: channels, gain: format.gain))
+            }
             tapStart += format.channels
         }
         let bridge = StereoIOBridge(
             tapInputs: tapInputs, sampleRate: output.sampleRate,
             outputLeft: destination.left, outputRight: destination.right,
-            verification: verification, render: render
+            verification: verification, wideInputs: wideInputs, inputLayout: inputLayout,
+            clearsUnusedOutputs: outputChannels != nil, capturedRender: capturedRender, render: render
         )
         self.bridge = bridge
         try HAL.check(AudioDeviceCreateIOProcIDWithBlock(&io, aggregate, nil) { _, input, _, output, timestamp in
@@ -311,10 +370,10 @@ final class SystemAudioRoute {
     }
 
     private func createTap(_ description: CATapDescription, name: String, gain: AppMixerGain?,
-                           output: OutputDevice, destination: DeviceDestination, verification: Bool) throws -> TapFormat {
+                           output: OutputDevice, source: CaptureSource, verification: Bool) throws -> TapFormat {
         description.name = name
         description.isPrivate = true
-        description.isMixdown = destination.streamChannels > 2
+        description.isMixdown = source.streamChannels > 2 && source.sourceIndices == nil
         description.isMono = false
         description.muteBehavior = verification ? .unmuted : .mutedWhenTapped
         var id = AudioObjectID(kAudioObjectUnknown)
@@ -323,40 +382,83 @@ final class SystemAudioRoute {
         let uid = try HAL.string(kAudioTapPropertyUID, of: id)
         let format = try HAL.read(kAudioTapPropertyFormat, of: id, as: AudioStreamBasicDescription.self)
         let channels = Int(format.mChannelsPerFrame)
-        guard (1...2).contains(channels), HAL.isFloatPCM(format, at: output.sampleRate) else {
-            throw SystemAudioRouteError.unsupportedOutput("Core Audio did not provide a mono or stereo tap at the output sample rate.")
+        let expectedWidth = source.sourceIndices != nil ? channels == source.streamChannels : (1...2).contains(channels)
+        guard expectedWidth, HAL.isFloatPCM(format, at: output.sampleRate) else {
+            throw SystemAudioRouteError.unsupportedOutput("Core Audio did not provide the expected tap format at the output sample rate.")
         }
         return TapFormat(uid: uid, channels: channels, gain: gain)
     }
 }
 
-private struct DeviceDestination {
+private struct CaptureSource {
     let stream: UInt
     let streamChannels: Int
+    let sourceIndices: [Int]?
+    let layout: InputLayout?
+}
+
+private struct DeviceDestination {
+    let capture: CaptureSource
     let bufferWidths: [Int]
     let left: BufferChannel
     let right: BufferChannel
 
-    init(_ output: OutputDevice) throws {
+    init(_ output: OutputDevice, pair: StereoOutputChannels?, preserveCapture: Bool) throws {
         let scope = kAudioObjectPropertyScopeOutput
         let widths = try HAL.channelWidths(of: output.id, scope: scope)
-        let preferred = HAL.preferredStereoChannels(of: output.id, channelCount: widths.reduce(0, +))
-        guard let left = BufferChannel.at(preferred.0, widths: widths),
-              let right = BufferChannel.at(preferred.1, widths: widths) else {
-            throw SystemAudioRouteError.unsupportedOutput("\(output.name) has no usable playback channels.")
+        let channelCount = widths.reduce(0, +)
+        if let pair, !(2...16).contains(channelCount) || !pair.isInRange(channelCount: channelCount) {
+            throw SystemAudioRouteError.unsupportedOutput("Choose two distinct output channels available on this device.")
         }
-        for (index, stream) in try HAL.streams(of: output.id, scope: scope).enumerated() {
+        let preferred = HAL.preferredStereoChannels(of: output.id, channelCount: channelCount)
+        let destination = pair.map { ($0.left - 1, $0.right - 1) } ?? preferred
+        let streams = try HAL.streams(of: output.id, scope: scope)
+        let validRanges = try streams.compactMap { stream -> Range<Int>? in
             let first = try HAL.read(kAudioStreamPropertyStartingChannel, of: stream, as: UInt32.self)
             let format = try HAL.read(kAudioStreamPropertyVirtualFormat, of: stream, as: AudioStreamBasicDescription.self)
-            let channelCount = Int(format.mChannelsPerFrame)
+            guard first > 0, format.mChannelsPerFrame > 0, HAL.isFloatPCM(format, at: output.sampleRate) else { return nil }
+            let start = Int(first) - 1
+            return start..<(start + Int(format.mChannelsPerFrame))
+        }
+        guard let left = BufferChannel.at(destination.0, widths: widths),
+              let right = BufferChannel.at(destination.1, widths: widths),
+              validRanges.contains(where: { $0.contains(destination.0) }),
+              validRanges.contains(where: { $0.contains(destination.1) }) else {
+            throw SystemAudioRouteError.unsupportedOutput("The saved output channels are unavailable on \(output.name). Configure the device to choose another pair.")
+        }
+        self.left = left
+        self.right = right
+        self.bufferWidths = widths
+
+        if preserveCapture, let descriptor = output.routing {
+            switch OutputRoutingResolver.resolve(output: descriptor, channels: pair) {
+            case .resolved(let route):
+                guard streams.indices.contains(route.tapStreamIndex),
+                      let oldSource = route.device.outputStreams.first(where: { $0.streamIndex == route.tapStreamIndex })
+                else { throw SystemAudioRouteError.unsupportedOutput("Core Audio changed the source stream during setup.") }
+                let sourceStream = streams[route.tapStreamIndex]
+                let first = try HAL.read(kAudioStreamPropertyStartingChannel, of: sourceStream, as: UInt32.self)
+                let format = try HAL.read(kAudioStreamPropertyVirtualFormat, of: sourceStream, as: AudioStreamBasicDescription.self)
+                guard Int(first) == oldSource.startingChannel,
+                      Int(format.mChannelsPerFrame) == route.nativeWidth, HAL.isFloatPCM(format, at: output.sampleRate) else {
+                    throw SystemAudioRouteError.unsupportedOutput("Core Audio changed the source stream during setup.")
+                }
+                capture = CaptureSource(stream: UInt(route.tapStreamIndex), streamChannels: route.nativeWidth,
+                                        sourceIndices: route.sourceChannelIndices, layout: route.inputLayout)
+                return
+            case .unsupported(let reason):
+                if pair != nil { throw SystemAudioRouteError.unsupportedOutput(reason) }
+            }
+        }
+
+        for (index, stream) in streams.enumerated() {
+            let first = try HAL.read(kAudioStreamPropertyStartingChannel, of: stream, as: UInt32.self)
+            let format = try HAL.read(kAudioStreamPropertyVirtualFormat, of: stream, as: AudioStreamBasicDescription.self)
+            let count = Int(format.mChannelsPerFrame)
             let start = max(0, Int(first) - 1)
-            let range = start..<(start + channelCount)
+            let range = start..<(start + count)
             if range.contains(preferred.0), range.contains(preferred.1), HAL.isFloatPCM(format, at: output.sampleRate) {
-                self.stream = UInt(index)
-                self.streamChannels = channelCount
-                self.bufferWidths = widths
-                self.left = left
-                self.right = right
+                capture = CaptureSource(stream: UInt(index), streamChannels: count, sourceIndices: nil, layout: nil)
                 return
             }
         }
@@ -448,12 +550,75 @@ final class StereoTapInput {
     }
 }
 
+final class MultichannelTapInput {
+    private let channels: [BufferChannel]
+    private let gain: AppMixerGain?
+    private var currentGain: Float
+
+    init(channels: [BufferChannel], gain: AppMixerGain?) {
+        self.channels = channels
+        self.gain = gain
+        currentGain = gain?.value ?? 1
+    }
+
+    func mix(from buffers: UnsafeMutableAudioBufferListPointer, into output: UnsafeMutablePointer<Float>,
+             channelStride: Int, frames: Int, gainStep: Float) -> Bool {
+        let target = gain?.value ?? 1
+        var count = frames
+        var hasSamples = false
+        for channel in channels {
+            guard let samples = channel.samples(in: buffers) else { return false }
+            if samples.data != nil {
+                count = min(count, samples.frames)
+                hasSamples = true
+            }
+        }
+        guard hasSamples, count > 0 else {
+            currentGain = target
+            return true
+        }
+
+        let start = currentGain
+        var end = start
+        for (index, channel) in channels.enumerated() {
+            guard let samples = channel.samples(in: buffers), let source = samples.data else { continue }
+            let destination = output.advanced(by: index * channelStride)
+            var level = start
+            var frame = 0
+            while frame < count, level != target {
+                let distance = target - level
+                level = abs(distance) <= gainStep ? target : level + (distance > 0 ? gainStep : -gainStep)
+                destination[frame] += source[frame * channel.stride] * level
+                frame += 1
+            }
+            end = level
+            if frame < count, level != 0 {
+                let source = source.advanced(by: frame * channel.stride)
+                let destination = destination.advanced(by: frame)
+                if level == 1 {
+                    vDSP_vadd(source, channel.stride, destination, 1, destination, 1, vDSP_Length(count - frame))
+                } else {
+                    vDSP_vsma(source, channel.stride, &level, destination, 1, destination, 1, vDSP_Length(count - frame))
+                }
+            }
+        }
+        currentGain = end
+        return true
+    }
+}
+
 final class StereoIOBridge: @unchecked Sendable {
     let enabled = Atomic(false)
     let failed = Atomic(false)
     let rendered = Atomic(false)
 
     private let tapInputs: [StereoTapInput]
+    private let wideInputs: [MultichannelTapInput]
+    private let inputSpeakers: [VirtualSpeaker]
+    private let capturePlanes: [UnsafePointer<Float>?]
+    private let captureStorage: UnsafeMutablePointer<Float>?
+    private let clearsUnusedOutputs: Bool
+    private let capturedRender: CapturedRender?
     private let gainStep: Float
     private let outputLeft: BufferChannel
     private let outputRight: BufferChannel
@@ -462,9 +627,31 @@ final class StereoIOBridge: @unchecked Sendable {
     private let storage = UnsafeMutablePointer<Float>.allocate(capacity: 4 * Int(SystemAudioRoute.maximumFrames))
     private var invalidCycles = 0
 
+    convenience init(tapInputs: [StereoTapInput], sampleRate: Double, outputLeft: BufferChannel, outputRight: BufferChannel,
+                     verification: Bool, render: @escaping StereoRender) {
+        self.init(tapInputs: tapInputs, sampleRate: sampleRate, outputLeft: outputLeft, outputRight: outputRight,
+                  verification: verification, wideInputs: [], inputLayout: nil,
+                  clearsUnusedOutputs: false, capturedRender: nil, render: render)
+    }
+
     init(tapInputs: [StereoTapInput], sampleRate: Double, outputLeft: BufferChannel, outputRight: BufferChannel,
-         verification: Bool, render: @escaping StereoRender) {
+                     verification: Bool, wideInputs: [MultichannelTapInput], inputLayout: InputLayout?,
+                     clearsUnusedOutputs: Bool, capturedRender: CapturedRender?,
+                     render: @escaping StereoRender) {
         self.tapInputs = tapInputs
+        self.wideInputs = wideInputs
+        inputSpeakers = inputLayout?.channels ?? []
+        self.clearsUnusedOutputs = clearsUnusedOutputs
+        self.capturedRender = capturedRender
+        if !wideInputs.isEmpty, let inputLayout {
+            let stride = Int(SystemAudioRoute.maximumFrames)
+            let storage = UnsafeMutablePointer<Float>.allocate(capacity: stride * inputLayout.channels.count)
+            captureStorage = storage
+            capturePlanes = inputLayout.channels.indices.map { UnsafePointer(storage.advanced(by: $0 * stride)) }
+        } else {
+            captureStorage = nil
+            capturePlanes = []
+        }
         gainStep = 1 / Float(sampleRate * 0.01)
         self.outputLeft = outputLeft
         self.outputRight = outputRight
@@ -472,7 +659,10 @@ final class StereoIOBridge: @unchecked Sendable {
         self.render = render
     }
 
-    deinit { storage.deallocate() }
+    deinit {
+        storage.deallocate()
+        captureStorage?.deallocate()
+    }
 
     func process(input: UnsafePointer<AudioBufferList>, output: UnsafeMutablePointer<AudioBufferList>,
                  timestamp: UnsafePointer<AudioTimeStamp>) {
@@ -494,23 +684,47 @@ final class StereoIOBridge: @unchecked Sendable {
         let left = storage
         let right = storage.advanced(by: capacity)
         let bytes = frames * MemoryLayout<Float>.size
-        memset(left, 0, bytes)
-        memset(right, 0, bytes)
-        for tap in tapInputs {
-            guard tap.mix(from: inputs, into: left, right, frames: frames, gainStep: gainStep) else {
-                recordInvalidCycle()
-                return
+        if let captureStorage {
+            for channel in capturePlanes.indices {
+                memset(captureStorage.advanced(by: channel * capacity), 0, bytes)
+            }
+            for tap in wideInputs {
+                guard tap.mix(from: inputs, into: captureStorage, channelStride: capacity, frames: frames, gainStep: gainStep) else {
+                    recordInvalidCycle()
+                    return
+                }
+            }
+            capturePlanes.withUnsafeBufferPointer { planes in
+                guard let base = planes.baseAddress else { return }
+                StereoDownmixGains.downmix(inputChannels: base, inputChannelCount: planes.count, inputOffset: 0,
+                                          inputSpeakers: inputSpeakers, outputLeft: left, outputRight: right,
+                                          frameCount: frames)
+            }
+        } else {
+            memset(left, 0, bytes)
+            memset(right, 0, bytes)
+            for tap in tapInputs {
+                guard tap.mix(from: inputs, into: left, right, frames: frames, gainStep: gainStep) else {
+                    recordInvalidCycle()
+                    return
+                }
             }
         }
         invalidCycles = 0
+        if !verification, clearsUnusedOutputs {
+            for index in outputs.indices {
+                let buffer = outputs[index]
+                if let data = buffer.mData { memset(data, 0, Int(buffer.mDataByteSize)) }
+            }
+        }
         if !verification, outputLeft.stride == 1, outputRight.stride == 1, outputLeft != outputRight {
-            render(timestamp, left, right, leftData, rightData, UInt32(frames))
+            processCapture(timestamp, left, right, leftData, rightData, UInt32(frames))
             rendered.store(true, ordering: .relaxed)
             return
         }
         let processedLeft = storage.advanced(by: 2 * capacity)
         let processedRight = storage.advanced(by: 3 * capacity)
-        render(timestamp, left, right, processedLeft, processedRight, UInt32(frames))
+        processCapture(timestamp, left, right, processedLeft, processedRight, UInt32(frames))
         rendered.store(true, ordering: .relaxed)
         guard !verification else { return }
         if outputLeft == outputRight {
@@ -520,6 +734,19 @@ final class StereoIOBridge: @unchecked Sendable {
         } else {
             copyChannel(processedLeft, to: leftData, stride: outputLeft.stride, frames: frames)
             copyChannel(processedRight, to: rightData, stride: outputRight.stride, frames: frames)
+        }
+    }
+
+    private func processCapture(
+        _ time: UnsafePointer<AudioTimeStamp>, _ left: UnsafePointer<Float>, _ right: UnsafePointer<Float>,
+        _ outputLeft: UnsafeMutablePointer<Float>, _ outputRight: UnsafeMutablePointer<Float>, _ frames: UInt32
+    ) {
+        if let capturedRender, !capturePlanes.isEmpty {
+            capturePlanes.withUnsafeBufferPointer { planes in
+                capturedRender(time, planes, left, right, outputLeft, outputRight, frames)
+            }
+        } else {
+            render(time, left, right, outputLeft, outputRight, frames)
         }
     }
 
@@ -624,6 +851,44 @@ enum HAL {
               (1...channelCount).contains(Int(values.0)),
               (1...channelCount).contains(Int(values.1)) else { return (0, 1) }
         return (Int(values.0) - 1, Int(values.1) - 1)
+    }
+
+    static func channelLabels(of id: AudioDeviceID, channelCount: Int) -> [UInt32]? {
+        let scope = kAudioObjectPropertyScopeOutput
+        guard (2...16).contains(channelCount) else { return nil }
+        return try? readBuffer(kAudioDevicePropertyPreferredChannelLayout, of: id, scope: scope) { raw, size in
+            let header = MemoryLayout<AudioChannelLayout>.offset(of: \.mChannelDescriptions)!
+            guard size >= header else { return nil }
+            let native = raw.assumingMemoryBound(to: AudioChannelLayout.self)
+            let tag = native.pointee.mChannelLayoutTag
+            if tag == kAudioChannelLayoutTag_UseChannelDescriptions {
+                return labels(from: native, byteCount: size, channelCount: channelCount)
+            }
+            var value = tag == kAudioChannelLayoutTag_UseChannelBitmap ? native.pointee.mChannelBitmap.rawValue : tag
+            let property = tag == kAudioChannelLayoutTag_UseChannelBitmap
+                ? kAudioFormatProperty_ChannelLayoutForBitmap : kAudioFormatProperty_ChannelLayoutForTag
+            let argumentSize = UInt32(MemoryLayout<UInt32>.size)
+            var resultSize: UInt32 = 0
+            let expected = header + channelCount * MemoryLayout<AudioChannelDescription>.stride
+            guard AudioFormatGetPropertyInfo(property, argumentSize, &value, &resultSize) == noErr,
+                  resultSize == expected else { return nil }
+            return withUnsafeTemporaryAllocation(byteCount: expected, alignment: MemoryLayout<AudioChannelLayout>.alignment) { result in
+                guard let base = result.baseAddress,
+                      AudioFormatGetProperty(property, argumentSize, &value, &resultSize, base) == noErr,
+                      resultSize == expected else { return nil }
+                return labels(from: base.assumingMemoryBound(to: AudioChannelLayout.self),
+                              byteCount: expected, channelCount: channelCount)
+            }
+        }
+    }
+
+    private static func labels(from layout: UnsafePointer<AudioChannelLayout>, byteCount: Int, channelCount: Int) -> [UInt32]? {
+        let header = MemoryLayout<AudioChannelLayout>.offset(of: \.mChannelDescriptions)!
+        guard layout.pointee.mChannelLayoutTag == kAudioChannelLayoutTag_UseChannelDescriptions,
+              Int(layout.pointee.mNumberChannelDescriptions) == channelCount,
+              byteCount >= header + channelCount * MemoryLayout<AudioChannelDescription>.stride else { return nil }
+        let descriptions = UnsafeRawPointer(layout).advanced(by: header).assumingMemoryBound(to: AudioChannelDescription.self)
+        return (0..<channelCount).map { descriptions[$0].mChannelLabel }
     }
 
     static func disableHardwareInputs(on aggregate: AudioDeviceID, io: AudioDeviceIOProcID, hardware: AudioDeviceID) throws {
