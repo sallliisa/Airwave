@@ -205,38 +205,38 @@ final class Airwave3UITests: XCTestCase {
     }
 
     @MainActor
-    func testMissingEqualizerPresetCanBeRestoredFromTheLibraryWhileOffline() throws {
+    func testMissingEqualizerPresetCanBeRestoredFromTheAudioUnitControls() throws {
         let component = ["type": 0x61756678, "subtype": 0x45714150, "manufacturer": 0x536E6866]
-        let presetID = UUID().uuidString
-        let presetState = try plist([
-            "Equalizer.version": 2, "Equalizer.presetName": "Desk EQ", "Equalizer.presetFilename": "Desk.txt",
-            "Equalizer.presetData": Data("Preamp: -4 dB".utf8), "Equalizer.bypass": false,
-        ])
-        let presets = try plist(["entries": [
-            ["id": presetID, "component": component, "name": "Desk EQ", "state": presetState],
-        ], "deleted": []])
         let profiles = try plist([offlineDeviceID: ["name": "Test Headphones", "slots": [[
             "id": UUID().uuidString, "component": component, "name": "Equalizer", "manufacturer": "Airwave",
             "isBypassed": true, "migrationIssue": "The Airwave 2 preset is unavailable.",
         ]]]])
-        try withApp(profiles: profiles, presets: presets) { app, profile in
+        try withApp(profiles: profiles) { app, profile in
             selectOfflineDevice(in: app)
             let issue = app.buttons["effect-issue"]
             let controls = app.buttons["open-editor"]
             XCTAssertTrue(issue.waitForExistence(timeout: 4))
-            XCTAssertFalse(controls.exists)
+            XCTAssertTrue(controls.exists)
+            XCTAssertFalse(app.buttons["open-presets"].exists)
 
-            app.buttons["open-presets"].click()
-            let preset = app.buttons["preset.\(presetID)"]
-            XCTAssertTrue(preset.waitForExistence(timeout: 4))
-            preset.click()
-            app.buttons["Apply"].click()
-            XCTAssertTrue(controls.waitForExistence(timeout: 4))
+            controls.click()
+            let editor = app.windows["Equalizer"]
+            XCTAssertTrue(editor.waitForExistence(timeout: 8))
+            let picker = editor.descendants(matching: .any).matching(identifier: "eq-presets").firstMatch
+            XCTAssertTrue(picker.waitForExistence(timeout: 5))
+            picker.click()
+            let replacement = editor.descendants(matching: .any).matching(identifier: "Bass Booster").firstMatch
+            XCTAssertTrue(replacement.waitForExistence(timeout: 4))
+            replacement.click()
+            XCTAssertTrue(issue.waitForNonExistence(timeout: 5))
+
             let bytes = try Data(contentsOf: profile)
             let saved = try XCTUnwrap(PropertyListSerialization.propertyList(from: bytes, format: nil) as? [String: Any])
             let device = try XCTUnwrap(saved[offlineDeviceID] as? [String: Any])
             let slots = try XCTUnwrap(device["slots"] as? [[String: Any]])
-            XCTAssertEqual(slots.first?["state"] as? Data, presetState)
+            let state = try XCTUnwrap(slots.first?["state"] as? Data)
+            let preset = try XCTUnwrap(PropertyListSerialization.propertyList(from: state, format: nil) as? [String: Any])
+            XCTAssertEqual(preset["Equalizer.presetName"] as? String, "Bass Booster")
             XCTAssertEqual(slots.first?["isBypassed"] as? Bool, false)
             XCTAssertNil(slots.first?["migrationIssue"])
         }
@@ -281,7 +281,6 @@ final class Airwave3UITests: XCTestCase {
         setupPending: Bool = false,
         preferences: [String: Any] = [:],
         profiles: Data? = nil,
-        presets: Data? = nil,
         run: (XCUIApplication, URL) throws -> Void
     ) throws {
         continueAfterFailure = false
@@ -290,7 +289,6 @@ final class Airwave3UITests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: scratch) }
         let profile = scratch.appending(path: "profiles.plist")
         try profiles?.write(to: profile)
-        try presets?.write(to: profile.appendingPathExtension("presets"))
         var values = preferences
         values["ProcessingEnabled"] = false
         try plist(values).write(to: profile.appendingPathExtension("preferences"))

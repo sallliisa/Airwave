@@ -47,7 +47,7 @@ final class LegacyAirwaveUpgradeTests: XCTestCase {
     }
 
     @MainActor
-    func testMissingPresetKeepsOtherEffectsAndCanBeReplacedWhileOffline() async throws {
+    func testMissingPresetKeepsOtherEffectsBypassedUntilReplaced() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
         try fixture.populate()
@@ -79,13 +79,6 @@ final class LegacyAirwaveUpgradeTests: XCTestCase {
         host.setEditingBypass(missing.id, false)
         XCTAssertEqual(host.editingSlotIssues[missing.id], missing.migrationIssue)
         XCTAssertTrue(host.editingSlots[1].isBypassed)
-        let replacement = try XCTUnwrap(fixture.presetLibrary.load(for: .airwaveEqualizer).first)
-        try await host.applyPreset(replacement, to: missing.id, deviceUID: "speakers")
-        let restored = try XCTUnwrap(fixture.store.load()["speakers"]?.slots[1])
-        XCTAssertEqual(restored.id, missing.id)
-        XCTAssertFalse(restored.isBypassed)
-        XCTAssertNil(restored.migrationIssue)
-        XCTAssertEqual(try EqualizerAUState(document(restored)).preset?.name, "Headphones")
     }
 
     @MainActor
@@ -146,7 +139,7 @@ final class LegacyAirwaveUpgradeTests: XCTestCase {
         var eqURL: URL { library.appending(path: "Equalizer Presets/Desk.txt") }
         var wavURL: URL { library.appending(path: "presets/Personal.wav") }
         var store: ProfileStore { ProfileStore(url: home.appending(path: "upgraded.plist")) }
-        var presetLibrary: HostPresetLibrary { HostPresetLibrary(url: home.appending(path: "presets.plist")) }
+        var presetLibrary: PresetMigrationStore { PresetMigrationStore(url: home.appending(path: "presets.plist")) }
 
         @MainActor
         func migrate(_ source: () throws -> LegacyAirwaveUpgrade.Source) throws -> Bool {

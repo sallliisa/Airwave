@@ -1,6 +1,6 @@
 import Foundation
 
-struct HostPresetLibrary {
+struct PresetMigrationStore {
     struct Entry: Codable, Equatable, Identifiable {
         let id: UUID
         let component: ComponentID
@@ -57,21 +57,13 @@ struct HostPresetLibrary {
     }
 
     enum Failure: LocalizedError {
-        case unsupportedEffect
         case invalidFile
-        case invalidState
-        case noPreset
         case invalidName
-        case missing
 
         var errorDescription: String? {
             switch self {
-            case .unsupportedEffect: "This Audio Unit does not use the Airwave preset library."
             case .invalidFile: "Choose a valid preset file."
-            case .invalidState: "The effect's preset could not be read."
-            case .noPreset: "Choose or import a preset in the effect's controls first."
             case .invalidName: "Enter a name for the preset."
-            case .missing: "This preset is no longer in the library."
             }
         }
     }
@@ -94,62 +86,6 @@ struct HostPresetLibrary {
             let order = lhs.name.localizedStandardCompare(rhs.name)
             return order == .orderedSame ? lhs.id.uuidString < rhs.id.uuidString : order == .orderedAscending
         }
-    }
-
-    @discardableResult
-    func save(name: String, component: ComponentID, state: Data) throws -> Entry {
-        let name = try Self.checkedName(name)
-        let portable = try Self.portableState(state, component: component)
-        let entry = Entry(id: UUID(), component: component, name: name, state: portable)
-        try append(entry)
-        return entry
-    }
-
-    @discardableResult
-    func importPreset(from source: URL, component: ComponentID) throws -> Entry {
-        let hasAccess = source.startAccessingSecurityScopedResource()
-        defer { if hasAccess { source.stopAccessingSecurityScopedResource() } }
-        let name = try Self.checkedName(source.hasDirectoryPath ? source.lastPathComponent : source.deletingPathExtension().lastPathComponent)
-        let state: Data
-        switch component {
-        case .airwaveSpatial:
-            let wav = try Self.readPreset(source, limit: WAVLoader.maximumFileSize)
-            try Self.validateWAV(wav)
-            state = try Self.spatialState(name: name, wav: wav)
-        case .airwaveEqualizer:
-            let preset: EqualizerAUState.Preset
-            if EqualizerConfigFiles.isArchive(source) {
-                let data = try Self.readPreset(source, limit: EqualizerConfigFiles.maximumArchiveSize)
-                _ = try EqualizerConfigFiles.parseManagedDefinition(data: data, filename: source.lastPathComponent)
-                preset = EqualizerAUState.Preset(name: name, filename: source.lastPathComponent, data: data)
-            } else {
-                let prepared = try EqualizerConfigFiles.prepareImport(source)
-                preset = EqualizerAUState.Preset(name: name, filename: prepared.filename, data: prepared.data)
-            }
-            state = try Self.encode(EqualizerAUState.document(preset: preset, context: nil))
-        default:
-            throw Failure.unsupportedEffect
-        }
-        let entry = Entry(id: UUID(), component: component, name: name, state: state)
-        try append(entry)
-        return entry
-    }
-
-    func rename(_ entry: Entry, to name: String) throws {
-        let name = try Self.checkedName(name)
-        var document = try read()
-        guard let index = document.entries.firstIndex(where: { $0.key == entry.key }) else { throw Failure.missing }
-        let current = document.entries[index]
-        document.entries[index] = Entry(id: current.id, component: current.component, name: name, state: current.state)
-        try write(document)
-    }
-
-    func delete(_ entry: Entry) throws {
-        var document = try read()
-        guard let index = document.entries.firstIndex(where: { $0.key == entry.key }) else { throw Failure.missing }
-        document.entries.remove(at: index)
-        document.deleted.insert(entry.key)
-        try write(document)
     }
 
     func mergeLegacy(_ entries: [Entry]) throws {
@@ -187,12 +123,6 @@ struct HostPresetLibrary {
                   let state = try? encode(EqualizerAUState.document(preset: selection, context: nil)) else { return nil }
             return Entry(id: preset.id, component: .airwaveEqualizer, name: name, state: state)
         }
-    }
-
-    private func append(_ entry: Entry) throws {
-        var document = try read()
-        document.entries.append(entry)
-        try write(document)
     }
 
     private func read() throws -> Document {
@@ -252,37 +182,6 @@ struct HostPresetLibrary {
             "AirwaveSpatial.impulseResponse": wav,
             "AirwaveSpatial.bypass": false
         ])
-    }
-
-    private static func portableState(_ state: Data, component: ComponentID) throws -> Data {
-        guard let document = try PropertyListSerialization.propertyList(from: state, format: nil) as? [String: Any] else {
-            throw Failure.invalidState
-        }
-        switch component {
-        case .airwaveSpatial:
-            if let wav = document["AirwaveSpatial.impulseResponse"] as? Data,
-               let name = document["AirwaveSpatial.presetName"] as? String {
-                try validateWAV(wav)
-                return try spatialState(name: name, wav: wav)
-            }
-            guard let preset = document["AirwaveSpatial.bundledPreset"] as? String, !preset.isEmpty else {
-                throw Failure.noPreset
-            }
-            return try encode(["AirwaveSpatial.bundledPreset": preset, "AirwaveSpatial.bypass": false])
-        case .airwaveEqualizer:
-            guard let preset = try EqualizerAUState(document).preset else { throw Failure.noPreset }
-            if let text = preset.legacyText {
-                // Older AU documents treated # as an inline comment.
-                let source = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
-                    .map { $0.prefix(while: { $0 != "#" }) }.joined(separator: "\n")
-                _ = try EqualizerAPOParser.parse(data: Data(source.utf8), filename: preset.filename, allowDeferred: false)
-            } else {
-                _ = try EqualizerConfigFiles.parseManagedDefinition(data: preset.data, filename: preset.filename)
-            }
-            return try encode(EqualizerAUState.document(preset: preset, context: nil))
-        default:
-            throw Failure.unsupportedEffect
-        }
     }
 
     private static func validateWAV(_ wav: Data) throws {

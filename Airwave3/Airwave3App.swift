@@ -199,7 +199,7 @@ final class HostAppDelegate: NSObject, NSApplicationDelegate {
 struct HostLaunchEnvironment {
     let defaults: UserDefaults
     let store: ProfileStore
-    let presetLibrary: HostPresetLibrary
+    let presetLibrary: PresetMigrationStore?
     let migrationWarning: String?
     let shell: ShellModel
     let isIsolated: Bool
@@ -220,7 +220,7 @@ struct HostLaunchEnvironment {
             let testProfile = profile ?? FileManager.default.temporaryDirectory
                 .appending(path: "system-audio-host-xctest-\(UUID()).plist")
             store = ProfileStore(url: testProfile)
-            presetLibrary = HostPresetLibrary(url: testProfile.appendingPathExtension("presets"))
+            presetLibrary = nil
             migrationWarning = nil
             isIsolated = true
             shell = ShellModel(
@@ -233,11 +233,11 @@ struct HostLaunchEnvironment {
 #endif
         let preferences = UserDefaults.standard
         store = ProfileStore()
-        presetLibrary = HostPresetLibrary(url: HostPresetLibrary.defaultURL)
+        let migrationPresets = PresetMigrationStore()
         defaults = preferences
         isIsolated = false
         do {
-            try LegacyAirwaveUpgrade.migrate(defaults: preferences, store: store, presetLibrary: presetLibrary) {
+            try LegacyAirwaveUpgrade.migrate(defaults: preferences, store: store, presetLibrary: migrationPresets) {
                 try LegacyAirwaveUpgrade.installedSource(defaults: preferences)
             }
             migrationWarning = nil
@@ -247,6 +247,7 @@ struct HostLaunchEnvironment {
             migrationWarning = failure.localizedDescription
             ShellModel.applyUpgradePreferences(to: preferences, completed: nil, showsMenuBar: nil)
         }
+        presetLibrary = LegacyAirwaveUpgrade.hasStagedPresets(defaults: preferences) ? migrationPresets : nil
         shell = ShellModel(defaults: preferences, loginItem: SMAppService.mainApp,
                            initialSetupCompleted: migrationWarning != nil)
     }

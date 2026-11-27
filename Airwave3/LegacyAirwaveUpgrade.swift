@@ -11,6 +11,10 @@ struct LegacyAirwaveUpgrade {
     private static let libraryMigrationKey = "Airwave.UpgradeTo3.PresetLibraryCompleted"
     private static let legacyKeys = [profilesKey, completedKey, menuBarKey]
 
+    static func hasStagedPresets(defaults: UserDefaults) -> Bool {
+        defaults.bool(forKey: libraryMigrationKey)
+    }
+
     struct Source {
         let preferences: [String: Any]
         let library: URL
@@ -68,14 +72,14 @@ struct LegacyAirwaveUpgrade {
 
     @MainActor
     @discardableResult
-    static func migrate(defaults: UserDefaults, store: ProfileStore, presetLibrary: HostPresetLibrary,
+    static func migrate(defaults: UserDefaults, store: ProfileStore, presetLibrary: PresetMigrationStore,
                         source: () throws -> Source) throws -> Bool {
         let needsProfiles = !defaults.bool(forKey: migrationKey)
         let needsLibrary = !defaults.bool(forKey: libraryMigrationKey)
         guard needsProfiles || needsLibrary else { return false }
         let old = try source()
         guard old.exists else { return false }
-        let entries = HostPresetLibrary.legacyEntries(at: old.library)
+        let entries = PresetMigrationStore.legacyEntries(at: old.library)
         let libraryResult = Result {
             if needsLibrary {
                 try presetLibrary.mergeLegacy(entries)
@@ -88,7 +92,7 @@ struct LegacyAirwaveUpgrade {
     }
 
     @MainActor
-    private static func migrateProfiles(from old: Source, entries: [HostPresetLibrary.Entry],
+    private static func migrateProfiles(from old: Source, entries: [PresetMigrationStore.Entry],
                                         defaults: UserDefaults, store: ProfileStore) throws {
         if let data = old.preferences[profilesKey] {
             guard let encoded = data as? Data else {
@@ -117,7 +121,7 @@ struct LegacyAirwaveUpgrade {
         defaults.set(true, forKey: migrationKey)
     }
 
-    private static func chain(for profile: Profile, entries: [HostPresetLibrary.Entry]) -> [EffectSlot] {
+    private static func chain(for profile: Profile, entries: [PresetMigrationStore.Entry]) -> [EffectSlot] {
         var slots: [EffectSlot] = []
         if let id = profile.hrirPresetID {
             slots.append(slot(.airwaveSpatial, name: "Spatial", manufacturer: "Airwave", presetID: id, entries: entries))
@@ -129,7 +133,7 @@ struct LegacyAirwaveUpgrade {
     }
 
     private static func slot(_ component: ComponentID, name: String, manufacturer: String,
-                             presetID: UUID, entries: [HostPresetLibrary.Entry]) -> EffectSlot {
+                             presetID: UUID, entries: [PresetMigrationStore.Entry]) -> EffectSlot {
         var slot = EffectSlot(EffectComponent(id: component, name: name, manufacturer: manufacturer))
         if let preset = entries.first(where: { $0.component == component && $0.id == presetID }) {
             slot.state = preset.state

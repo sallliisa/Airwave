@@ -2,7 +2,7 @@ import Foundation
 import XCTest
 @testable import Airwave3
 
-final class HostPresetLibraryTests: XCTestCase {
+final class PresetMigrationStoreTests: XCTestCase {
     func testImportsAvailableLegacyPresetsAndKeepsStableIDs() throws {
         let folder = try scratch()
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -41,8 +41,8 @@ final class HostPresetLibraryTests: XCTestCase {
             ["id": UUID().uuidString, "displayName": "Traversal", "filename": "../Desk.txt"]
         ]], to: equalizer.appending(path: "manifest.json"))
 
-        let library = HostPresetLibrary(url: folder.appending(path: "Presets.plist"))
-        let installed = HostPresetLibrary.legacyEntries(at: legacy)
+        let library = PresetMigrationStore(url: folder.appending(path: "Presets.plist"))
+        let installed = PresetMigrationStore.legacyEntries(at: legacy)
         XCTAssertEqual(Set(installed.map(\.id)), [spatialID, equalizerID, unassignedID])
         try library.mergeLegacy(installed)
         try library.mergeLegacy(installed)
@@ -55,66 +55,18 @@ final class HostPresetLibraryTests: XCTestCase {
         XCTAssertEqual(restoredEqualizers.map(\.id), [equalizerID, unassignedID])
         XCTAssertEqual(try EqualizerAUState(document(restoredEqualizers[0].state)).preset?.data, desk)
 
-        try library.rename(restoredEqualizers[0], to: "Desk speakers")
-        try library.delete(restoredEqualizers[1])
-        try library.mergeLegacy(installed)
-        let remaining = try library.load(for: .airwaveEqualizer)
-        XCTAssertEqual(remaining.map(\.id), [equalizerID])
-        XCTAssertEqual(remaining.map(\.name), ["Desk speakers"])
-    }
-
-    func testSavingStateDetachesEqualizerPresetFromOriginalRouteAndBypass() throws {
-        let folder = try scratch()
-        defer { try? FileManager.default.removeItem(at: folder) }
-        let libraryURL = folder.appending(path: "Presets.plist")
-        let library = HostPresetLibrary(url: libraryURL)
-        let preset = EqualizerAUState.Preset(name: "Current", filename: "Desk.txt", data: Data("Preamp: -4 dB".utf8))
-        let context = EqualizerAUState.OutputContext(deviceName: "Original", deviceUID: "original", inputChannelCount: 6)
-        let state = EqualizerAUState.document(preset: preset, context: context, bypass: true)
-        let data = try PropertyListSerialization.data(fromPropertyList: state, format: .binary, options: 0)
-        let saved = try library.save(name: "  Reusable  ", component: .airwaveEqualizer, state: data)
-
-        let reopened = HostPresetLibrary(url: libraryURL)
-        let stored = try XCTUnwrap(reopened.load(for: .airwaveEqualizer).first)
-        XCTAssertEqual(saved.id, stored.id)
-        XCTAssertEqual(stored.name, "Reusable")
-        XCTAssertTrue(try reopened.load(for: .airwaveSpatial).isEmpty)
-        let portable = try EqualizerAUState(document(stored.state))
-        XCTAssertEqual(portable.preset?.data, preset.data)
-        XCTAssertNil(portable.context)
-        XCTAssertFalse(portable.bypass)
-        XCTAssertThrowsError(try library.save(name: "New", component: .airwaveEqualizer, state: Data("bad state".utf8)))
-        XCTAssertEqual(try reopened.load(for: .airwaveEqualizer), [stored])
-    }
-
-    func testImportKeepsAnEqualizerConfigFolderSelfContained() throws {
-        let folder = try scratch()
-        defer { try? FileManager.default.removeItem(at: folder) }
-        let library = HostPresetLibrary(url: folder.appending(path: "Presets.plist"))
-        let source = folder.appending(path: "Home speakers", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
-        try Data("Include: filters.txt".utf8).write(to: source.appending(path: "config.txt"))
-        try Data("Preamp: -2 dB".utf8).write(to: source.appending(path: "filters.txt"))
-        let saved = try library.importPreset(from: source, component: .airwaveEqualizer)
-        try FileManager.default.removeItem(at: source)
-
-        let entry = try XCTUnwrap(library.load(for: .airwaveEqualizer).first)
-        XCTAssertEqual(entry, saved)
-        XCTAssertEqual(entry.name, "Home speakers")
-        let restored = try XCTUnwrap(EqualizerAUState(document(entry.state)).preset)
-        let definition = try EqualizerConfigFiles.parseManagedDefinition(data: restored.data, filename: restored.filename)
-        XCTAssertEqual(definition.directives.filter { $0 == .preamp(-2) }, [.preamp(-2)])
     }
 
     func testOneMalformedLibraryItemDoesNotHideTheRest() throws {
         let folder = try scratch()
         defer { try? FileManager.default.removeItem(at: folder) }
         let url = folder.appending(path: "Presets.plist")
-        let library = HostPresetLibrary(url: url)
+        let library = PresetMigrationStore(url: url)
         let state = try PropertyListSerialization.data(
             fromPropertyList: ["AirwaveSpatial.bundledPreset": "neutral"], format: .binary, options: 0
         )
-        let saved = try library.save(name: "Neutral", component: .airwaveSpatial, state: state)
+        let saved = PresetMigrationStore.Entry(id: UUID(), component: .airwaveSpatial, name: "Neutral", state: state)
+        try library.mergeLegacy([saved])
 
         var onDisk = try document(Data(contentsOf: url))
         var entries = try XCTUnwrap(onDisk["entries"] as? [[String: Any]])
@@ -124,7 +76,8 @@ final class HostPresetLibraryTests: XCTestCase {
         try damaged.write(to: url)
 
         XCTAssertEqual(try library.load(for: .airwaveSpatial), [saved])
-        let added = try library.save(name: "Another", component: .airwaveSpatial, state: state)
+        let added = PresetMigrationStore.Entry(id: UUID(), component: .airwaveSpatial, name: "Another", state: state)
+        try library.mergeLegacy([added])
         XCTAssertEqual(try library.load(for: .airwaveSpatial), [added, saved])
     }
 

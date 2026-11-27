@@ -129,25 +129,6 @@ final class LiveEffect {
         return try PropertyListSerialization.data(fromPropertyList: state, format: .binary, options: 0)
     }
 
-    @MainActor
-    func verifyPreset(_ entry: HostPresetLibrary.Entry) throws {
-        guard let expected = try PropertyListSerialization.propertyList(from: entry.state, format: nil) as? [String: Any],
-              let actual = unit.fullStateForDocument else { throw EffectError.invalidState }
-        switch entry.component {
-        case .airwaveSpatial:
-            let keys = ["AirwaveSpatial.bundledPreset", "AirwaveSpatial.presetName", "AirwaveSpatial.impulseResponse"]
-            for key in keys where expected[key] as? NSObject != actual[key] as? NSObject {
-                throw EffectError.invalidState
-            }
-        case .airwaveEqualizer:
-            guard let wanted = try EqualizerAUState(expected).preset, let loaded = try EqualizerAUState(actual).preset,
-                  wanted.name == loaded.name, wanted.filename == loaded.filename, wanted.data == loaded.data,
-                  wanted.factoryPresetNumber == loaded.factoryPresetNumber else { throw EffectError.invalidState }
-        default:
-            throw EffectError.invalidState
-        }
-    }
-
     deinit {
         unit.deallocateRenderResources()
     }
