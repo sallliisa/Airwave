@@ -851,7 +851,7 @@ private struct HostMixerRow: View {
                 .font(.system(size: 12))
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .frame(width: compact ? 76 : 156, alignment: .leading)
+                .frame(width: compact ? 94 : 156, alignment: .leading)
                 .help(row.name)
                 .accessibilityIdentifier("app-mixer-name.\(row.id)")
 
@@ -1541,8 +1541,8 @@ private struct EffectRow: View {
                     .foregroundStyle(slot.isBypassed ? Color.secondary : Color.primary)
                     .lineLimit(1)
                 if slot.isBypassed {
-                    Image(systemName: "circle.slash")
-                        .font(.system(size: 10, weight: .medium))
+                    Image(systemName: "minus.circle.fill")
+                        .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .accessibilityHidden(true)
                 }

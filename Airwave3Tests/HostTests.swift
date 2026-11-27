@@ -240,6 +240,29 @@ final class SystemAudioHostTests: XCTestCase {
     }
 
     @MainActor
+    func testSystemSoundsKeepTheirAdjustmentWithTheFriendlyLabel() throws {
+        let suite = "SystemAudioHostTests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        for id in ["systemsoundserverd", "/usr/sbin/systemsoundserverd"] {
+            let mixer = AppMixer(defaults: defaults)
+            mixer.update([AppMixerApplication(id: id, name: "systemsoundserverd", icon: nil, bundleID: nil,
+                                              processIDs: [123], hasActiveOutput: true)])
+            XCTAssertEqual(mixer.rows.first?.name, "System Sounds")
+            XCTAssertNotNil(mixer.rows.first?.icon)
+            mixer.setVolume(40, for: id)
+
+            let reopened = AppMixer(defaults: defaults)
+            let saved = try XCTUnwrap(reopened.rows.first)
+            XCTAssertEqual(saved.id, id)
+            XCTAssertEqual(saved.name, "System Sounds")
+            XCTAssertEqual(saved.volume, 40)
+            XCTAssertFalse(saved.isRecent)
+            reopened.reset(id)
+        }
+    }
+
+    @MainActor
     func testAppMixerKeepsPlaybackRouteAcrossUnityGain() throws {
         let suite = "SystemAudioHostTests.\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))

@@ -44,6 +44,8 @@ final class AppMixer {
 
     private static let key = "Host.AppMixer.Adjustments"
     private static let tapBatchSize = 4
+    private static let systemSoundIDs: Set<String> = ["systemsoundserverd", "/usr/sbin/systemsoundserverd"]
+    private static let systemSoundIcon = NSImage(systemSymbolName: "bell.fill", accessibilityDescription: nil)
     private let defaults: UserDefaults
     private var adjustments: [String: Adjustment] = [:]
     private var tapSlots: [TapSlot] = []
@@ -76,8 +78,11 @@ final class AppMixer {
         trackedAppIDs.map { id in
             let saved = adjustments[id]
             let app = applications[id] ?? recent[id]?.application
-            let icon = app?.icon ?? saved.flatMap { savedIcon(for: id, bundleID: $0.bundleID) }
-            return AppMixerRow(id: id, name: app?.name ?? saved?.name ?? id,
+            let isSystemSound = Self.systemSoundIDs.contains(id)
+            let name = isSystemSound ? "System Sounds" : (app?.name ?? saved?.name ?? id)
+            let icon = isSystemSound ? Self.systemSoundIcon
+                : (app?.icon ?? saved.flatMap { savedIcon(for: id, bundleID: $0.bundleID) })
+            return AppMixerRow(id: id, name: name,
                                icon: icon, volume: saved?.volume ?? 100, isMuted: saved?.isMuted ?? false,
                                isRecent: recent[id] != nil, isAdjusted: saved != nil)
         }.sorted { lhs, rhs in
