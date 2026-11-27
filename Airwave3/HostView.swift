@@ -315,6 +315,41 @@ private struct HostAudioPage<Content: View>: View {
     }
 }
 
+private struct HostEmptyState: View {
+    let icon: String
+    let title: LocalizedStringKey
+    let detail: LocalizedStringKey
+    var action: Button<Text>?
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 30, weight: .regular))
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+
+            VStack(spacing: 5) {
+                Text(title)
+                    .font(.title3.weight(.semibold))
+                    .accessibilityAddTraits(.isHeader)
+                Text(detail)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: 290)
+
+            if let action {
+                action.buttonStyle(.bordered)
+                    .padding(.top, 2)
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
 @MainActor
 private struct HostEffectsPage: View {
     @ObservedObject var host: HostController
@@ -329,7 +364,7 @@ private struct HostEffectsPage: View {
     var body: some View {
         HostAudioPage(title: "Effect Chain") {
             VStack(alignment: .leading, spacing: HostAppearance.audioPageSpacing) {
-                deviceBar
+                if !host.editingDevices.isEmpty { deviceBar }
                 if host.editingSlots.isEmpty {
                     emptyChain
                 } else {
@@ -366,23 +401,22 @@ private struct HostEffectsPage: View {
 
             Spacer(minLength: 12)
 
-            if editingDevice != nil {
-                Button("Manage Devices", action: manageDevices)
-                    .fixedSize()
-                    .accessibilityIdentifier("registered-devices")
-            }
+            Button("Manage Devices", action: manageDevices)
+                .fixedSize()
+                .accessibilityIdentifier("registered-devices")
 
-            Button {
-                host.rescan()
-                showingEffects = true
-            } label: {
-                Label("Add Effect…", systemImage: "plus")
+            if editingDevice != nil {
+                Button {
+                    host.rescan()
+                    showingEffects = true
+                } label: {
+                    Label("Add Effect…", systemImage: "plus")
+                }
+                .buttonStyle(.borderedProminent)
+                .fixedSize()
+                .accessibilityLabel("Add Effect")
+                .accessibilityIdentifier("add-effect")
             }
-            .buttonStyle(.borderedProminent)
-            .fixedSize()
-            .disabled(editingDevice == nil)
-            .accessibilityLabel("Add Effect")
-            .accessibilityIdentifier("add-effect")
         }
         .frame(minHeight: HostAppearance.audioSectionHeaderHeight)
     }
@@ -421,13 +455,18 @@ private struct HostEffectsPage: View {
         .accessibilityIdentifier("current-output")
     }
 
+    @ViewBuilder
     private var emptyChain: some View {
-        Text(editingDevice == nil ? "Connect a supported audio output." : "No effects on this device.")
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 12)
-            .frame(maxWidth: .infinity, minHeight: HostAppearance.audioRowHeight, alignment: .leading)
-            .background(HostAppearance.raised, in: .rect(cornerRadius: HostAppearance.cornerRadius))
+        if editingDevice != nil {
+            HostEmptyState(icon: "slider.horizontal.3", title: "No effects yet",
+                           detail: "Add an Audio Unit to process audio for this output.")
+        } else if !host.editingDevices.isEmpty {
+            HostEmptyState(icon: "speaker.wave.2", title: "Choose a device",
+                           detail: "Open Manage Devices to choose an effect chain.")
+        } else {
+            HostEmptyState(icon: "speaker.slash", title: "No audio output",
+                           detail: "Connect a supported output to add effects.")
+        }
     }
 }
 
@@ -583,11 +622,8 @@ private struct HostDevicesPage: View {
             }
 
             if host.editingDevices.isEmpty {
-                Text("No supported outputs or saved devices.")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
-                    .background(HostAppearance.raised, in: .rect(cornerRadius: HostAppearance.cornerRadius))
+                HostEmptyState(icon: "headphones", title: "No devices yet",
+                               detail: "Connect an audio output to set up its effect chain.")
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
@@ -735,12 +771,20 @@ private struct HostMixerPage: View {
     @ObservedObject var host: HostController
 
     var body: some View {
+        let recent = host.mixerRows.filter(\.isRecent)
+        let saved = host.mixerRows.filter { $0.isAdjusted && !$0.isRecent }
         HostAudioPage(title: "App Mixer") {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    mixerSection("Playing & Recent", rows: host.mixerRows.filter(\.isRecent))
-                    let saved = host.mixerRows.filter { $0.isAdjusted && !$0.isRecent }
-                    if !saved.isEmpty { mixerSection("Saved Adjustments", rows: saved) }
+            Group {
+                if recent.isEmpty && saved.isEmpty {
+                    HostEmptyState(icon: "speaker.wave.2", title: "No apps to mix",
+                                   detail: "Play audio in an app to adjust its volume here.")
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 20) {
+                            mixerSection("Playing & Recent", rows: recent)
+                            if !saved.isEmpty { mixerSection("Saved Adjustments", rows: saved) }
+                        }
+                    }
                 }
             }
             .accessibilityIdentifier("app-mixer-list")
@@ -753,21 +797,19 @@ private struct HostMixerPage: View {
                 .font(.headline)
                 .frame(minHeight: HostAppearance.audioSectionHeaderHeight)
                 .accessibilityAddTraits(.isHeader)
-            LazyVStack(spacing: 0) {
-                if rows.isEmpty {
-                    Text("Play audio to see apps here.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 12)
-                        .frame(maxWidth: .infinity, minHeight: HostAppearance.audioRowHeight, alignment: .leading)
-                } else {
+            if rows.isEmpty {
+                Text("Play audio to see apps here.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                LazyVStack(spacing: 0) {
                     ForEach(rows) { row in
                         HostMixerRow(host: host, row: row)
                         if rows.last?.id != row.id { Divider().padding(.leading, 42) }
                     }
                 }
+                .background(HostAppearance.raised, in: .rect(cornerRadius: HostAppearance.cornerRadius))
             }
-            .background(HostAppearance.raised, in: .rect(cornerRadius: HostAppearance.cornerRadius))
         }
     }
 }
@@ -1637,9 +1679,17 @@ struct EffectPicker: View {
     private var results: some View {
         Group {
             if filteredComponents.isEmpty {
-                Text(host.components.isEmpty ? "No compatible Audio Units found." : "No matching Audio Units.")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if host.components.isEmpty {
+                    HostEmptyState(icon: "puzzlepiece", title: "No compatible Audio Units",
+                                   detail: "Install an Audio Unit effect, then rescan.")
+                } else {
+                    HostEmptyState(icon: "magnifyingglass", title: "No matches",
+                                   detail: "Try a different effect or manufacturer name.",
+                                   action: Button("Clear Search") {
+                                       search = ""
+                                       searchFocused = true
+                                   })
+                }
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {

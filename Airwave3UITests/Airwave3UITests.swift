@@ -27,9 +27,9 @@ final class Airwave3UITests: XCTestCase {
         try withApp { app, _ in
             let tabIDs = ["effects", "app-mixer", "application-settings"]
             let tabs = tabIDs.map { app.buttons[$0] }
-            let addEffect = app.buttons["add-effect"]
+            let effectsHeading = app.staticTexts["Effect Chain"]
             let setup = app.buttons["setup-troubleshooting"]
-            XCTAssertTrue(addEffect.waitForExistence(timeout: 8))
+            XCTAssertTrue(effectsHeading.waitForExistence(timeout: 8))
             let frames = tabs.map(\.frame)
             XCTAssertTrue(frames.allSatisfy { !$0.isEmpty })
             let globalPower = app.buttons["global-bypass"]
@@ -52,7 +52,7 @@ final class Airwave3UITests: XCTestCase {
             XCTAssertEqual(tabs.map(\.frame), frames)
 
             tabs[0].click()
-            XCTAssertTrue(addEffect.waitForExistence(timeout: 4))
+            XCTAssertTrue(effectsHeading.waitForExistence(timeout: 4))
             XCTAssertEqual(tabs.map(\.frame), frames)
         }
     }
@@ -124,12 +124,12 @@ final class Airwave3UITests: XCTestCase {
     @MainActor
     func testMenuBarReopensTheMainWindowAfterClosingIt() throws {
         try withApp(preferences: ["Host.Application.ShowInMenuBar": true]) { app, _ in
-            let addEffect = app.buttons["add-effect"]
-            XCTAssertTrue(addEffect.waitForExistence(timeout: 8))
+            let effectsHeading = app.staticTexts["Effect Chain"]
+            XCTAssertTrue(effectsHeading.waitForExistence(timeout: 8))
             let close = app.windows.firstMatch.buttons[XCUIIdentifierCloseWindow]
             XCTAssertTrue(close.exists)
             close.click()
-            XCTAssertTrue(addEffect.waitForNonExistence(timeout: 4))
+            XCTAssertTrue(effectsHeading.waitForNonExistence(timeout: 4))
             XCTAssertNotEqual(app.state, .notRunning)
 
             let menu = app.statusItems.matching(NSPredicate(
@@ -141,31 +141,56 @@ final class Airwave3UITests: XCTestCase {
             XCTAssertTrue(open.waitForExistence(timeout: 4))
             XCTAssertFalse(app.buttons["Bypass Processing"].exists)
             open.click()
-            XCTAssertTrue(addEffect.waitForExistence(timeout: 4))
+            XCTAssertTrue(effectsHeading.waitForExistence(timeout: 4))
         }
     }
 
     @MainActor
     func testAudioIssueOpensWithoutMovingTheEffectsControls() throws {
         try withApp(profiles: Data("Invalid profile data".utf8)) { app, profile in
+            let effectsHeading = app.staticTexts["Effect Chain"]
+            XCTAssertTrue(effectsHeading.waitForExistence(timeout: 8))
             let addEffect = app.buttons["add-effect"]
-            XCTAssertTrue(addEffect.waitForExistence(timeout: 8))
-            let buttonFrame = addEffect.frame
+            let content = addEffect.exists ? addEffect : effectsHeading
+            let contentFrame = content.frame
             let tabFrame = app.buttons["effects"].frame
 
             let issue = app.buttons["route-status"]
             XCTAssertEqual(issue.label, "Audio Issue")
             issue.click()
             XCTAssertTrue(app.staticTexts["notice-details"].waitForExistence(timeout: 4))
-            XCTAssertEqual(addEffect.frame, buttonFrame)
+            XCTAssertEqual(content.frame, contentFrame)
 
             app.terminate()
             try plist([:]).write(to: profile)
             app.launch()
-            XCTAssertTrue(addEffect.waitForExistence(timeout: 8))
+            XCTAssertTrue(content.waitForExistence(timeout: 8))
             XCTAssertFalse(issue.exists)
-            XCTAssertEqual(addEffect.frame, buttonFrame)
+            XCTAssertEqual(content.frame, contentFrame)
             XCTAssertEqual(app.buttons["effects"].frame, tabFrame)
+        }
+    }
+
+    @MainActor
+    func testEmptyEffectSearchCanReturnToAudioUnits() throws {
+        try withApp(profiles: offlineProfile) { app, _ in
+            selectOfflineDevice(in: app)
+            XCTAssertTrue(app.staticTexts["No effects yet"].waitForExistence(timeout: 4))
+
+            app.buttons["add-effect"].click()
+            let search = app.textFields["effect-search"]
+            XCTAssertTrue(search.waitForExistence(timeout: 5))
+            search.click()
+            search.typeText("Nonexistent effect 7071")
+            XCTAssertTrue(app.staticTexts["No matches"].waitForExistence(timeout: 4))
+
+            app.buttons["Clear Search"].click()
+            XCTAssertTrue(app.staticTexts["No matches"].waitForNonExistence(timeout: 4))
+            app.typeText("AULowpass")
+            XCTAssertEqual(search.value as? String, "AULowpass")
+            app.buttons["Add AULowpass"].click()
+            XCTAssertTrue(app.buttons["open-editor"].waitForExistence(timeout: 4))
+            XCTAssertFalse(app.staticTexts["No effects yet"].exists)
         }
     }
 
