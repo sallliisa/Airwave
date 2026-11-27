@@ -27,6 +27,14 @@ For headphone monitoring that stays out of exported mixes, put the effect in **V
 
 Select **Neutral** to return to the bundled preset. Reimport your WAV when you want to switch back.
 
+## Verify latency and CPU
+
+From the Airwave checkout on macOS with Xcode installed, run `scripts/verify-spatial-render.sh`. To check an imported preset too, pass its WAV path as the first argument.
+
+The verifier renders impulses through the optimized Audio Unit and compares each input-to-ear response with the preset WAV across varying callback sizes. It checks for zero added frames, immediate dry bypass, and the resampled response at 44.1 kHz for 48 kHz presets. Neutral's left-to-left response first reaches 1% of its peak at frame 163 (3.40 ms at 48 kHz). That timing is part of the recorded filter.
+
+For 64-, 128-, and 512-frame callbacks, the verifier reports process CPU time as a percentage of one core per second of audio, plus the 99th-percentile and longest callback durations. Repeat on the same Mac under comparable load. These measurements cover the in-process Audio Unit. To measure the whole playback route, send an impulse through the host and record a wired output loopback on a synchronized input, then compare effect-enabled and bypassed captures at the same device buffer size.
+
 ## Troubleshoot
 
 - **The effect is missing.** Check that your host supports AUv3 effects. Open Airwave from Applications, then restart the host and look for **Spatial** under **Airwave**.

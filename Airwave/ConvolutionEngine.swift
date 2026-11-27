@@ -31,8 +31,9 @@ nonisolated final class StereoConvolutionEngine {
 
     // Input buffering (overlap-save)
     private let inputBuffer: UnsafeMutablePointer<Float>
-    private let inputOverlapBuffer: UnsafeMutablePointer<Float>
-    private let outputScratch: UnsafeMutablePointer<Float>
+    private var position = 0
+    private var rightTailReady = false
+    private let cachedTail: UnsafeMutablePointer<Float>
 
     // Frequency delay line, shared by both ears. Contiguous flat buffers.
     private let fdlRealData: UnsafeMutablePointer<Float>
@@ -45,13 +46,9 @@ nonisolated final class StereoConvolutionEngine {
     private let rightRealData: UnsafeMutablePointer<Float>
     private let rightImagData: UnsafeMutablePointer<Float>
 
-    // Processing buffers
     private let accumulatorReal: UnsafeMutablePointer<Float>
     private let accumulatorImag: UnsafeMutablePointer<Float>
     private var accumulator: DSPSplitComplex
-
-    private let tempMulReal: UnsafeMutablePointer<Float>
-    private let tempMulImag: UnsafeMutablePointer<Float>
 
     // MARK: - Initialization
 
@@ -66,7 +63,7 @@ nonisolated final class StereoConvolutionEngine {
         blockSize: Int = 512,
         sharedFFTSetup: FFTSetup? = nil
     ) {
-        guard blockSize > 0, !leftEarHRIR.isEmpty || !rightEarHRIR.isEmpty else { return nil }
+        guard blockSize > 0, blockSize.nonzeroBitCount == 1, !leftEarHRIR.isEmpty || !rightEarHRIR.isEmpty else { return nil }
 
         self.blockSize = blockSize
         self.fftSize = blockSize * 2
@@ -91,21 +88,13 @@ nonisolated final class StereoConvolutionEngine {
 
         inputBuffer = UnsafeMutablePointer<Float>.allocate(capacity: fftSize)
         inputBuffer.initialize(repeating: 0, count: fftSize)
-        inputOverlapBuffer = UnsafeMutablePointer<Float>.allocate(capacity: blockSize)
-        inputOverlapBuffer.initialize(repeating: 0, count: blockSize)
-        outputScratch = UnsafeMutablePointer<Float>.allocate(capacity: fftSize)
-        outputScratch.initialize(repeating: 0, count: fftSize)
+        cachedTail = .allocate(capacity: 4 * blockSize)
 
         accumulatorReal = UnsafeMutablePointer<Float>.allocate(capacity: fftSizeHalf)
         accumulatorImag = UnsafeMutablePointer<Float>.allocate(capacity: fftSizeHalf)
         accumulatorReal.initialize(repeating: 0, count: fftSizeHalf)
         accumulatorImag.initialize(repeating: 0, count: fftSizeHalf)
         accumulator = DSPSplitComplex(realp: accumulatorReal, imagp: accumulatorImag)
-
-        tempMulReal = UnsafeMutablePointer<Float>.allocate(capacity: fftSizeHalf)
-        tempMulImag = UnsafeMutablePointer<Float>.allocate(capacity: fftSizeHalf)
-        tempMulReal.initialize(repeating: 0, count: fftSizeHalf)
-        tempMulImag.initialize(repeating: 0, count: fftSizeHalf)
 
         let partitionedSize = partitionCount * fftSizeHalf
         fdlRealData = UnsafeMutablePointer<Float>.allocate(capacity: partitionedSize)
@@ -147,13 +136,10 @@ nonisolated final class StereoConvolutionEngine {
         }
 
         inputBuffer.deallocate()
-        inputOverlapBuffer.deallocate()
-        outputScratch.deallocate()
+        cachedTail.deallocate()
 
         accumulatorReal.deallocate()
         accumulatorImag.deallocate()
-        tempMulReal.deallocate()
-        tempMulImag.deallocate()
 
         fdlRealData.deallocate()
         fdlImagData.deallocate()
@@ -196,6 +182,10 @@ nonisolated final class StereoConvolutionEngine {
                 }
             }
             vDSP_fft_zrip(fftSetup, &split, 1, log2n, FFTDirection(kFFTDirection_Forward))
+            // Normalize the reusable filter spectra once, before entering the render thread.
+            var scale = 0.25 / Float(fftSize)
+            vDSP_vsmul(split.realp, 1, &scale, split.realp, 1, vDSP_Length(fftSizeHalf))
+            vDSP_vsmul(split.imagp, 1, &scale, split.imagp, 1, vDSP_Length(fftSizeHalf))
         }
     }
 
@@ -208,17 +198,42 @@ nonisolated final class StereoConvolutionEngine {
         outputLeft: UnsafeMutablePointer<Float>,
         outputRight: UnsafeMutablePointer<Float>?
     ) {
-        // 1. Overlap-save input: [previous block | current block]
-        memcpy(inputBuffer, inputOverlapBuffer, blockSize * MemoryLayout<Float>.size)
-        memcpy(inputBuffer.advanced(by: blockSize), input, blockSize * MemoryLayout<Float>.size)
-        memcpy(inputOverlapBuffer, input, blockSize * MemoryLayout<Float>.size)
+        process(input: input, outputLeft: outputLeft, outputRight: outputRight, frames: blockSize)
+    }
 
-        // 2. Forward FFT straight into this block's FDL slot; partition 0 then
-        //    reads the slot we just wrote, which is exactly the newest block.
-        fdlIndex -= 1
-        if fdlIndex < 0 {
-            fdlIndex += partitionCount
+    /// Emit the causal prefix immediately. A partial block stays in the newest
+    /// FDL slot until complete; only its newly arrived samples need output.
+    func process(input: UnsafePointer<Float>, outputLeft: UnsafeMutablePointer<Float>,
+                 outputRight: UnsafeMutablePointer<Float>?, frames: Int) {
+        var offset = 0
+        while offset < frames {
+            let n = min(blockSize - position, frames - offset)
+            if position == 0 {
+                if n < blockSize {
+                    memset(inputBuffer + blockSize + n, 0, (blockSize - n) * MemoryLayout<Float>.stride)
+                }
+                rightTailReady = false
+                fdlIndex = fdlIndex == 0 ? partitionCount - 1 : fdlIndex - 1
+            }
+            (inputBuffer + blockSize + position).update(from: input + offset, count: n)
+            transformInput()
+            renderEar(real: leftRealData, imag: leftImagData, cache: cachedTail, refreshTail: position == 0,
+                      output: outputLeft + offset, frames: n)
+            if let outputRight {
+                renderEar(real: rightRealData, imag: rightImagData, cache: cachedTail + 2 * blockSize,
+                          refreshTail: !rightTailReady, output: outputRight + offset, frames: n)
+                rightTailReady = true
+            }
+            position += n
+            offset += n
+            if position == blockSize {
+                inputBuffer.update(from: inputBuffer + blockSize, count: blockSize)
+                position = 0
+            }
         }
+    }
+
+    private func transformInput() {
         let headOffset = fdlIndex * fftSizeHalf
         var head = DSPSplitComplex(
             realp: fdlRealData.advanced(by: headOffset),
@@ -228,87 +243,79 @@ nonisolated final class StereoConvolutionEngine {
             vDSP_ctoz(complex, 2, &head, 1, vDSP_Length(fftSizeHalf))
         }
         vDSP_fft_zrip(fftSetup, &head, 1, log2n, FFTDirection(kFFTDirection_Forward))
-
-        // 3. One multiply-accumulate pass and one inverse FFT per ear.
-        convolve(hrirReal: leftRealData, hrirImag: leftImagData, output: outputLeft)
-        if let outputRight {
-            convolve(hrirReal: rightRealData, hrirImag: rightImagData, output: outputRight)
-        }
     }
 
-    @inline(__always)
-    private func convolve(
-        hrirReal: UnsafeMutablePointer<Float>,
-        hrirImag: UnsafeMutablePointer<Float>,
-        output: UnsafeMutablePointer<Float>
-    ) {
-        let len = vDSP_Length(fftSizeHalf - 1)
-        let accRealDC = accumulatorReal
-        let accImagDC = accumulatorImag
-        let fdlReal = fdlRealData
-        let fdlImag = fdlImagData
-
-        // First partition writes the accumulator directly (no zeroing pass).
-        let headOffset = fdlIndex * fftSizeHalf
-        let fdlRBase0 = fdlReal.advanced(by: headOffset)
-        let fdlIBase0 = fdlImag.advanced(by: headOffset)
-
-        // Packed DC/Nyquist pair.
-        accRealDC.pointee = fdlRBase0.pointee * hrirReal.pointee
-        accImagDC.pointee = fdlIBase0.pointee * hrirImag.pointee
-
-        var accSplit = DSPSplitComplex(realp: accRealDC + 1, imagp: accImagDC + 1)
-        var fdlSplit = DSPSplitComplex(realp: fdlRBase0 + 1, imagp: fdlIBase0 + 1)
-        var hrirSplit = DSPSplitComplex(realp: hrirReal + 1, imagp: hrirImag + 1)
-        vDSP_zvmul(&fdlSplit, 1, &hrirSplit, 1, &accSplit, 1, len, 1)
-
-        var partition = 1
-        while partition < partitionCount {
-            var fdlIdx = fdlIndex + partition
-            if fdlIdx >= partitionCount {
-                fdlIdx -= partitionCount
-            }
-
-            let fdlOffset = fdlIdx * fftSizeHalf
-            let hrirOffset = partition * fftSizeHalf
-            let fdlRBase = fdlReal.advanced(by: fdlOffset)
-            let fdlIBase = fdlImag.advanced(by: fdlOffset)
-            let hRBase = hrirReal.advanced(by: hrirOffset)
-            let hIBase = hrirImag.advanced(by: hrirOffset)
-
-            accRealDC.pointee += fdlRBase.pointee * hRBase.pointee
-            accImagDC.pointee += fdlIBase.pointee * hIBase.pointee
-
-            var fdl = DSPSplitComplex(realp: fdlRBase + 1, imagp: fdlIBase + 1)
-            var hrir = DSPSplitComplex(realp: hRBase + 1, imagp: hIBase + 1)
-            var temp = DSPSplitComplex(realp: tempMulReal + 1, imagp: tempMulImag + 1)
-            var acc = DSPSplitComplex(realp: accRealDC + 1, imagp: accImagDC + 1)
-
-            vDSP_zvmul(&fdl, 1, &hrir, 1, &temp, 1, len, 1)
-            vDSP_zvadd(&temp, 1, &acc, 1, &acc, 1, len)
-
-            partition += 1
+    private func renderEar(real: UnsafeMutablePointer<Float>, imag: UnsafeMutablePointer<Float>,
+                           cache: UnsafeMutablePointer<Float>, refreshTail: Bool,
+                           output: UnsafeMutablePointer<Float>, frames: Int) {
+        if frames == blockSize || partitionCount == 1 {
+            accumulate(0..<partitionCount, real: real, imag: imag, into: &accumulator)
+        } else {
+            // Older blocks cannot change while the current block fills.
+            var past = DSPSplitComplex(realp: cache, imagp: cache + blockSize)
+            if refreshTail { accumulate(1..<partitionCount, real: real, imag: imag, into: &past) }
+            let head = fdlIndex * blockSize
+            var signal = DSPSplitComplex(realp: fdlRealData + head, imagp: fdlImagData + head)
+            var filter = DSPSplitComplex(realp: real, imagp: imag)
+            vDSP_zvma(&signal, 1, &filter, 1, &past, 1, &accumulator, 1, vDSP_Length(blockSize))
+            accumulator.realp[0] = past.realp[0] + signal.realp[0] * real[0]
+            accumulator.imagp[0] = past.imagp[0] + signal.imagp[0] * imag[0]
         }
-
         vDSP_fft_zrip(fftSetup, &accumulator, 1, log2n, FFTDirection(kFFTDirection_Inverse))
-
-        var scaleFactor = 0.25 / Float(fftSize)
-        vDSP_vsmul(accumulator.realp, 1, &scaleFactor, accumulator.realp, 1, vDSP_Length(fftSizeHalf))
-        vDSP_vsmul(accumulator.imagp, 1, &scaleFactor, accumulator.imagp, 1, vDSP_Length(fftSizeHalf))
-
-        outputScratch.withMemoryRebound(to: DSPComplex.self, capacity: fftSizeHalf) { complex in
-            vDSP_ztoc(&accumulator, 1, complex, 2, vDSP_Length(fftSizeHalf))
+        // The inverse real FFT packs even and odd time samples into separate arrays.
+        var start = blockSize + position
+        var count = frames
+        var dst = output
+        if !start.isMultiple(of: 2) {
+            dst[0] = accumulator.imagp[start / 2]
+            start += 1
+            dst += 1
+            count -= 1
         }
+        let pairs = count / 2
+        if pairs > 0 {
+            var valid = DSPSplitComplex(realp: accumulator.realp + start / 2, imagp: accumulator.imagp + start / 2)
+            dst.withMemoryRebound(to: DSPComplex.self, capacity: pairs) {
+                vDSP_ztoc(&valid, 1, $0, 2, vDSP_Length(pairs))
+            }
+        }
+        if !count.isMultiple(of: 2) { dst[count - 1] = accumulator.realp[start / 2 + pairs] }
+    }
 
-        // Overlap-save: the valid output is the second half.
-        memcpy(output, outputScratch.advanced(by: blockSize), blockSize * MemoryLayout<Float>.size)
+    private func accumulate(_ partitions: Range<Int>, real: UnsafeMutablePointer<Float>, imag: UnsafeMutablePointer<Float>,
+                            into sum: inout DSPSplitComplex) {
+        let bins = vDSP_Length(fftSizeHalf)
+        var dc: Float = 0
+        var nyquist: Float = 0
+        var index = fdlIndex + partitions.lowerBound
+        if index == partitionCount { index = 0 }
+        for partition in partitions {
+            let f = index * fftSizeHalf
+            let h = partition * fftSizeHalf
+            var signal = DSPSplitComplex(realp: fdlRealData + f, imagp: fdlImagData + f)
+            var filter = DSPSplitComplex(realp: real + h, imagp: imag + h)
+            dc += signal.realp[0] * filter.realp[0]
+            nyquist += signal.imagp[0] * filter.imagp[0]
+            if partition == partitions.lowerBound {
+                vDSP_zvmul(&signal, 1, &filter, 1, &sum, 1, bins, 1)
+            } else {
+                var prior = sum
+                vDSP_zvma(&signal, 1, &filter, 1, &prior, 1, &sum, 1, bins)
+            }
+            index += 1
+            if index == partitionCount { index = 0 }
+        }
+        // A real FFT packs DC and Nyquist into the first complex bin.
+        sum.realp[0] = dc
+        sum.imagp[0] = nyquist
     }
     // END REALTIME CALLBACK
 
     /// Reset the engine state
     func reset() {
         memset(inputBuffer, 0, fftSize * MemoryLayout<Float>.size)
-        memset(inputOverlapBuffer, 0, blockSize * MemoryLayout<Float>.size)
+        position = 0
+        rightTailReady = false
 
         let partitionedSize = partitionCount * fftSizeHalf
         memset(fdlRealData, 0, partitionedSize * MemoryLayout<Float>.size)

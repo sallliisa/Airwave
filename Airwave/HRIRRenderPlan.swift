@@ -22,35 +22,14 @@ nonisolated struct HRIRRenderPlan {
         blockSize: Int,
         isCancelled: () -> Bool = { false }
     ) throws -> HRIRRenderPlan {
-        let wav = try WAVLoader.load(from: url)
-        guard !isCancelled() else { throw CancellationError() }
-        let speakers = inputLayout.channels
-        let channelMap = wav.channelCount == 7
-            ? HRIRChannelMap.hesuvi7Channel(speakers: speakers)
-            : HRIRChannelMap.hesuvi14Channel(speakers: speakers)
         let log2n = vDSP_Length(log2(Double(blockSize * 2)))
         let fftSetup = FFTSetupManager.shared.getSetup(log2n: log2n)
 
-        func response(at index: Int) throws -> [Float] {
-            let samples = wav.audioData[index]
-            guard abs(wav.sampleRate - sampleRate) > 0.01 else { return samples }
-            return try Resampler.resampleHighQuality(input: samples, fromRate: wav.sampleRate, toRate: sampleRate)
-        }
-
         var renderers: [VirtualSpeakerRenderer] = []
-        renderers.reserveCapacity(speakers.count)
         var responseLength = 0
-        for speaker in speakers {
-            guard !isCancelled() else { throw CancellationError() }
-            guard let (leftIndex, rightIndex) = channelMap.getIndices(for: speaker) else { continue }
-            guard leftIndex < wav.channelCount, rightIndex < wav.channelCount else {
-                throw HRIRError.invalidChannelMapping(
-                    "HRIR indices (\(leftIndex), \(rightIndex)) out of range for \(wav.channelCount) channels"
-                )
-            }
-
-            let left = try response(at: leftIndex)
-            let right = try response(at: rightIndex)
+        let channelMap = try readResponses(
+            url: url, inputLayout: inputLayout, sampleRate: sampleRate, isCancelled: isCancelled
+        ) { speaker, left, right in
             guard let convolver = StereoConvolutionEngine(
                 leftEarHRIR: left,
                 rightEarHRIR: right,
@@ -67,6 +46,38 @@ nonisolated struct HRIRRenderPlan {
             throw HRIRError.convolutionSetupFailed("No valid renderers created")
         }
         return HRIRRenderPlan(channelMap: channelMap, renderers: renderers, tailFrames: max(0, responseLength - 1))
+    }
+
+    static func readResponses(
+        url: URL, inputLayout: InputLayout, sampleRate: Double, isCancelled: () -> Bool = { false },
+        consume: (VirtualSpeaker, [Float], [Float]) throws -> Void
+    ) throws -> HRIRChannelMap {
+        let wav = try WAVLoader.load(from: url)
+        guard !isCancelled() else { throw CancellationError() }
+        let speakers = inputLayout.channels
+        let channelMap = wav.channelCount == 7
+            ? HRIRChannelMap.hesuvi7Channel(speakers: speakers)
+            : HRIRChannelMap.hesuvi14Channel(speakers: speakers)
+        func response(at index: Int) throws -> [Float] {
+            let samples = wav.audioData[index]
+            guard abs(wav.sampleRate - sampleRate) > 0.01 else { return samples }
+            return try Resampler.resampleHighQuality(input: samples, fromRate: wav.sampleRate, toRate: sampleRate)
+        }
+
+        for speaker in speakers {
+            guard !isCancelled() else { throw CancellationError() }
+            guard let (leftIndex, rightIndex) = channelMap.getIndices(for: speaker) else { continue }
+            guard leftIndex < wav.channelCount, rightIndex < wav.channelCount else {
+                throw HRIRError.invalidChannelMapping(
+                    "HRIR indices (\(leftIndex), \(rightIndex)) out of range for \(wav.channelCount) channels"
+                )
+            }
+
+            let left = try response(at: leftIndex)
+            let right = try response(at: rightIndex)
+            try consume(speaker, left, right)
+        }
+        return channelMap
     }
 }
 

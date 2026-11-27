@@ -11,34 +11,31 @@ nonisolated final class SpatialRenderAccess {
 
 nonisolated final class SpatialRenderResources {
     private struct PresetUpdate {
-        var incoming: RealtimeAudioProcessor?
-        var retired: RealtimeAudioProcessor?
+        var incoming: SpatialProcessor?
+        var retired: SpatialProcessor?
     }
 
-    let maxFrames: Int
+    private let maxFrames: Int
     private let inputInterleaved: Bool
     private let outputInterleaved: Bool
-    private let blockSize = AirwaveSpatialAudioUnit.blockSize
     private let fadeFrames = 128
+    private let presetWarmupFrames = 512
     private let update = OSAllocatedUnfairLock(uncheckedState: PresetUpdate())
     private let hasPendingPreset = Atomic<Bool>(false)
 
-    private var processor: RealtimeAudioProcessor
-    private var previousProcessor: RealtimeAudioProcessor?
+    private var processor: SpatialProcessor
+    private var previousProcessor: SpatialProcessor?
     private var transitionRemaining = 0
     private var bypassAmount: Float?
 
     private let inputList = AudioBufferList.allocate(maximumBuffers: 2)
-    private let inputChannels = UnsafeMutablePointer<UnsafePointer<Float>?>.allocate(capacity: 2)
     private let input: UnsafeMutablePointer<Float>
     private let interleavedInput: UnsafeMutablePointer<Float>?
     private let wet: UnsafeMutablePointer<Float>
     private let previousWet: UnsafeMutablePointer<Float>
     private let outputStorage: UnsafeMutablePointer<Float>
-    private let dryDelay: UnsafeMutablePointer<Float>
-    private var dryCursor = 0
 
-    init(processor: RealtimeAudioProcessor, maxFrames: Int, inputInterleaved: Bool, outputInterleaved: Bool) {
+    init(processor: SpatialProcessor, maxFrames: Int, inputInterleaved: Bool, outputInterleaved: Bool) {
         self.processor = processor
         self.maxFrames = maxFrames
         self.inputInterleaved = inputInterleaved
@@ -48,24 +45,18 @@ nonisolated final class SpatialRenderResources {
         wet = .allocate(capacity: 2 * maxFrames)
         previousWet = .allocate(capacity: 2 * maxFrames)
         outputStorage = .allocate(capacity: 2 * maxFrames)
-        dryDelay = .allocate(capacity: 2 * blockSize)
-        dryDelay.initialize(repeating: 0, count: 2 * blockSize)
-        inputChannels.initialize(to: UnsafePointer(input))
-        (inputChannels + 1).initialize(to: UnsafePointer(input + maxFrames))
     }
 
     deinit {
         inputList.unsafeMutablePointer.deallocate()
-        inputChannels.deallocate()
         input.deallocate()
         interleavedInput?.deallocate()
         wet.deallocate()
         previousWet.deallocate()
         outputStorage.deallocate()
-        dryDelay.deallocate()
     }
 
-    func publish(_ processor: RealtimeAudioProcessor) {
+    func publish(_ processor: SpatialProcessor) {
         update.withLockUnchecked {
             $0.incoming = processor
             $0.retired = nil
@@ -77,8 +68,6 @@ nonisolated final class SpatialRenderResources {
         processor.reset()
         transitionRemaining = 0
         bypassAmount = nil
-        dryCursor = 0
-        memset(dryDelay, 0, 2 * blockSize * MemoryLayout<Float>.stride)
     }
 
     func render(
@@ -106,12 +95,12 @@ nonisolated final class SpatialRenderResources {
 
         adoptPendingPreset()
         processor.process(
-            inputChannels: inputChannels, inputChannelCount: 2, inputOffset: 0,
+            left: input, right: input + maxFrames,
             leftOutput: wet, rightOutput: wet + maxFrames, frameCount: frames
         )
         if transitionRemaining > 0, let previousProcessor {
             previousProcessor.process(
-                inputChannels: inputChannels, inputChannelCount: 2, inputOffset: 0,
+                left: input, right: input + maxFrames,
                 leftOutput: previousWet, rightOutput: previousWet + maxFrames, frameCount: frames
             )
         }
@@ -130,7 +119,7 @@ nonisolated final class SpatialRenderResources {
             processor = incoming
             slot.incoming = nil
             hasPendingPreset.store(false, ordering: .relaxed)
-            transitionRemaining = blockSize + fadeFrames
+            transitionRemaining = presetWarmupFrames + fadeFrames
         }
     }
 
@@ -201,6 +190,21 @@ nonisolated final class SpatialRenderResources {
         let fadeStep = 1 / Float(fadeFrames)
         var amount = bypassAmount ?? (bypass ? 1 : 0)
 
+        if transitionRemaining == 0, amount == (bypass ? 1 : 0) {
+            let source = bypass ? input : wet
+            if outputInterleaved {
+                for i in 0..<frames {
+                    outputLeft[2 * i] = source[i]
+                    outputRight[2 * i] = source[maxFrames + i]
+                }
+            } else {
+                outputLeft.update(from: source, count: frames)
+                outputRight.update(from: source + maxFrames, count: frames)
+            }
+            bypassAmount = amount
+            return
+        }
+
         for frame in 0..<frames {
             var left = wet[frame]
             var right = wet[maxFrames + frame]
@@ -211,16 +215,9 @@ nonisolated final class SpatialRenderResources {
                 transitionRemaining -= 1
             }
 
-            let dryLeft = dryDelay[dryCursor]
-            let dryRight = dryDelay[blockSize + dryCursor]
-            dryDelay[dryCursor] = input[frame]
-            dryDelay[blockSize + dryCursor] = input[maxFrames + frame]
-            dryCursor += 1
-            if dryCursor == blockSize { dryCursor = 0 }
-
             amount = bypass ? min(1, amount + fadeStep) : max(0, amount - fadeStep)
-            outputLeft[stride * frame] = left * (1 - amount) + dryLeft * amount
-            outputRight[stride * frame] = right * (1 - amount) + dryRight * amount
+            outputLeft[stride * frame] = left * (1 - amount) + input[frame] * amount
+            outputRight[stride * frame] = right * (1 - amount) + input[maxFrames + frame] * amount
         }
         bypassAmount = amount
     }

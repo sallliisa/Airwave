@@ -43,6 +43,37 @@ final class ConvolutionEngineTests: XCTestCase {
         XCTAssertTrue(zip(output, input).allSatisfy { abs($0.0 - $0.1) < 0.0001 })
     }
 
+    func testPartialBlocksMatchDirectConvolutionWhenTheRightEarJoinsMidBlock() throws {
+        let leftIR: [Float] = [0.1, -0.3, 0.2, 0, 0.03, -0.04, 1, -1, 0.7, 0.02, 0, 0.4, -0.01]
+        let rightIR = Array(leftIR.reversed())
+        let engine = try XCTUnwrap(StereoConvolutionEngine(leftEarHRIR: leftIR, rightEarHRIR: rightIR, blockSize: 8))
+        let sizes = [3, 1, 17, 2, 1, 5, 32, 9]
+        let input = (0..<sizes.reduce(0, +)).map { sin(Float($0) * 0.73) }
+        func reference(_ kernel: [Float], at frame: Int) -> Float {
+            (0...min(frame, kernel.count - 1)).reduce(0) { $0 + kernel[$1] * input[frame - $1] }
+        }
+        for _ in 0..<2 {
+            engine.reset()
+            var offset = 0
+            for (index, size) in sizes.enumerated() {
+                let renderRight = index % 2 == 1
+                var left = [Float](repeating: .nan, count: size)
+                var right = left
+                input.withUnsafeBufferPointer { source in
+                    right.withUnsafeMutableBufferPointer { dst in
+                        engine.process(input: source.baseAddress! + offset, outputLeft: &left,
+                                       outputRight: renderRight ? dst.baseAddress : nil, frames: size)
+                    }
+                }
+                for i in 0..<size {
+                    XCTAssertEqual(left[i], reference(leftIR, at: offset + i), accuracy: 1e-5)
+                    if renderRight { XCTAssertEqual(right[i], reference(rightIR, at: offset + i), accuracy: 1e-5) }
+                }
+                offset += size
+            }
+        }
+    }
+
     func testResetClearsOverlapAndFrequencyHistory() {
         let engine = makeEngine()
         var input = [Float](repeating: 0, count: blockSize)

@@ -5,7 +5,6 @@ import os
 import Synchronization
 
 nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
-    static let blockSize = 512
     static let presetDidChange = Notification.Name("AirwaveSpatialPresetDidChange")
 
     enum PresetSelection: Equatable {
@@ -17,7 +16,7 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
         case neutral
         case imported(name: String, wav: Data)
 
-        func prepare(sampleRate: Double) throws -> HRIRRenderPlan {
+        func prepare(sampleRate: Double) throws -> SpatialProcessor {
             let url: URL
             let temporaryURL: URL?
             switch self {
@@ -35,9 +34,7 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
             defer {
                 if let temporaryURL { try? FileManager.default.removeItem(at: temporaryURL) }
             }
-            return try HRIRRenderPlan.prepare(
-                url: url, inputLayout: .stereo, sampleRate: sampleRate, blockSize: AirwaveSpatialAudioUnit.blockSize
-            )
+            return try SpatialProcessor(url: url, sampleRate: sampleRate)
         }
     }
 
@@ -87,9 +84,7 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
     override var outputBusses: AUAudioUnitBusArray { outputs }
     override var channelCapabilities: [NSNumber]? { [2, 2] }
     override var canProcessInPlace: Bool { true }
-    override var latency: TimeInterval {
-        Double(Self.blockSize) / outputBus.format.sampleRate
-    }
+    override var latency: TimeInterval { 0 }
     override var tailTime: TimeInterval {
         Double(bitPattern: tail.load(ordering: .relaxed))
     }
@@ -156,13 +151,13 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
     private func selectPreset(_ preset: Preset) throws {
         try state.withLockUnchecked { current in
             let sampleRate = current.resources == nil ? outputBus.format.sampleRate : current.sampleRate
-            let plan = try preset.prepare(sampleRate: sampleRate)
+            let processor = try preset.prepare(sampleRate: sampleRate)
             if let resources = current.resources {
-                resources.publish(Self.makeProcessor(plan: plan, maxFrames: resources.maxFrames))
+                resources.publish(processor)
             }
             current.preset = preset
             current.sampleRate = sampleRate
-            setTail(frames: plan.tailFrames, sampleRate: sampleRate)
+            setTail(frames: processor.tailFrames, sampleRate: sampleRate)
         }
         NotificationCenter.default.post(name: Self.presetDidChange, object: self)
     }
@@ -185,16 +180,16 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
         try super.allocateRenderResources()
         do {
             try state.withLockUnchecked { current in
-                let plan = try current.preset.prepare(sampleRate: output.sampleRate)
+                let processor = try current.preset.prepare(sampleRate: output.sampleRate)
                 let resources = SpatialRenderResources(
-                    processor: Self.makeProcessor(plan: plan, maxFrames: maxFrames),
+                    processor: processor,
                     maxFrames: maxFrames,
                     inputInterleaved: input.isInterleaved,
                     outputInterleaved: output.isInterleaved
                 )
                 current.resources = resources
                 current.sampleRate = output.sampleRate
-                setTail(frames: plan.tailFrames, sampleRate: output.sampleRate)
+                setTail(frames: processor.tailFrames, sampleRate: output.sampleRate)
                 renderAccess.resources.store(Unmanaged.passUnretained(resources).toOpaque(), ordering: .releasing)
             }
         } catch {
@@ -243,13 +238,6 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
 
     private func setTail(frames: Int, sampleRate: Double) {
         tail.store((Double(frames) / sampleRate).bitPattern, ordering: .relaxed)
-    }
-
-    private static func makeProcessor(plan: HRIRRenderPlan, maxFrames: Int) -> RealtimeAudioProcessor {
-        RealtimeAudioProcessor(
-            renderers: plan.renderers, inputChannelCount: 2, fallbackSpeakers: InputLayout.stereo.channels,
-            blockSize: blockSize, maxFramesPerCallback: maxFrames, fixedLatency: true
-        )
     }
 }
 
