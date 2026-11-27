@@ -368,11 +368,13 @@ private struct HostEffectsPage: View {
 
     var body: some View {
         HostAudioPage(title: "Effects", subtitle: "Build an effect chain for each audio output.") {
-            VStack(alignment: .leading, spacing: HostAppearance.audioPageSpacing) {
-                if !devices.isEmpty { deviceBar }
-                if host.editingSlots.isEmpty {
-                    emptyChain
-                } else {
+            if host.editingSlots.isEmpty {
+                emptyChain.overlay(alignment: .topLeading) {
+                    if !devices.isEmpty { deviceBar }
+                }
+            } else {
+                VStack(alignment: .leading, spacing: HostAppearance.audioPageSpacing) {
+                    if !devices.isEmpty { deviceBar }
                     EffectChain(host: host)
                         .id(host.editingDeviceUID)
                 }
