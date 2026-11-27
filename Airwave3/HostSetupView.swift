@@ -17,7 +17,7 @@ enum HostSetupStep: String, CaseIterable, Identifiable {
 
     var subtitle: String {
         switch self {
-        case .welcome: "Build an effect chain for each audio output and adjust the volume of individual apps."
+        case .welcome: "A system-wide audio host for Mac with effect chains for each output and volume control for each app."
         case .capture: "Airwave needs audio access to apply effects and adjust app volume."
         case .effect: "Add Audio Units for this output, or continue without effects."
         case .finish: "Choose how Airwave starts and where it appears."
@@ -266,23 +266,23 @@ private struct HostSetupWelcome: View {
 
     var body: some View {
         VStack(spacing: 22) {
-            Image("AirwaveIcon")
+            Image("AirwaveWelcomeIcon")
                 .resizable()
                 .scaledToFit()
                 .frame(width: 96, height: 96)
-                .shadow(color: .orange.opacity(0.18), radius: 24, y: 8)
                 .accessibilityHidden(true)
 
             VStack(spacing: 8) {
-                Text(HostSetupStep.welcome.title)
+                Text("Airwave")
                     .font(.system(size: 38, weight: .semibold))
                     .accessibilityAddTraits(.isHeader)
+                    .accessibilityIdentifier("setup-welcome-title")
                 Text(HostSetupStep.welcome.subtitle)
                     .font(.system(size: 14))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .lineSpacing(3)
-                    .frame(maxWidth: 320)
+                    .frame(maxWidth: 360)
                     .fixedSize(horizontal: false, vertical: true)
             }
 

@@ -5,7 +5,9 @@ final class Airwave3UITests: XCTestCase {
     func testFirstRunHidesMainControlsAndResumesSetup() throws {
         try withApp(setupPending: true) { app, _ in
             let capture = app.buttons["test-capture"]
-            XCTAssertTrue(app.staticTexts["Welcome"].waitForExistence(timeout: 8))
+            let title = app.staticTexts["setup-welcome-title"]
+            XCTAssertTrue(title.waitForExistence(timeout: 8))
+            XCTAssertEqual(title.label, "Airwave")
             XCTAssertFalse(app.buttons["global-bypass"].exists)
             XCTAssertFalse(app.buttons["quit-host"].exists)
             XCTAssertFalse(app.buttons["exit-setup"].exists)

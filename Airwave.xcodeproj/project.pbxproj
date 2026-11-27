@@ -48,7 +48,6 @@
 		A01900000000000000000001 /* InputLayoutResolutionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A01900000000000000000002 /* InputLayoutResolutionTests.swift */; };
 		A03000000000000000000001 /* Sparkle in Frameworks */ = { isa = PBXBuildFile; productRef = A00200000000000000000003; };
 		A03000000000000000000002 /* Assets.xcassets in Resources */ = { isa = PBXBuildFile; fileRef = A03000000000000000000005; };
-		A03000000000000000000003 /* AppIcon.icon in Resources */ = { isa = PBXBuildFile; fileRef = A03000000000000000000006; };
 		A03000000000000000000004 /* AirwaveSpatialAU.appex in Embed App Extensions */ = { isa = PBXBuildFile; fileRef = A02000000000000000000002; settings = { ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		A04000000000000000000003 /* AirwaveEqualizerAU.appex in Embed App Extensions */ = { isa = PBXBuildFile; fileRef = A04000000000000000000001; settings = { ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		A04000000000000000000070 /* EqualizerAPOParser.swift in Sources */ = { isa = PBXBuildFile; fileRef = A04000000000000000000040; };
@@ -200,7 +199,6 @@
 		A01800000000000000000002 /* AirwaveLayoutTokensTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirwaveLayoutTokensTests.swift; sourceTree = "<group>"; };
 		A01900000000000000000002 /* InputLayoutResolutionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputLayoutResolutionTests.swift; sourceTree = "<group>"; };
 		A03000000000000000000005 /* Airwave assets */ = { isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Airwave/Assets.xcassets; sourceTree = SOURCE_ROOT; };
-		A03000000000000000000006 /* Airwave icon */ = { isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = Airwave/AppIcon.icon; sourceTree = SOURCE_ROOT; };
 		A03000000000000000000007 /* Airwave 3.app */ = { isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Airwave.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A03000000000000000000008 /* Airwave3Tests.xctest */ = { isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = Airwave3Tests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A04000000000000000000001 /* AirwaveEqualizerAU.appex */ = { isa = PBXFileReference; explicitFileType = wrapper.app-extension; includeInIndex = 0; path = AirwaveEqualizerAU.appex; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -335,7 +333,6 @@
 				A05000000000000000000002 /* AirwaveSpatialAUTests */,
 				A04000000000000000000018 /* Shared effect sources */,
 				A03000000000000000000005 /* Airwave assets */,
-				A03000000000000000000006 /* Airwave icon */,
 				A09000000000000000000001 /* NativeUserPresetStore.swift */,
 				A02000000000000000000009 /* AirwaveSpatialAU */,
 				A0200000000000000000000A /* Shared HRIR sources */,
@@ -531,7 +528,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		A03000000000000000000014 /* Resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A03000000000000000000002, A03000000000000000000003, ); runOnlyForDeploymentPostprocessing = 0; };
+		A03000000000000000000014 /* Resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A03000000000000000000002, ); runOnlyForDeploymentPostprocessing = 0; };
 		A03000000000000000000018 /* Resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		A0400000000000000000000C /* Resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A06000000000000000000011, A06000000000000000000012, A06000000000000000000013, A06000000000000000000014, A06000000000000000000015, ); runOnlyForDeploymentPostprocessing = 0; };
 		A0400000000000000000000F /* Resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A06000000000000000000021, A06000000000000000000022, A06000000000000000000023, A06000000000000000000024, A06000000000000000000025, ); runOnlyForDeploymentPostprocessing = 0; };
