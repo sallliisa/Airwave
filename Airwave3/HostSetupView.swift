@@ -70,6 +70,8 @@ struct HostSetupProgress: View {
 }
 
 struct HostSetupView: View {
+    private static let footerControlSize: CGFloat = 34
+
     @ObservedObject var host: HostController
     @ObservedObject var shell: ShellModel
     @Binding var step: HostSetupStep
@@ -241,6 +243,7 @@ struct HostSetupView: View {
                 .accessibilityIdentifier(step == .finish ? "finish-setup" : "setup-next")
             }
         }
+        .frame(minHeight: Self.footerControlSize)
     }
 
     private func navigationButton(_ label: String, icon: String, prominent: Bool,
@@ -249,7 +252,7 @@ struct HostSetupView: View {
             Image(systemName: icon)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(prominent ? HostAppearance.canvas : Color.secondary)
-                .frame(width: 34, height: 34)
+                .frame(width: Self.footerControlSize, height: Self.footerControlSize)
                 .background {
                     Circle().fill(prominent ? Color.primary.opacity(0.92) : HostAppearance.hover)
                 }
