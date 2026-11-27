@@ -11,16 +11,15 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
         case neutral, room, stage
 
         var title: String { rawValue.capitalized }
+        var libraryName: String { title + "SH1.0" }
 
         var url: URL? {
-            Bundle(for: AirwaveSpatialAudioUnit.self).url(forResource: title + "SH1.0", withExtension: "wav")
+            Bundle(for: AirwaveSpatialAudioUnit.self).url(forResource: libraryName, withExtension: "wav")
         }
 
-        var reference: AUAudioUnitPreset {
-            let preset = AUAudioUnitPreset()
-            preset.name = title
-            preset.number = Self.allCases.firstIndex(of: self)!
-            return preset
+        func waveform() throws -> Data {
+            guard let url else { throw SpatialAudioUnitError.missingPreset(libraryName) }
+            return try Data(contentsOf: url, options: .mappedIfSafe)
         }
     }
 
@@ -55,6 +54,14 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
             case .none: [StateKey.noPreset: true]
             case .bundled(let preset): [StateKey.bundledPreset: preset.rawValue]
             case .imported(let name, let wav): [StateKey.presetName: name, StateKey.impulseResponse: wav]
+            }
+        }
+
+        func waveform() throws -> Data {
+            switch self {
+            case .none: throw SpatialAudioUnitError.invalidPreset
+            case .bundled(let bundled): return try bundled.waveform()
+            case .imported(_, let wav): return wav
             }
         }
 
@@ -144,8 +151,19 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
     }
 
     override var supportsUserPresets: Bool { true }
-    override var factoryPresets: [AUAudioUnitPreset]? { BundledPreset.allCases.map(\.reference) }
-    @objc dynamic override var userPresets: [AUAudioUnitPreset] { presetStore.presets }
+    @objc dynamic override var userPresets: [AUAudioUnitPreset] {
+        try? presetStore.seedDefaults({
+            try BundledPreset.allCases.map { bundled in
+                let preset = Preset.imported(name: bundled.libraryName, wav: try bundled.waveform())
+                return (bundled.libraryName, preset.document)
+            }
+        }, matches: { expected, saved in
+            guard let expectedWAV = expected[StateKey.impulseResponse] as? Data,
+                  let preset = Preset(document: saved) else { return false }
+            return (try? preset.waveform()) == expectedWAV
+        })
+        return presetStore.presets
+    }
 
     override func saveUserPreset(_ userPreset: AUAudioUnitPreset) throws {
         let preset = state.withLockUnchecked { $0.preset }
@@ -171,30 +189,21 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
 
     func renameUserPreset(_ preset: AUAudioUnitPreset, to name: String) throws {
         let selected = selectedUserPreset(in: [preset]) != nil
-        let previousName = preset.name
+        let wav = selected ? try state.withLockUnchecked { try $0.preset.waveform() } : nil
         willChangeValue(forKey: "userPresets")
         defer { didChangeValue(forKey: "userPresets") }
         try presetStore.rename(preset, to: name)
-        if selected {
+        if let wav {
             state.withLockUnchecked { current in
-                if case .imported(let name, let wav) = current.preset, name == previousName {
-                    current.preset = .imported(name: preset.name, wav: wav)
-                    current.userPreset = preset
-                } else if current.userPreset?.name == previousName {
-                    current.userPreset = preset
-                }
+                current.preset = .imported(name: preset.name, wav: wav)
+                current.userPreset = preset
             }
         }
         NotificationCenter.default.post(name: Self.presetDidChange, object: self)
     }
 
     override var currentPreset: AUAudioUnitPreset? {
-        get {
-            let (preset, userPreset) = state.withLockUnchecked { ($0.preset, $0.userPreset) }
-            if let userPreset { return userPreset }
-            if case .bundled(let bundled) = preset { return bundled.reference }
-            return nil
-        }
+        get { selectedUserPreset(in: userPresets) }
         set {
             guard let preset = newValue else { return }
             if preset.number < 0 {
@@ -247,19 +256,28 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
 
     func useUserPreset(_ preset: AUAudioUnitPreset) throws {
         let document = try presetState(for: preset)
-        guard var selection = Preset(document: document) else { throw SpatialAudioUnitError.invalidPreset }
-        if case .imported(_, let wav) = selection { selection = .imported(name: preset.name, wav: wav) }
+        guard let saved = Preset(document: document) else { throw SpatialAudioUnitError.invalidPreset }
+        let selection = Preset.imported(name: preset.name, wav: try saved.waveform())
         try selectPreset(selection, userPreset: preset)
     }
 
     func selectedUserPreset(in saved: [AUAudioUnitPreset]) -> AUAudioUnitPreset? {
         let (selected, reference) = state.withLockUnchecked { ($0.preset, $0.userPreset) }
-        if let reference, let preset = saved.first(where: { $0.name == reference.name }) { return preset }
-        guard case .imported(let name, let wav) = selected,
-              let preset = saved.first(where: { $0.name == name }),
-              let savedState = try? presetState(for: preset),
-              savedState[StateKey.impulseResponse] as? Data == wav else { return nil }
-        return preset
+        if let reference, let preset = saved.first(where: { $0.number == reference.number && $0.name == reference.name }) {
+            return preset
+        }
+        guard !saved.isEmpty, let wav = try? selected.waveform() else { return nil }
+        func matches(_ preset: AUAudioUnitPreset) -> Bool {
+            guard let document = try? presetState(for: preset), let stored = Preset(document: document) else { return false }
+            return (try? stored.waveform()) == wav
+        }
+        switch selected {
+        case .none: return nil
+        case .bundled(let bundled):
+            return saved.first(where: { $0.name == bundled.libraryName && matches($0) }) ?? saved.first(where: matches)
+        case .imported(let name, _):
+            return saved.first(where: { $0.name == name && matches($0) })
+        }
     }
 
     func importPreset(from url: URL) throws {
@@ -274,7 +292,7 @@ nonisolated final class AirwaveSpatialAudioUnit: AUAudioUnit {
         guard wav.count <= WAVLoader.maximumFileSize else { throw WAVError.fileTooLarge }
         let baseName = url.deletingPathExtension().lastPathComponent
         let saved = userPresets
-        let names = Set((saved.map(\.name) + BundledPreset.allCases.map(\.title)).map { $0.lowercased() })
+        let names = Set(saved.map { $0.name.lowercased() })
         var name = baseName
         var suffix = 2
         while names.contains(name.lowercased()) {

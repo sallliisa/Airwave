@@ -1,24 +1,14 @@
 import AppKit
 import AudioToolbox
+import Combine
 import CoreAudioKit
+import SwiftUI
 import UniformTypeIdentifiers
 import os
 
 final class AirwaveSpatialViewController: AUViewController, AUAudioUnitFactory {
-    private typealias BundledPreset = AirwaveSpatialAudioUnit.BundledPreset
-
-    private enum PresetAction {
-        case factory(BundledPreset)
-        case personal(AUAudioUnitPreset)
-        case importWAV
-        case rename(AUAudioUnitPreset)
-        case delete(AUAudioUnitPreset)
-    }
-
     private nonisolated let unit = OSAllocatedUnfairLock<AirwaveSpatialAudioUnit?>(uncheckedState: nil)
-    private let presetMenu = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let errorLabel = NSTextField(wrappingLabelWithString: "")
-    private lazy var bypassButton = NSButton(checkboxWithTitle: "Bypass", target: self, action: #selector(setBypass))
+    private let picker = SpatialPresetPickerModel()
     private var bypassObservation: NSKeyValueObservation?
     private var presetsObservation: NSKeyValueObservation?
 
@@ -33,42 +23,18 @@ final class AirwaveSpatialViewController: AUViewController, AUAudioUnitFactory {
     }
 
     override func loadView() {
-        preferredContentSize = NSSize(width: 340, height: 112)
-        let content = NSView(frame: NSRect(origin: .zero, size: preferredContentSize))
-
-        let label = NSTextField(labelWithString: "HRIR preset")
-        label.textColor = .secondaryLabelColor
-        presetMenu.target = self
-        presetMenu.action = #selector(selectPreset)
-        presetMenu.setAccessibilityLabel("HRIR preset")
-        presetMenu.cell?.lineBreakMode = .byTruncatingMiddle
-        presetMenu.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        NotificationCenter.default.addObserver(self, selector: #selector(refreshPresetMenu),
-                                               name: NSPopUpButton.willPopUpNotification, object: presetMenu)
-
-        errorLabel.textColor = .systemRed
-        errorLabel.maximumNumberOfLines = 2
-        errorLabel.isHidden = true
-
-        let actions = NSStackView(views: [presetMenu, bypassButton])
-        actions.orientation = .horizontal
-        actions.spacing = 12
-
-        let stack = NSStackView(views: [label, actions, errorLabel])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 8
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 16),
-            presetMenu.widthAnchor.constraint(greaterThanOrEqualToConstant: 180),
-            presetMenu.widthAnchor.constraint(lessThanOrEqualToConstant: 220)
-        ])
+        preferredContentSize = NSSize(width: 360, height: 270)
+        let content = NSHostingView(rootView: SpatialPresetPicker(model: picker) { [weak self] action in
+            self?.perform(action)
+        })
+        content.frame.size = preferredContentSize
         view = content
         connectEditor()
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        refreshPicker()
     }
 
     private func connectEditor() {
@@ -81,104 +47,51 @@ final class AirwaveSpatialViewController: AUViewController, AUAudioUnitFactory {
                 object: audioUnit
             )
             bypassObservation = audioUnit.observe(\.shouldBypassEffect) { [weak self] _, _ in
-                DispatchQueue.main.async { [weak self] in
-                    self?.refreshBypass()
-                }
+                DispatchQueue.main.async { [weak self] in self?.refreshPicker() }
             }
             presetsObservation = audioUnit.observe(\.userPresets) { [weak self] _, _ in
-                DispatchQueue.main.async { [weak self] in self?.refreshPresetMenu() }
+                DispatchQueue.main.async { [weak self] in self?.refreshPicker() }
             }
         }
-        refreshEditor()
+        refreshPicker()
     }
 
-    private func refreshEditor() {
-        refreshPresetMenu()
-        refreshBypass()
-        errorLabel.stringValue = ""
-        errorLabel.isHidden = true
-    }
-
-    @objc private func refreshPresetMenu() {
-        let audioUnit = unit.withLockUnchecked { $0 }
-        let selection = audioUnit?.presetSelection
-        let savedPresets = audioUnit?.userPresets ?? []
-        let selectedPersonal = audioUnit?.selectedUserPreset(in: savedPresets)
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-        func add(_ title: String, action: PresetAction? = nil) -> NSMenuItem {
-            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-            item.representedObject = action
-            menu.addItem(item)
-            return item
-        }
-        var selectedItem: NSMenuItem?
-        for preset in BundledPreset.allCases {
-            let item = add(preset.title, action: .factory(preset))
-            if selection == .bundled(preset), selectedPersonal == nil { selectedItem = item }
-        }
-        if !savedPresets.isEmpty {
-            menu.addItem(.separator())
-            for preset in savedPresets {
-                let item = add(preset.name, action: .personal(preset))
-                if selectedPersonal?.name == preset.name { selectedItem = item }
+    private func refreshPicker() {
+        guard let audioUnit = unit.withLockUnchecked({ $0 }) else { return }
+        let presets = audioUnit.userPresets
+        let selected = audioUnit.selectedUserPreset(in: presets)
+        let detachedName: String?
+        if selected != nil {
+            detachedName = nil
+        } else {
+            switch audioUnit.presetSelection {
+            case .none: detachedName = nil
+            case .imported(let name): detachedName = name
+            case .bundled(let preset): detachedName = preset.libraryName
             }
         }
-        if selectedItem == nil {
-            let title: String
-            if case .imported(let name) = selection {
-                title = name
-            } else {
-                title = "Choose Preset"
-            }
-            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            menu.insertItem(item, at: 0)
-            selectedItem = item
-        }
-        menu.addItem(.separator())
-        _ = add("Import WAV…", action: .importWAV)
-        if let selectedPersonal {
-            _ = add("Rename Current Preset…", action: .rename(selectedPersonal))
-            _ = add("Delete Current Preset…", action: .delete(selectedPersonal))
-        }
-        presetMenu.menu = menu
-        presetMenu.select(selectedItem)
-        presetMenu.isEnabled = audioUnit != nil
-    }
-
-    private func refreshBypass() {
-        let audioUnit = unit.withLockUnchecked { $0 }
-        bypassButton.isEnabled = audioUnit != nil
-        bypassButton.state = audioUnit?.shouldBypassEffect == true ? .on : .off
-    }
-
-    @objc private func setBypass() {
-        let audioUnit = unit.withLockUnchecked { $0 }
-        audioUnit?.shouldBypassEffect = bypassButton.state == .on
+        picker.library = .init(presets: presets, selection: selected?.number,
+                               detachedName: detachedName, isBypassed: audioUnit.shouldBypassEffect)
     }
 
     @objc private nonisolated func presetDidChange(_ notification: Notification) {
-        DispatchQueue.main.async { [weak self] in
-            self?.refreshEditor()
-        }
+        DispatchQueue.main.async { [weak self] in self?.refreshPicker() }
     }
 
-    @objc private func selectPreset() {
-        guard let action = presetMenu.selectedItem?.representedObject as? PresetAction,
-              let audioUnit = unit.withLockUnchecked({ $0 }) else { return }
-        refreshPresetMenu()
+    private func perform(_ action: SpatialPresetPicker.Action) {
+        guard let audioUnit = unit.withLockUnchecked({ $0 }) else { return }
         switch action {
-        case .factory(let preset):
-            updatePreset { try audioUnit.useBundledPreset(preset) }
-        case .personal(let preset):
+        case .select(let preset):
             updatePreset { try audioUnit.useUserPreset(preset) }
         case .importWAV:
-            importPreset()
+            importPreset(in: audioUnit)
         case .rename(let preset):
             renamePreset(preset, in: audioUnit)
         case .delete(let preset):
             deletePreset(preset, from: audioUnit)
+        case .bypass(let isBypassed):
+            audioUnit.shouldBypassEffect = isBypassed
+            refreshPicker()
         }
     }
 
@@ -204,7 +117,7 @@ final class AirwaveSpatialViewController: AUViewController, AUAudioUnitFactory {
         let alert = NSAlert()
         alert.messageText = "Delete “\(preset.name)”?"
         alert.informativeText = "Effects using this preset will keep their current settings."
-        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Delete").hasDestructiveAction = true
         alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: window) { [weak self, weak audioUnit] response in
             guard response == .alertFirstButtonReturn, let audioUnit else { return }
@@ -212,26 +125,156 @@ final class AirwaveSpatialViewController: AUViewController, AUAudioUnitFactory {
         }
     }
 
-    private func importPreset() {
+    private func importPreset(in audioUnit: AirwaveSpatialAudioUnit) {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.wav]
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.prompt = "Import"
-        panel.begin { [weak self] result in
-            guard result == .OK, let url = panel.url, let self,
-                  let audioUnit = self.unit.withLockUnchecked({ $0 }) else { return }
-            self.updatePreset { try audioUnit.importPreset(from: url) }
+        panel.begin { [weak self, weak audioUnit] result in
+            guard result == .OK, let url = panel.url, let audioUnit else { return }
+            self?.updatePreset { try audioUnit.importPreset(from: url) }
         }
     }
 
     private func updatePreset(_ apply: () throws -> Void) {
         do {
             try apply()
-            refreshEditor()
+            picker.error = nil
+            refreshPicker()
         } catch {
-            errorLabel.stringValue = error.localizedDescription
-            errorLabel.isHidden = false
+            picker.error = error.localizedDescription
         }
+    }
+}
+
+@MainActor
+private final class SpatialPresetPickerModel: ObservableObject {
+    struct Library {
+        let presets: [AUAudioUnitPreset]
+        let selection: Int?
+        let detachedName: String?
+        let isBypassed: Bool
+    }
+
+    @Published var library: Library?
+    @Published var error: String?
+}
+
+private struct SpatialPresetPicker: View {
+    enum Action {
+        case select(AUAudioUnitPreset)
+        case importWAV
+        case rename(AUAudioUnitPreset)
+        case delete(AUAudioUnitPreset)
+        case bypass(Bool)
+    }
+
+    @ObservedObject var model: SpatialPresetPickerModel
+    let perform: (Action) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("HRIR Presets")
+                    .font(.headline)
+                    .accessibilityAddTraits(.isHeader)
+                Spacer()
+                Toggle("Bypass", isOn: Binding(
+                    get: { model.library?.isBypassed ?? false },
+                    set: { perform(.bypass($0)) }
+                ))
+                .toggleStyle(.checkbox)
+                .controlSize(.small)
+            }
+
+            VStack(spacing: 0) {
+                rows
+                Divider()
+                footer
+            }
+            .background(.primary.opacity(0.045), in: .rect(cornerRadius: 8))
+
+            if let name = model.library?.detachedName {
+                Text("Current preset · \(name)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            if let error = model.error {
+                Text(error)
+                    .font(.callout)
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+            }
+        }
+        .padding(14)
+        .frame(minWidth: 320, minHeight: 220)
+        .disabled(model.library == nil)
+    }
+
+    private var rows: some View {
+        let presets = model.library?.presets ?? []
+        return Group {
+            if presets.isEmpty {
+                Text("No presets")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 2) {
+                        ForEach(presets, id: \.number) { preset in
+                            let selected = preset.number == model.library?.selection
+                            Button { perform(.select(preset)) } label: {
+                                HStack {
+                                    Text(preset.name).font(.callout).lineLimit(1)
+                                    Spacer()
+                                    if selected {
+                                        Image(systemName: "checkmark")
+                                            .font(.caption.weight(.semibold))
+                                            .accessibilityHidden(true)
+                                    }
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .contentShape(.rect)
+                            }
+                            .buttonStyle(.plain)
+                            .background(selected ? Color.primary.opacity(0.08) : .clear,
+                                        in: .rect(cornerRadius: 6))
+                            .accessibilityAddTraits(selected ? .isSelected : [])
+                            .accessibilityIdentifier("spatial-preset.\(preset.number)")
+                        }
+                    }
+                    .padding(6)
+                }
+            }
+        }
+        .frame(minHeight: 88, maxHeight: .infinity)
+        .accessibilityIdentifier("spatial-preset-list")
+    }
+
+    private var footer: some View {
+        let selected = model.library?.presets.first { $0.number == model.library?.selection }
+        return HStack(spacing: 8) {
+            Button("Import…") { perform(.importWAV) }
+                .buttonStyle(.borderedProminent)
+            Spacer()
+            Menu {
+                if let selected {
+                    Button("Rename…") { perform(.rename(selected)) }
+                    Button("Delete…", role: .destructive) { perform(.delete(selected)) }
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+            }
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .disabled(selected == nil)
+            .accessibilityLabel("Manage selected preset")
+        }
+        .controlSize(.small)
+        .padding(10)
     }
 }

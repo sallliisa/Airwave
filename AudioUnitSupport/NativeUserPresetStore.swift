@@ -62,8 +62,40 @@ nonisolated struct NativeUserPresetStore {
         preset.number = number
     }
 
+    func seedDefaults(_ defaults: () throws -> [(name: String, state: [String: Any])],
+                      matches: ([String: Any], [String: Any]) -> Bool) throws {
+        let marker = folder.appending(path: ".initial-presets")
+        guard !FileManager.default.fileExists(atPath: marker.path) else { return }
+        try withWriteLock {
+            guard !FileManager.default.fileExists(atPath: marker.path) else { return }
+            for (baseName, state) in try defaults() {
+                let entries = self.entries
+                if entries.contains(where: { entry in
+                    guard let saved = try? self.state(at: entry.file) else { return false }
+                    return matches(state, saved)
+                }) { continue }
+
+                var name = baseName
+                var suffix = 2
+                while entries.contains(where: { equalNames($0.descriptor.name, name) }) {
+                    name = "\(baseName) (\(suffix))"
+                    suffix += 1
+                }
+                let data = try PropertyListSerialization.data(fromPropertyList: state, format: .binary, options: 0)
+                let record = Record(name: name, number: numberForNewPreset(-1, among: entries), state: data)
+                let file = folder.appending(path: UUID().uuidString + ".plist", directoryHint: .notDirectory)
+                try write(record, to: file)
+            }
+            try Data().write(to: marker, options: .atomic)
+        }
+    }
+
     func state(for preset: AUAudioUnitPreset) throws -> [String: Any] {
-        let record = try decode(Record.self, at: locate(preset).file)
+        try state(at: locate(preset).file)
+    }
+
+    private func state(at file: URL) throws -> [String: Any] {
+        let record = try decode(Record.self, at: file)
         guard let state = try PropertyListSerialization.propertyList(from: record.state, format: nil) as? [String: Any] else {
             throw CocoaError(.fileReadCorruptFile)
         }
