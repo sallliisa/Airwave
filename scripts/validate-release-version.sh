@@ -24,4 +24,8 @@ if [[ -n $latest ]]; then
   (( build_number > latest_build )) || fail "$version must be greater than $latest"
 fi
 
-printf 'VERSION=%s\nBUILD_NUMBER=%s\nTAG=v%s\n' "$version" "$build_number" "$version"
+scheme=Airwave
+if (( 10#$major >= 3 )); then
+  scheme=Airwave3
+fi
+printf 'VERSION=%s\nBUILD_NUMBER=%s\nTAG=v%s\nSCHEME=%s\n' "$version" "$build_number" "$version" "$scheme"

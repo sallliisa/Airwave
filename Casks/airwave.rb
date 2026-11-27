@@ -5,7 +5,7 @@ cask "airwave" do
   url "https://github.com/sallliisa/Airwave/releases/download/v#{version}/Airwave_v#{version}.zip",
       verified: "github.com/sallliisa/Airwave/"
   name "Airwave"
-  desc "System-wide spatial audio for macOS"
+  desc "System-wide audio effects and per-app volume for macOS"
   homepage "https://github.com/sallliisa/Airwave"
 
   livecheck do
@@ -18,7 +18,7 @@ cask "airwave" do
   app "Airwave.app"
 
   caveats <<~EOS
-    Airwave requires System Audio Capture permission and a stereo HRIR preset.
+    Airwave requires System Audio Capture permission to process system audio.
     Output selection and volume remain controlled by macOS.
   EOS
 

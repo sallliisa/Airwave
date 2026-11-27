@@ -65,22 +65,37 @@ jobs:
         run: xcodebuild -version
 
       - name: Resolve packages
-        run: xcodebuild -resolvePackageDependencies -project Airwave.xcodeproj -scheme Airwave -derivedDataPath build/ReleaseDerivedData
+        env:
+          SCHEME: ${{ steps.version.outputs.SCHEME }}
+        run: xcodebuild -resolvePackageDependencies -project Airwave.xcodeproj -scheme "$SCHEME" -derivedDataPath build/ReleaseDerivedData
 
       - name: Test
-        run: xcodebuild -project Airwave.xcodeproj -scheme Airwave -configuration Debug -destination 'platform=macOS' -derivedDataPath build/ReleaseDerivedData CODE_SIGNING_ALLOWED=NO test
+        env:
+          SCHEME: ${{ steps.version.outputs.SCHEME }}
+        run: |
+          args=(-project Airwave.xcodeproj -scheme "$SCHEME" -configuration Debug -destination 'platform=macOS' -derivedDataPath build/ReleaseDerivedData)
+          if [[ "$SCHEME" == Airwave3 ]]; then
+            TEST_RUNNER_SYSTEM_AUDIO_HOST_TEST_PROFILE="$RUNNER_TEMP/airwave-test-profiles.plist" \
+              xcodebuild "${args[@]}" -parallel-testing-enabled NO test
+          else
+            xcodebuild "${args[@]}" CODE_SIGNING_ALLOWED=NO test
+          fi
+          xcodebuild "${args[@]}" clean
 
       - name: Analyze
-        run: xcodebuild -project Airwave.xcodeproj -scheme Airwave -configuration Release -destination 'platform=macOS' -derivedDataPath build/ReleaseDerivedData CODE_SIGNING_ALLOWED=NO analyze
+        env:
+          SCHEME: ${{ steps.version.outputs.SCHEME }}
+        run: xcodebuild -project Airwave.xcodeproj -scheme "$SCHEME" -configuration Release -destination 'platform=macOS' -derivedDataPath build/ReleaseDerivedData CODE_SIGNING_ALLOWED=NO analyze
 
       - name: Build universal release
         env:
+          SCHEME: ${{ steps.version.outputs.SCHEME }}
           VERSION: ${{ steps.version.outputs.VERSION }}
           BUILD_NUMBER: ${{ steps.version.outputs.BUILD_NUMBER }}
         run: |
           xcodebuild archive \
             -project Airwave.xcodeproj \
-            -scheme Airwave \
+            -scheme "$SCHEME" \
             -configuration Release \
             -derivedDataPath build/ReleaseDerivedData \
             -archivePath "$PWD/build/Airwave.xcarchive" \
@@ -126,7 +141,9 @@ jobs:
           done
           codesign --verify --strict --verbose=2 "$app"
           test -f "$app/Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle"
-          scripts/verify-bundled-presets.sh "$app"
+          if (( ${VERSION%%.*} < 3 )); then
+            scripts/verify-bundled-presets.sh "$app"
+          fi
 
       - name: Prepare release notes
         env:
@@ -175,8 +192,8 @@ jobs:
         run: |
           lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
           products=("$PWD/build/ReleaseDerivedData/Build" "$PWD/build/Airwave.xcarchive")
-          find "${products[@]}" -type d -name AirwaveSpatialAU.appex -prune -exec pluginkit -r {} \;
-          find "${products[@]}" -type d -name Airwave.app -prune -exec "$lsregister" -u {} \;
+          find "${products[@]}" -type d \( -name AirwaveSpatialAU.appex -o -name AirwaveEqualizerAU.appex \) -prune -exec pluginkit -r {} \;
+          find "${products[@]}" -type d \( -name Airwave.app -o -name 'Airwave Preview.app' \) -prune -exec "$lsregister" -u {} \;
           rm -R "${products[@]}"
 
       - name: Verify Audio Unit in release ZIP

@@ -16,6 +16,11 @@
   <img src="docs/images/Bento.png" alt="Airwave Bento Infographics" />
 </div>
 
+
+## Airwave 3 development
+
+The `Airwave3` scheme builds the new host with the existing Airwave branding, Spatial, and Equalizer. The `Airwave` scheme builds the previous standalone app for compatibility checks. See the [Airwave 3 release rehearsal](docs/airwave-3-release.md) for build and upgrade checks.
+
 ## What Airwave does
 
 Airwave captures audio from your Mac, applies a spatial audio profile, and plays the result through your current output. It uses HRIR convolution to create a wider, more speaker-like listening experience in headphones.

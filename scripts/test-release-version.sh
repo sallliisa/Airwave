@@ -17,6 +17,8 @@ expect_failure() {
 
 expect_success 1.2.0 v1.1.1
 expect_success 2.0.0 v1.999.999
+test "$("$validator" 2.2.1 v2.2.0 | sed -n 's/^SCHEME=//p')" = Airwave
+test "$("$validator" 3.0.0 v2.2.0 | sed -n 's/^SCHEME=//p')" = Airwave3
 expect_failure 1.1.1 v1.1.1
 expect_failure 1.1.0 v1.1.1
 expect_failure v1.2.0 v1.1.1
