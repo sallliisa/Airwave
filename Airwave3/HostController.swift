@@ -120,7 +120,8 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
             profiles = try store.load()
         } catch {
             storageReadOnly = true
-            storageError = "Saved chains could not be read. Their file is preserved."
+            storageError = (error as? LegacyAirwaveUpgrade.Failure)?.errorDescription
+                ?? "Saved chains could not be read. Their file is preserved."
         }
         rescan()
         refreshMixerRows()

@@ -12,6 +12,16 @@ struct ComponentID: Codable, Hashable {
         manufacturer = description.componentManufacturer
     }
 
+    static let airwaveSpatial = effect(subtype: 0x41777370, manufacturer: 0x41777665) // Awsp/Awve
+    static let airwaveEqualizer = effect(subtype: 0x45714150, manufacturer: 0x536E6866) // EqAP/Snhf
+
+    private static func effect(subtype: OSType, manufacturer: OSType) -> Self {
+        Self(AudioComponentDescription(
+            componentType: kAudioUnitType_Effect, componentSubType: subtype, componentManufacturer: manufacturer,
+            componentFlags: 0, componentFlagsMask: 0
+        ))
+    }
+
     var description: AudioComponentDescription {
         AudioComponentDescription(
             componentType: type,
@@ -50,17 +60,21 @@ struct DeviceProfile: Codable, Equatable {
     var name: String
     var sampleRate: Double?
     var slots: [EffectSlot]
+    var outputChannels: StereoOutputChannels? = nil
 }
 
 struct ProfileStore {
     private let url: URL
+    private let upgradeFailure: LegacyAirwaveUpgrade.Failure?
 
-    init(url: URL = URL.applicationSupportDirectory
-        .appending(path: "System Audio Host/profiles.plist")) {
+    init(url: URL = URL.applicationSupportDirectory.appending(path: "Airwave/Effect Chains.plist"),
+         upgradeFailure: LegacyAirwaveUpgrade.Failure? = nil) {
         self.url = url
+        self.upgradeFailure = upgradeFailure
     }
 
     func load() throws -> [String: DeviceProfile] {
+        if let upgradeFailure { throw upgradeFailure }
         let data: Data
         do {
             data = try Data(contentsOf: url)
@@ -78,6 +92,7 @@ struct ProfileStore {
     }
 
     func save(_ profiles: [String: DeviceProfile]) throws {
+        if let upgradeFailure { throw upgradeFailure }
         let encoder = PropertyListEncoder()
         encoder.outputFormat = .binary
         let data = try encoder.encode(profiles)

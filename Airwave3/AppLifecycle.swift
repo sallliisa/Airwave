@@ -82,6 +82,16 @@ final class ShellModel: ObservableObject {
         defaults.set(value, forKey: Self.menuBarKey)
     }
 
+    static func applyUpgradePreferences(to defaults: UserDefaults, completed: Bool?, showsMenuBar: Bool?) {
+        if let completed, defaults.object(forKey: setupCompletedKey) == nil {
+            defaults.set(completed, forKey: setupCompletedKey)
+        }
+        if let showsMenuBar, defaults.object(forKey: menuBarKey) == nil {
+            defaults.set(showsMenuBar, forKey: menuBarKey)
+        }
+        defaults.set(true, forKey: initialLoginPreferenceKey)
+    }
+
     func applyInitialLoginPreference() {
         guard !defaults.bool(forKey: Self.initialLoginPreferenceKey) else { return }
         setLaunchAtLogin(true)

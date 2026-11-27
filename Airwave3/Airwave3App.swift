@@ -226,10 +226,26 @@ struct HostLaunchEnvironment {
             return
         }
 #endif
-        defaults = .standard
-        store = ProfileStore()
+        let preferences = UserDefaults.standard
+        let destination = ProfileStore()
+        defaults = preferences
         isIsolated = false
-        shell = ShellModel(defaults: defaults, loginItem: SMAppService.mainApp)
+        let migrationFailed: Bool
+        do {
+            try LegacyAirwaveUpgrade.migrate(defaults: preferences, store: destination) {
+                try LegacyAirwaveUpgrade.installedSource(defaults: preferences)
+            }
+            store = destination
+            migrationFailed = false
+        } catch {
+            let failure = error as? LegacyAirwaveUpgrade.Failure
+                ?? .init(reason: "Your old settings are preserved. Reopen Airwave to retry.")
+            store = ProfileStore(upgradeFailure: failure)
+            ShellModel.applyUpgradePreferences(to: preferences, completed: nil, showsMenuBar: nil)
+            migrationFailed = true
+        }
+        shell = ShellModel(defaults: preferences, loginItem: SMAppService.mainApp,
+                           initialSetupCompleted: migrationFailed)
     }
 }
 
