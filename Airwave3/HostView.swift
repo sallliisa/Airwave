@@ -1386,6 +1386,7 @@ private struct EffectActionAppearance: ViewModifier {
     }
 }
 
+@MainActor
 private struct EffectRow: View {
     private enum Target: Hashable { case card, power, actions, issue }
 
@@ -1404,6 +1405,7 @@ private struct EffectRow: View {
     let endDrag: (CGPoint) -> Void
     let canDrag: Bool
     @State private var hovered: Target?
+    @State private var menuAnchor = NSView(frame: .zero)
     @FocusState private var focus: Target?
 
     private let actionSpacing: CGFloat = 2
@@ -1498,29 +1500,40 @@ private struct EffectRow: View {
     }
 
     private var moreActions: some View {
-        Menu {
-            Button("Move Up") { move(-1) }.disabled(!canMoveUp)
-            Button("Move Down") { move(1) }.disabled(!canMoveDown)
-            Divider()
-            Button("Remove Effect", role: .destructive, action: remove)
-        } label: {
-            ZStack {
-                Color.clear
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 12, weight: .medium))
-            }
-            .frame(width: EffectActionAppearance.size, height: EffectActionAppearance.size)
-            .contentShape(.rect)
+        Button(action: showActionsMenu) {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 12, weight: .medium))
+                .modifier(EffectActionAppearance(hovered: hovered == .actions, focused: focus == .actions))
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .modifier(EffectActionAppearance(hovered: hovered == .actions, focused: focus == .actions))
+        .buttonStyle(.plain)
+        .background {
+            EffectMenuAnchor(view: menuAnchor)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
         .focused($focus, equals: .actions)
         .focusEffectDisabled()
         .help("More actions for \(slot.name)")
         .accessibilityLabel("More actions for \(slot.name)")
         .accessibilityIdentifier("effect-actions")
+    }
+
+    private func showActionsMenu() {
+        guard menuAnchor.window != nil else { return }
+        let actions = EffectMenuActions(move: move, remove: remove)
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.addItem(actions.item("Move Up", action: #selector(EffectMenuActions.moveUp), enabled: canMoveUp))
+        menu.addItem(actions.item("Move Down", action: #selector(EffectMenuActions.moveDown), enabled: canMoveDown))
+        menu.addItem(.separator())
+        let removeItem = actions.item("Remove Effect", action: #selector(EffectMenuActions.removeEffect))
+        removeItem.attributedTitle = NSAttributedString(string: removeItem.title, attributes: [.foregroundColor: NSColor.systemRed])
+        menu.addItem(removeItem)
+
+        let bottom = menuAnchor.isFlipped ? menuAnchor.bounds.maxY : menuAnchor.bounds.minY
+        withExtendedLifetime(actions) {
+            _ = menu.popUp(positioning: nil, at: NSPoint(x: 0, y: bottom), in: menuAnchor)
+        }
     }
 
     private func updateHover(_ point: CGPoint?, width: CGFloat) {
@@ -1560,6 +1573,34 @@ private struct EffectRow: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+}
+
+private struct EffectMenuAnchor: NSViewRepresentable {
+    let view: NSView
+
+    func makeNSView(context: Context) -> NSView { view }
+    func updateNSView(_ view: NSView, context: Context) {}
+}
+
+private final class EffectMenuActions: NSObject {
+    let move: (Int) -> Void
+    let remove: () -> Void
+
+    init(move: @escaping (Int) -> Void, remove: @escaping () -> Void) {
+        self.move = move
+        self.remove = remove
+    }
+
+    func item(_ title: String, action: Selector, enabled: Bool = true) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        item.isEnabled = enabled
+        return item
+    }
+
+    @objc func moveUp() { move(-1) }
+    @objc func moveDown() { move(1) }
+    @objc func removeEffect() { remove() }
 }
 
 private struct EffectCardPointer: NSViewRepresentable {

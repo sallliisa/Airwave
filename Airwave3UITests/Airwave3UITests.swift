@@ -243,11 +243,13 @@ final class Airwave3UITests: XCTestCase {
             XCTAssertTrue(bypasses.element(boundBy: 1).label.hasPrefix("Bypass "))
             XCTAssertFalse(app.windows["AULowpass"].exists)
 
-            let more = app.descendants(matching: .any).matching(identifier: "effect-actions").firstMatch
-            more.coordinate(withNormalizedOffset: CGVector(dx: 0.18, dy: 0.22)).click()
-            XCTAssertTrue(app.menuItems["Move Down"].waitForExistence(timeout: 4))
-            app.typeKey(.escape, modifierFlags: [])
-            XCTAssertFalse(app.windows["AULowpass"].exists)
+            let rightEdge = cards.element(boundBy: 0).coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5))
+            for offset in [CGVector(dx: -36, dy: -11), CGVector(dx: -12, dy: 11)] {
+                rightEdge.withOffset(offset).click()
+                XCTAssertTrue(app.menuItems["Move Down"].waitForExistence(timeout: 4))
+                app.typeKey(.escape, modifierFlags: [])
+                XCTAssertFalse(app.windows["AULowpass"].exists)
+            }
 
             let source = cards.element(boundBy: 0)
                 .coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.4))
