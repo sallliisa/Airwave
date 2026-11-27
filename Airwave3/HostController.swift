@@ -138,7 +138,7 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
             let saved = try store.load()
             profiles = saved.mapValues { profile in
                 var profile = profile
-                profile.slots = profile.slots.map { $0.adoptingSpatialBypass() }
+                profile.slots = profile.slots.map { $0.updatingManufacturer().adoptingSpatialBypass() }
                 return profile
             }
             if profiles != saved { persistProfiles() }

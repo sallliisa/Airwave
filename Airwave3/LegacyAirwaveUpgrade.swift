@@ -127,7 +127,7 @@ struct LegacyAirwaveUpgrade {
             slots.append(slot(.airwaveSpatial, name: "Spatial", manufacturer: "Airwave", presetID: id, entries: entries))
         }
         if let id = profile.equalizerPresetID {
-            slots.append(slot(.airwaveEqualizer, name: "Equalizer", manufacturer: "South Neuhof", presetID: id, entries: entries))
+            slots.append(slot(.airwaveEqualizer, name: "Equalizer", manufacturer: "Airwave", presetID: id, entries: entries))
         }
         return slots
     }

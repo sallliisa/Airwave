@@ -19,6 +19,7 @@ final class LegacyAirwaveUpgradeTests: XCTestCase {
         let speakers = try XCTUnwrap(saved["speakers"])
         XCTAssertEqual(speakers.outputChannels, StereoOutputChannels(left: 4, right: 3))
         XCTAssertEqual(speakers.slots.map(\.component), [.airwaveSpatial, .airwaveEqualizer])
+        XCTAssertEqual(speakers.slots.map(\.manufacturer), ["Airwave", "Airwave"])
         let spatial = try document(speakers.slots[0])
         XCTAssertEqual(spatial["AirwaveSpatial.presetName"] as? String, "Personal HRIR")
         XCTAssertEqual(spatial["AirwaveSpatial.impulseResponse"] as? Data, try Data(contentsOf: fixture.wavURL))

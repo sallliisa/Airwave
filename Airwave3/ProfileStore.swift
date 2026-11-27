@@ -15,6 +15,10 @@ struct ComponentID: Codable, Hashable {
     static let airwaveSpatial = effect(subtype: 0x41777370, manufacturer: 0x41777665) // Awsp/Awve
     static let airwaveEqualizer = effect(subtype: 0x45714150, manufacturer: 0x536E6866) // EqAP/Snhf
 
+    func manufacturerDisplayName(fallback: String) -> String {
+        self == .airwaveEqualizer ? "Airwave" : fallback
+    }
+
     private static func effect(subtype: OSType, manufacturer: OSType) -> Self {
         Self(AudioComponentDescription(
             componentType: kAudioUnitType_Effect, componentSubType: subtype, componentManufacturer: manufacturer,
@@ -43,7 +47,7 @@ struct EffectSlot: Identifiable, Codable, Equatable {
     let id: UUID
     let component: ComponentID
     let name: String
-    let manufacturer: String
+    private(set) var manufacturer: String
     var isBypassed: Bool
     var state: Data?
     var migrationIssue: String?
@@ -54,6 +58,14 @@ struct EffectSlot: Identifiable, Codable, Equatable {
         name = effect.name
         manufacturer = effect.manufacturer
         isBypassed = false
+    }
+
+    func updatingManufacturer() -> Self {
+        let name = component.manufacturerDisplayName(fallback: manufacturer)
+        guard name != manufacturer else { return self }
+        var slot = self
+        slot.manufacturer = name
+        return slot
     }
 
     func adoptingSpatialBypass() -> Self {

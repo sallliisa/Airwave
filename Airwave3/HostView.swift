@@ -1429,12 +1429,7 @@ private struct EffectRow: View {
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(slot.isBypassed ? Color.secondary : Color.primary)
                     .lineLimit(1)
-                if slot.isBypassed {
-                    Image(systemName: "minus.circle.fill")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .accessibilityHidden(true)
-                }
+                if slot.isBypassed { EffectBypassIcon() }
             }
             if !slot.manufacturer.isEmpty {
                 Text(slot.manufacturer)
@@ -1443,6 +1438,29 @@ private struct EffectRow: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct EffectBypassIcon: View {
+    private let slash = Path { path in
+        path.move(to: CGPoint(x: 2, y: 1))
+        path.addLine(to: CGPoint(x: 13, y: 13))
+    }
+
+    var body: some View {
+        Image(systemName: "slider.horizontal.3")
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(.secondary)
+            .frame(width: 15, height: 14)
+            .overlay {
+                slash.stroke(.black, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .blendMode(.destinationOut)
+            }
+            .compositingGroup()
+            .overlay {
+                slash.stroke(Color.secondary, style: StrokeStyle(lineWidth: 1.15, lineCap: .round))
+            }
+            .accessibilityHidden(true)
     }
 }
 

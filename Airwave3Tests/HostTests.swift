@@ -56,6 +56,29 @@ final class SystemAudioHostTests: XCTestCase {
     }
 
     @MainActor
+    func testSavedEqualizerGetsAirwaveAuthorAndKeepsItsPreset() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ProfileStore(url: root.appending(path: "profiles.plist"))
+        var slot = EffectSlot(EffectComponent(id: .airwaveEqualizer, name: "Equalizer", manufacturer: "South Neuhof"))
+        slot.state = Data([7, 12])
+        slot.isBypassed = true
+        try store.save(["headphones": DeviceProfile(name: "Headphones", slots: [slot])])
+
+        let host = HostController(store: store, currentOutput: { throw CocoaError(.fileNoSuchFile) },
+                                  availableOutputs: { [] })
+        defer { host.shutdown() }
+
+        XCTAssertEqual(host.effectSlot(slot.id, for: "headphones")?.manufacturer, "Airwave")
+        let saved = try XCTUnwrap(store.load()["headphones"]?.slots.first)
+        XCTAssertEqual(saved.id, slot.id)
+        XCTAssertEqual(saved.component, slot.component)
+        XCTAssertEqual(saved.manufacturer, "Airwave")
+        XCTAssertEqual(saved.state, slot.state)
+        XCTAssertTrue(saved.isBypassed)
+    }
+
+    @MainActor
     func testSavedSpatialCheckboxBecomesHostBypassWithoutChangingThePreset() throws {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

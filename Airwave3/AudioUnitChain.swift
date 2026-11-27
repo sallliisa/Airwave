@@ -47,7 +47,8 @@ struct EffectCatalog {
                 let name = component.name.hasPrefix(prefix)
                     ? String(component.name.dropFirst(prefix.count))
                     : component.name
-                effects[id] = EffectComponent(id: id, name: name, manufacturer: component.manufacturerName)
+                let author = id.manufacturerDisplayName(fallback: component.manufacturerName)
+                effects[id] = EffectComponent(id: id, name: name, manufacturer: author)
             }
         }
         return effects.values.sorted {
