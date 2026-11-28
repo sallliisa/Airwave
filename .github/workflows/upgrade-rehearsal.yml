@@ -105,15 +105,15 @@ jobs:
           mkdir -p build/encrypted
           cat > "$RUNNER_TEMP/rehearsal-public.pem" <<'PEM'
           -----BEGIN PUBLIC KEY-----
-          MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEA4kxrmp2U7duiAOSKODFO
-          hYCPzm6+QuUx9vmUWi/2vaV/PtbO8RsR0QSbXQVQ221jvDOPfYfjHgaspRT2493r
-          WU+uVTmTI5TbClcbUk3xABJMfYBv+rjQ7o2NB3AqYm8tdh5geVwIckglVZ/y/kcm
-          Mygczo8PCV5tRxpra8UQEFlYwjiHN7MkiJcOn1viAs4yApto+IY31oaz2gZfJ6U6
-          WGxTzFVxuMDVpoKxYGUEzkXBLY6WVgQO2qDTkhFMIKy4sGV5LhxVr6xphqkadZQh
-          uyi1d1JM+nuoeGrmcTuKoy/OOy83MGO2XzHZMgIurWq6xFOvsqSAeFk0n55KIeO/
-          Y48aVOlUqLNYEJDX8AvjF7kiPe0DLiGzxpQu/AP9ftpemWAVWaT6pF9L+uuVLYws
-          g+xudhr+8RLL9WO8iJL+BYQm5jujCsMazLOiPtjfT6Rj2XfNi7dRuYUEz2Ix2IJU
-          nKB2b/6SqC55Ijn5KI5tOXFBbBhjFHzfAL9zOmWmbcARAgMBAAE=
+          MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAuXXNS8fWjqGGPPe1MJPT
+          LLyB/EUnIRAM1STrIIG6LhPcu+mmO6h/cGtB/QtGdymBIxdZZt/TKbXQ7nTx7y+1
+          O7LqdLSoTgyUF3NzLSh9G5iFxtlbAyyEUmww72jF5GUdR7TTe3hBoSd2AU9ri+H0
+          zwqeZh2tTvsmhMKVBlAAaO8utOwEeQGwwcG/3nVvW4HGO9vKsDnmGkfn04tO13up
+          mQOGFeCRIDmCSA8an0jrAU5JuNPvuurn1G0qnmG07G7/eyZ7MRarNcjiI3cx7HlZ
+          p1j71uypYLCMJkPN4AOocOJ2elvcTKj4Xiju5jKXcp81sEMl6A78/yswd9T/zEYd
+          JSrf1IfC/l+uB8DCH4Y7Pr+DkFEw7IjkAj1mbpFoKwx/y70V4+J7ajVu1x+Rj/6I
+          gMTNWVeQjvRZtRA1UYHmKQGpjTTudmAD8CdYCtCgU6jFo69cqJ5JV8IPO+6HGAnD
+          4T1ALLWPPVOxGQsdqEZKiDvwreg9e37ha8yB/d+nCSlpAgMBAAE=
           -----END PUBLIC KEY-----
           PEM
           openssl rand -hex 32 > "$RUNNER_TEMP/rehearsal-passphrase"
