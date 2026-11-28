@@ -6,7 +6,7 @@
 </div>
 
 <p align="center">
-  <img src="docs/images/v3-effects.png" alt="Effects tab showing the saved effect chain for an audio output" width="760" />
+  <img src="docs/images/Bento.png" alt="Airwave feature bento grid" />
 </p>
 
 ## What Airwave does
@@ -67,6 +67,10 @@ Choose Airwave in **All Publishers** to find Spatial and Equalizer. You can also
 Choose whether Airwave should launch at login and whether it should appear in the menu bar. **Show in Menu Bar** starts enabled on a fresh setup. Both options are also available in Settings. Click **Finish Setup** to open the main window.
 
 ## Effect chains
+
+<p align="center">
+  <img src="docs/images/v3-effects.png" alt="Effects tab showing the saved effect chain for an audio output" width="760" />
+</p>
 
 ### Add, open, or reorder an effect
 
