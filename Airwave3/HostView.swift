@@ -1136,6 +1136,7 @@ struct EffectChain: View {
     @State private var viewport = CGRect.zero
     @State private var scrollY: CGFloat = 0
     @State private var scrollPosition = ScrollPosition()
+    @State private var hover: EffectRow.Hover?
 
     private let rowHeight = HostAppearance.audioRowHeight
     private var slots: [EffectSlot] { host.editingSlots }
@@ -1153,6 +1154,7 @@ struct EffectChain: View {
                         slot: slot,
                         issue: host.editingSlotIssues[slot.id],
                         isLifted: isDragged && !reduceMotion,
+                        isFirst: index == 0,
                         hasDivider: index != slots.count - 1,
                         canMoveUp: index > 0,
                         canMoveDown: index < slots.count - 1,
@@ -1163,7 +1165,8 @@ struct EffectChain: View {
                         startDrag: { start, location in startDrag(slot.id, from: start, at: location) },
                         updateDrag: { drag?.location = $0 },
                         endDrag: endDrag,
-                        canDrag: slots.count > 1
+                        canDrag: slots.count > 1,
+                        hover: $hover
                     )
                     .offset(y: rowPosition(index, source: source, target: target))
                     .zIndex(liftedID == slot.id ? 1 : 0)
@@ -1186,10 +1189,14 @@ struct EffectChain: View {
         }
         .defaultScrollAnchor(.top)
         .scrollPosition($scrollPosition)
-        .onScrollGeometryChange(for: CGFloat.self, of: { $0.visibleRect.minY }) { _, y in scrollY = y }
+        .onScrollGeometryChange(for: CGFloat.self, of: { $0.visibleRect.minY }) { _, y in
+            scrollY = y
+            hover = nil
+        }
         .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { viewport = $0 }
         .task(id: scrollStep) { await scrollWhileDragging(step: scrollStep) }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            hover = nil
             finishDrag()
         }
         .onDisappear { removeEscapeMonitor() }
@@ -1294,11 +1301,17 @@ private struct HostActionAppearance: ViewModifier {
 
 @MainActor
 private struct EffectRow: View {
-    private enum Target: Hashable { case card, power, actions, issue }
+    enum Target: Hashable { case card, power, actions, issue }
+
+    struct Hover: Equatable {
+        let slotID: UUID
+        let target: Target
+    }
 
     let slot: EffectSlot
     let issue: String?
     let isLifted: Bool
+    let isFirst: Bool
     let hasDivider: Bool
     let canMoveUp: Bool
     let canMoveDown: Bool
@@ -1310,11 +1323,20 @@ private struct EffectRow: View {
     let updateDrag: (CGPoint) -> Void
     let endDrag: (CGPoint) -> Void
     let canDrag: Bool
-    @State private var hovered: Target?
+    @Binding var hover: Hover?
     @FocusState private var focus: Target?
 
     private let actionSpacing: CGFloat = 2
     private let actionInset: CGFloat = 8
+    private var hovered: Target? { hover?.slotID == slot.id ? hover?.target : nil }
+    private var hoverShape: UnevenRoundedRectangle {
+        let top = isFirst ? HostAppearance.cornerRadius : 0
+        let bottom = hasDivider ? 0 : HostAppearance.cornerRadius
+        return UnevenRoundedRectangle(
+            topLeadingRadius: top, bottomLeadingRadius: bottom,
+            bottomTrailingRadius: bottom, topTrailingRadius: top
+        )
+    }
     private var showsPower: Bool { slot.migrationIssue == nil }
     private var actionsWidth: CGFloat {
         let count = CGFloat(1 + (showsPower ? 1 : 0) + (issue != nil ? 1 : 0))
@@ -1368,11 +1390,9 @@ private struct EffectRow: View {
         .background {
             if isLifted {
                 HostAppearance.raised
-            }
-            if isLifted || hovered == .card {
                 HostAppearance.hover
-                    .opacity(isLifted ? 1 : 0.55)
-                    .clipShape(.rect(cornerRadius: HostAppearance.cornerRadius))
+            } else if hovered == .card {
+                hoverShape.fill(HostAppearance.hover.opacity(0.55))
             }
         }
         .overlay(alignment: .bottom) {
@@ -1418,7 +1438,7 @@ private struct EffectRow: View {
 
     private func updateHover(_ point: CGPoint?, width: CGFloat) {
         guard let point else {
-            hovered = nil
+            if hover?.slotID == slot.id { hover = nil }
             return
         }
         let size = HostActionAppearance.size
@@ -1428,7 +1448,7 @@ private struct EffectRow: View {
         let control = abs(point.y - HostAppearance.audioRowHeight / 2) <= size / 2
             ? targets.enumerated().first { (step * CGFloat($0.offset)..<(step * CGFloat($0.offset) + size)).contains(x) }?.element
             : nil
-        hovered = control ?? .card
+        hover = Hover(slotID: slot.id, target: control ?? .card)
     }
 
     private var labels: some View {
@@ -1591,7 +1611,8 @@ private struct EffectCardPointer: NSViewRepresentable {
         }
 
         override func mouseMoved(with event: NSEvent) {
-            input?.hover(convert(event.locationInWindow, from: nil), bounds.width)
+            let point = convert(event.locationInWindow, from: nil)
+            input?.hover(visibleRect.contains(point) ? point : nil, bounds.width)
         }
 
         override func mouseDown(with event: NSEvent) {
