@@ -6,6 +6,9 @@ enum HostAppearance {
     static let raised = Color(white: 29.0 / 255)
     static let hover = Color.white.opacity(0.08)
     static let cornerRadius: CGFloat = 8
+    static let audioScrollClip = UnevenRoundedRectangle(
+        topLeadingRadius: cornerRadius, topTrailingRadius: cornerRadius
+    )
     static let audioPageSpacing: CGFloat = 14
     static let audioSectionHeaderHeight: CGFloat = 28
     static let audioRowHeight: CGFloat = 52
@@ -378,6 +381,7 @@ private struct HostEffectsPage: View {
                     EffectChain(host: host)
                         .id(host.editingDeviceUID)
                         .contentMargins(.bottom, 24, for: .scrollContent)
+                        .clipShape(HostAppearance.audioScrollClip)
                 }
             }
         }
@@ -713,6 +717,7 @@ private struct HostMixerPage: View {
                         }
                     }
                     .contentMargins(.bottom, 24, for: .scrollContent)
+                    .clipShape(HostAppearance.audioScrollClip)
                 }
             }
             .accessibilityIdentifier("app-mixer-list")
