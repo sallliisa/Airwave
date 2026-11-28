@@ -1213,10 +1213,8 @@ struct EffectChain: View {
     }
 
     private func insertionIndex(for drag: Drag, from source: Int) -> Int {
-        let sourceCenter = CGFloat(source) + 0.5
-        let center = sourceCenter + drag.displacement(at: scrollY) / rowHeight
-        let crossed = center < sourceCenter ? center + 0.5 : center - 0.5
-        return min(slots.count - 1, max(0, Int(floor(crossed))))
+        let rowsMoved = Int((drag.displacement(at: scrollY) / rowHeight).rounded())
+        return min(slots.count - 1, max(0, source + rowsMoved))
     }
 
     private var scrollStep: CGFloat {
@@ -1614,6 +1612,8 @@ private struct EffectCardPointer: NSViewRepresentable {
             let point = convert(event.locationInWindow, from: nil)
             input?.hover(visibleRect.contains(point) ? point : nil, bounds.width)
         }
+
+        override var mouseDownCanMoveWindow: Bool { false }
 
         override func mouseDown(with event: NSEvent) {
             press = location(event)

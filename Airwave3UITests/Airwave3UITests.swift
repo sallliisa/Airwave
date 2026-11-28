@@ -131,7 +131,7 @@ final class Airwave3UITests: XCTestCase {
                 XCTAssertTrue(reset.waitForExistence(timeout: 4))
                 XCTAssertFalse(remove.exists)
                 reset.click()
-                app.buttons["Reset Effects"].click()
+                app.windows["Airwave"].sheets.buttons["Reset Effects"].click()
                 XCTAssertTrue(app.staticTexts["No effects yet"].waitForExistence(timeout: 4))
             }
 
@@ -147,7 +147,7 @@ final class Airwave3UITests: XCTestCase {
             actions.click()
             XCTAssertTrue(remove.waitForExistence(timeout: 4))
             remove.click()
-            app.buttons["Remove Saved Profile"].click()
+            app.windows["Airwave"].sheets.buttons["Remove Saved Profile"].click()
             XCTAssertNotEqual(picker.value as? String, "Test Headphones")
             let data = try Data(contentsOf: profile)
             let saved = try XCTUnwrap(PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any])
