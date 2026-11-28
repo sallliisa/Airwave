@@ -74,6 +74,31 @@ final class LiveEffect {
     ) async throws -> LiveEffect {
         let unit = try await instantiate(slot.component)
         try Task.checkCancellation()
+        let preparation = Task.detached(priority: .userInitiated) {
+            try Task.checkCancellation()
+            return try PreparedEffect(effect: prepare(
+                unit, slot: slot, sampleRate: sampleRate, maximumFrames: maximumFrames,
+                spatialLayout: spatialLayout, equalizerOutput: equalizerOutput
+            ))
+        }
+        return try await withTaskCancellationHandler {
+            let effect = try await preparation.value.effect
+            try Task.checkCancellation()
+            return effect
+        } onCancel: {
+            preparation.cancel()
+        }
+    }
+
+    // The worker exclusively owns the Audio Unit until its render resources are ready.
+    private struct PreparedEffect: @unchecked Sendable {
+        let effect: LiveEffect
+    }
+
+    private static func prepare(
+        _ unit: AUAudioUnit, slot: EffectSlot, sampleRate: Double, maximumFrames: UInt32,
+        spatialLayout: InputLayout?, equalizerOutput: (uid: String, name: String, channelCount: Int?)?
+    ) throws -> LiveEffect {
         guard unit.inputBusses.count == 1, unit.outputBusses.count == 1 else {
             throw EffectError.incompatibleBuses
         }

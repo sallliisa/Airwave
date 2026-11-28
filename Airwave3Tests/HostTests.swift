@@ -358,6 +358,33 @@ final class SystemAudioHostTests: XCTestCase {
     }
 
     @MainActor
+    func testCaptureCheckKeepsHostResponsiveWhileCoreAudioWaits() async throws {
+        let id = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: id))
+        defaults.set(false, forKey: "ProcessingEnabled")
+        defer { defaults.removePersistentDomain(forName: id) }
+        let output = OutputDevice(id: 42, uid: "speakers", name: "Speakers", sampleRate: 48_000)
+        let host = HostController(
+            store: ProfileStore(url: FileManager.default.temporaryDirectory.appending(path: id)),
+            defaults: defaults, currentOutput: { output }, availableOutputs: { [output] },
+            makeVerificationRoute: { _, _, _ in
+                XCTAssertFalse(Thread.isMainThread, "The HAL can wait for permission or a device on this call.")
+                Thread.sleep(forTimeInterval: 0.25)
+                throw SystemAudioRouteError.permissionDenied
+            }
+        )
+        defer { host.shutdown() }
+
+        host.checkCapturePermission()
+        XCTAssertEqual(host.captureCheck, .checking, "Starting the audio test must return before Core Audio answers.")
+        let deadline = Date().addingTimeInterval(2)
+        while host.captureCheck == .checking, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(host.captureCheck, .failed(SystemAudioRouteError.permissionDenied.localizedDescription))
+    }
+
+    @MainActor
     func testLiveAirwaveRoute() async throws {
         let environment = ProcessInfo.processInfo.environment
         try XCTSkipUnless(environment["SYSTEM_AUDIO_HOST_LIVE"] == "1",
