@@ -60,6 +60,7 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
 
     private enum Playback {
         case native
+        case startingCheck(explicit: Bool)
         case checking(SystemAudioRoute, CaptureSignal, explicit: Bool, started: Date)
         case processing(SystemAudioRoute)
         case failed(String)
@@ -67,7 +68,20 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
         var route: SystemAudioRoute? {
             switch self {
             case .checking(let route, _, _, _), .processing(let route): route
-            case .native, .failed: nil
+            case .native, .startingCheck, .failed: nil
+            }
+        }
+    }
+
+    // A route is handed to the main actor only after the worker stops touching it.
+    private enum VerificationStart: @unchecked Sendable {
+        case started(SystemAudioRoute)
+        case failed(String, cleanup: SystemAudioRoute?)
+
+        var route: SystemAudioRoute? {
+            switch self {
+            case .started(let route): route
+            case .failed(_, let cleanup): cleanup
             }
         }
     }
@@ -82,6 +96,7 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
     private let availableOutputs: () -> [OutputDevice]
     private let chain: RenderChain
     private let effectCatalog: EffectCatalog
+    private let makeVerificationRoute: VerificationRouteFactory
     private let mixer: AppMixer
     private let audioApplications = AudioApplicationCatalog()
     private var mixerSources: [AppMixerSource] = []
@@ -97,6 +112,7 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
     private var spatialLayouts: [UUID: InputLayout] = [:]
     private var loadTasks: [UUID: Task<Void, Never>] = [:]
     private var playback: Playback = .native
+    private var verificationStartup: Task<VerificationStart, Never>?
     private var pendingCleanup: SystemAudioRoute?
     private var captureVerified = false
     private var lastCallbacks: UInt64 = 0
@@ -114,6 +130,8 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
     private var openingEditors: [UUID: UUID] = [:]
     private var probeSound: NSSound?
 
+    typealias VerificationRouteFactory = @Sendable (OutputDevice, StereoOutputChannels?, @escaping StereoRender) throws -> SystemAudioRoute
+
     init(
         store: ProfileStore = ProfileStore(), defaults: UserDefaults = .standard,
         presetLibrary: PresetMigrationStore? = nil,
@@ -121,7 +139,10 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
         currentOutput: @escaping () throws -> OutputDevice = SystemAudioRoute.currentOutput,
         availableOutputs: @escaping () -> [OutputDevice] = SystemAudioRoute.availableOutputs,
         chain: RenderChain = RenderChain(),
-        effectCatalog: EffectCatalog = EffectCatalog()
+        effectCatalog: EffectCatalog = EffectCatalog(),
+        makeVerificationRoute: @escaping VerificationRouteFactory = { output, channels, render in
+            try SystemAudioRoute(output: output, verification: true, outputChannels: channels, render: render)
+        }
     ) {
         self.store = store
         self.defaults = defaults
@@ -131,6 +152,7 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
         self.availableOutputs = availableOutputs
         self.chain = chain
         self.effectCatalog = effectCatalog
+        self.makeVerificationRoute = makeVerificationRoute
         mixer = AppMixer(defaults: defaults)
         super.init()
         isEnabled = defaults.object(forKey: "ProcessingEnabled") == nil || defaults.bool(forKey: "ProcessingEnabled")
@@ -368,8 +390,10 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
         if let migrationWarning { return .warning(migrationWarning) }
         if let presetUpgradeWarning { return .warning(presetUpgradeWarning) }
         if rejectedMixerSources != nil { return .warning(status) }
-        if case .checking = playback { return .information(status) }
-        return nil
+        switch playback {
+        case .startingCheck, .checking: return .information(status)
+        default: return nil
+        }
     }
 
     func add(_ component: EffectComponent) {
@@ -634,7 +658,7 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
             } else if Date().timeIntervalSince(lastCallbackTime) > 3 {
                 restartInterruptedRoute()
             }
-        case .native, .failed:
+        case .native, .startingCheck, .failed:
             break
         }
     }
@@ -783,11 +807,15 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
         let outputChannels = profiles[output.uid]?.outputChannels
         let processingStatus = active.isEmpty && !mixerRequiresRouting ? "Routing audio" : "Processing system audio"
         guard isEnabled, !active.isEmpty || mixerRequiresRouting || outputChannels != nil else {
-            if case .checking(_, _, true, _) = playback { return }
+            switch playback {
+            case .startingCheck(true), .checking(_, _, true, _): return
+            default: break
+            }
             setPlayback(.native)
             status = storageError ?? (isEnabled && !loadTasks.isEmpty ? "Loading Audio Units…" : "Normal macOS playback")
             return
         }
+        guard verificationStartup == nil else { return }
         switch playback {
         case .processing(let route):
             if mixerSources == routedMixerSources {
@@ -809,7 +837,7 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
             }
         case .native:
             break
-        case .checking, .failed:
+        case .startingCheck, .checking, .failed:
             return
         }
         if captureVerified {
@@ -841,28 +869,70 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     private func startCheck(_ output: OutputDevice, explicit: Bool) {
+        if case .startingCheck = playback {
+            if explicit {
+                playback = .startingCheck(explicit: true)
+                captureCheck = .checking
+                status = "Checking system audio capture…"
+            }
+            return
+        }
+        guard verificationStartup == nil else {
+            if explicit { captureCheck = .failed("Wait for the audio route to recover, then test again.") }
+            return
+        }
         setPlayback(.native)
         guard pendingCleanup == nil else {
             if explicit { captureCheck = .failed("Wait for the audio route to recover, then test again.") }
             return
         }
         if explicit { captureCheck = .checking }
+        playback = .startingCheck(explicit: explicit)
+        status = explicit ? "Checking system audio capture…" : "Starting system audio capture…"
+
         let signal = CaptureSignal()
-        do {
-            let route = try SystemAudioRoute(
-                output: output, verification: true, outputChannels: profiles[output.uid]?.outputChannels,
-                render: signal.inspect
-            )
-            try start(route)
-            playback = .checking(route, signal, explicit: explicit, started: Date())
-            status = explicit ? "Checking system audio capture…" : "Play audio to enable processing"
-            if explicit {
-                probeSound = NSSound(contentsOfFile: "/System/Library/Sounds/Pop.aiff", byReference: true)
-                probeSound?.volume = 0.18
-                probeSound?.play()
+        let channels = profiles[output.uid]?.outputChannels
+        let worker = Task.detached(priority: .userInitiated) { [makeVerificationRoute] () -> VerificationStart in
+            var route: SystemAudioRoute?
+            do {
+                try Task.checkCancellation()
+                let created = try makeVerificationRoute(output, channels, signal.inspect)
+                route = created
+                try Task.checkCancellation()
+                try created.start()
+                try Task.checkCancellation()
+                return .started(created)
+            } catch {
+                let cleanup = route.flatMap { $0.stop() ? nil : $0 }
+                return .failed(error.localizedDescription, cleanup: cleanup)
             }
-        } catch {
-            setPlayback(.failed(error.localizedDescription))
+        }
+        verificationStartup = worker
+        Task { [weak self] in
+            let result = await worker.value
+            guard let self, case .startingCheck(let explicit) = self.playback else {
+                if result.route != nil {
+                    let released = await Task.detached { result.route?.stop() ?? true }.value
+                    if !released { self?.pendingCleanup = result.route }
+                }
+                self?.verificationStartup = nil
+                self?.updatePlayback()
+                return
+            }
+            self.verificationStartup = nil
+            switch result {
+            case .started(let route):
+                self.playback = .checking(route, signal, explicit: explicit, started: Date())
+                self.status = explicit ? "Checking system audio capture…" : "Play audio to enable processing"
+                if explicit {
+                    self.probeSound = NSSound(contentsOfFile: "/System/Library/Sounds/Pop.aiff", byReference: true)
+                    self.probeSound?.volume = 0.18
+                    self.probeSound?.play()
+                }
+            case .failed(let reason, let cleanup):
+                self.pendingCleanup = cleanup
+                self.setPlayback(.failed(reason))
+            }
         }
     }
 
@@ -888,10 +958,14 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     private func setPlayback(_ next: Playback) {
+        if case .startingCheck = playback { verificationStartup?.cancel() }
         if case .failed(let reason) = next {
             captureCheck = .failed(reason)
-        } else if case .checking(_, _, true, _) = playback, captureCheck == .checking {
-            captureCheck = .idle
+        } else if captureCheck == .checking {
+            switch playback {
+            case .startingCheck(true), .checking(_, _, true, _): captureCheck = .idle
+            default: break
+            }
         }
         if let route = playback.route, !route.stop() { pendingCleanup = route }
         probeSound?.stop()
@@ -1011,7 +1085,7 @@ final class HostController: NSObject, ObservableObject, NSWindowDelegate {
 
 }
 
-private final class CaptureSignal {
+private final class CaptureSignal: Sendable {
     let received = Atomic<Bool>(false)
 
     func inspect(

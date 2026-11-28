@@ -281,6 +281,11 @@ private final class RoutingSpatialUnit: AUAudioUnit {
     override var outputBusses: AUAudioUnitBusArray { outputs }
     override var channelCapabilities: [NSNumber]? { [2, 2, 6, 2] }
 
+    override func allocateRenderResources() throws {
+        XCTAssertFalse(Thread.isMainThread, "Audio Unit allocation can wait on Core Audio.")
+        try super.allocateRenderResources()
+    }
+
     override var internalRenderBlock: AUInternalRenderBlock {
         let input = renderInput
         let channels = Int(inputBus.format.channelCount)
