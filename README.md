@@ -1,33 +1,29 @@
 <div align="center">
   <h1>Airwave</h1>
   <img src="Airwave3/Branding.xcassets/AirwaveWelcomeIcon.imageset/airwave-welcome.png" alt="Airwave icon" width="128" height="128" />
-  <p>System-wide audio effects and per-app volume for macOS.</p>
-  <p><a href="https://github.com/sallliisa/Airwave/releases"><strong>Download Airwave</strong></a> · <a href="https://github.com/sallliisa/Airwave/issues">Support</a> · <a href="https://ko-fi.com/Q5Q51RNAGT">Ko-fi</a></p>
+  <p>System-wide Audio Unit effects and per-app volume for macOS.</p>
+  <p><a href="https://github.com/sallliisa/Airwave/releases"><strong>Download Airwave</strong></a> · <a href="https://github.com/sallliisa/Airwave/issues">Issues</a> · <a href="https://ko-fi.com/Q5Q51RNAGT">Ko-fi</a></p>
 </div>
 
 <p align="center">
-  <img src="docs/images/Bento.png" alt="Airwave feature bento grid" />
+  <img src="docs/images/Bento.png" alt="Airwave overview" />
 </p>
 
 ## What Airwave does
 
-Airwave captures playback from your Mac, applies the effect chain for your current audio output, and plays the result through that output. Each output has its own chain. You can keep Spatial and Equalizer on your headphones, use a different EQ on your speakers, and leave another output with an empty chain.
+Airwave adds system-wide Audio Unit effects and per-app volume control to macOS without installing a virtual audio driver. It captures playback through macOS System Audio Capture, applies your App Mixer levels, runs the effect chain saved for your active output, and sends the audio to that output.
 
-The App Mixer adjusts volume or mute for individual apps. Those adjustments apply before the output's effects. You can turn a browser down without changing your music volume, then change headphones without having to set the browser volume again.
-
-macOS still controls the current output and its overall volume. In Airwave, the output picker selects the chain you want to edit. It also lets you edit a saved chain while another output is playing.
+You keep using the normal macOS volume controls and sound output picker. Each physical output device stores its own effect chain and optional stereo channel pair, so switching between headphones and speakers loads the matching chain.
 
 ## Requirements
 
-- macOS 15 Sequoia or later on an Intel or Apple silicon Mac.
-- A supported physical audio output. Airwave supports stereo and compatible multichannel input. Virtual and aggregate devices are unsupported as playback targets.
-- System Audio Capture permission. Airwave uses playback audio for effects and mixing. It requires no microphone access.
+- macOS 15 Sequoia or later on Intel or Apple silicon.
+- A physical audio output device. Airwave accepts stereo and compatible multichannel input. Virtual and aggregate devices are unsupported as playback targets.
+- System Audio Capture permission. Airwave does not use or request microphone access.
 
-Speakers and headphones work with the host. Use stereo headphones for Spatial. HRIR convolution is intended to make headphones sound more speaker-like and can sound different through speakers.
+## Install
 
-## Installation
-
-This README covers the Airwave 3 release candidate. The download and Homebrew commands below install the latest published release. To try the candidate before it ships, use [Build from source](#build-from-source).
+This README documents the Airwave 3 release candidate. The Homebrew and GitHub Releases links below install the latest published release. To run the release candidate today, see [Build from source](#build-from-source).
 
 ### Homebrew
 
@@ -36,170 +32,135 @@ brew tap sallliisa/airwave
 brew install --cask airwave
 ```
 
-### Download
+### Direct download
 
-Download the ZIP from [GitHub Releases](https://github.com/sallliisa/Airwave/releases), unzip it, and move `Airwave.app` into Applications. Open Airwave from there so macOS can register both bundled Audio Units.
+Download the ZIP archive from [GitHub Releases](https://github.com/sallliisa/Airwave/releases), unzip it, and move `Airwave.app` to Applications. Launch Airwave from Applications so macOS registers the bundled Spatial and Equalizer Audio Units.
 
 ## First launch
 
-### 1. Welcome
-
-Open Airwave and click **Get Started**. Have your usual playback device connected so you can test the output you plan to use.
-
 <p align="center">
-  <img src="docs/images/v3-welcome.png" alt="Airwave welcome page and Get Started button" width="700" />
+  <img src="docs/images/v3-welcome.png" alt="Airwave welcome screen" width="700" />
 </p>
 
-### 2. Allow system audio
+The first-run setup takes four steps:
 
-Click **Test Audio Access**. Airwave plays a short test sound and checks whether it can capture playback. If macOS asks for permission to record system audio, allow it and run the test again if needed. Continue when Airwave reports **System audio is ready**.
-
-If the test fails, the page shows the reason and offers to open System Settings. Once access is enabled and the output is connected, click **Test Again**.
-
-### 3. Add effects
-
-Click **Add Effects…** to open the Audio Unit picker for your current output. Choose as many effects as you want, then click **Done**. The order you add them is the order in which they process audio. You can reorder the chain later.
-
-Choose Airwave in **All Publishers** to find Spatial and Equalizer. You can also continue with an empty chain and use Airwave for app volume control alone.
-
-### 4. Finish setup
-
-Choose whether Airwave should launch at login and whether it should appear in the menu bar. **Show in Menu Bar** starts enabled on a fresh setup. Both options are also available in Settings. Click **Finish Setup** to open the main window.
+1. Connect the headphones or speakers you plan to use and click **Get Started**.
+2. Click **Test Audio Access**. Airwave plays a short test sound to verify capture. Allow System Audio Capture if macOS prompts you, then run the test again if needed.
+3. Click **Add Effects…** to build a starting chain for your current output, or continue with an empty chain if you only want the App Mixer. Spatial and Equalizer appear under the **Airwave** publisher.
+4. Choose whether Airwave launches at login and whether it stays in the menu bar, then click **Finish Setup**.
 
 ## Effect chains
 
 <p align="center">
-  <img src="docs/images/v3-effects.png" alt="Effects tab showing the saved effect chain for an audio output" width="760" />
+  <img src="docs/images/v3-effects.png" alt="Effects tab with a per-device effect chain" width="760" />
 </p>
 
-### Add, open, or reorder an effect
+Airwave processes each output's effect chain from top to bottom.
 
-1. Open **Effects** and select an output in the device picker.
-2. Click **Add Effect…**. Search by effect or publisher name, or choose a publisher from **All Publishers**. Click **Rescan** if you installed an Audio Unit while Airwave was open.
-3. Click the effect to add it. Repeat to add another instance of the same Audio Unit with its own settings.
-4. Click an effect card to open its controls. Drag the card to reorder it, or choose **Move Up** or **Move Down** from its ellipsis menu. Airwave processes the chain from top to bottom.
+- Click **Add Effect…** to browse or search installed Audio Units. You can add multiple instances of the same Audio Unit with separate settings. Click **Rescan** if you installed a new Audio Unit while Airwave was open.
+- Click an effect card to open its controls. Drag cards to reorder them, or use **Move Up** and **Move Down** in the card's ellipsis menu.
+- Click an effect's power button to bypass it without losing its settings. Choose **Remove Effect** in the ellipsis menu to delete it from the chain.
 
-Use an effect's power button to bypass that instance without losing its settings. The power button in the controls window changes the same state. Use **Remove Effect** in the ellipsis menu to remove the instance from the chain.
+Order matters. Put Spatial before Equalizer if you want Equalizer to shape the stereo output of Spatial. Put Equalizer first if you want it to shape the signal going into Spatial.
 
-For example, put Spatial before Equalizer if you want the EQ to shape the stereo signal that comes out of Spatial. Put an EQ first if you want it to shape the signal that goes into Spatial. The order is part of the saved output chain.
+### Per-device chains and multichannel interfaces
 
-### Switch outputs or configure an interface
+The device picker in **Effects** selects which saved chain you are editing. It does not change the macOS system output. A speaker icon marks the active macOS output, and **Live Output** jumps back to it after you edit another device.
 
-When you change the macOS sound output, Airwave uses the chain saved for that device. Choose another device in **Effects** if you want to prepare its chain ahead of time. The speaker icon on a device identifies the current macOS output. **Live Output** takes you back to editing that output.
+Open the ellipsis menu next to the device picker for device actions:
 
-The ellipsis next to the output picker contains the device actions.
-
-| Action | What it does |
-| --- | --- |
-| **Configure Output…** | Assigns Airwave's left and right stereo signal to two distinct channels on a supported output. Connect the device to configure its available channels. |
-| **Reset Effects…** | Clears the effect chain for a connected output and keeps its saved channel assignment. |
-| **Remove Saved Profile…** | Removes the chain and channel assignment for a disconnected device. Reconnect the device to configure it again. |
-
-A saved channel number is a destination on the device. Check which physical jack it reaches before choosing the pair. For example, if your monitors are wired to outputs 3 and 4 on an interface, assign channel 3 to the left speaker and channel 4 to the right. Airwave uses the saved pair even if your chain is empty. If you want the device's default stereo pair back, open **Configure Output…** and click **Use macOS Default**.
+- **Configure Output…** maps Airwave's left and right stereo output to two specific channels on a connected multichannel interface. Check which physical jacks those channels feed on your interface before saving. Airwave uses the saved pair even when the effect chain is empty. Click **Use macOS Default** inside the sheet to revert.
+- **Reset Effects…** clears the effect chain for a connected device and keeps its channel pair.
+- **Remove Saved Profile…** deletes the saved chain and channel pair for a disconnected device.
 
 ## Bundled Audio Units
 
-Airwave ships Spatial and Equalizer in the same application. Add either from the Airwave publisher in **Add Effect…**. Click its card to choose a preset. Each instance keeps its own selection, so the same plug-in can use a different preset on each output.
+Airwave includes two Audio Units, Spatial and Equalizer. Both work inside Airwave and in any other macOS Audio Unit host once you have opened `Airwave.app` from Applications. If both Airwave and another host process the same audio, bypass Airwave or quit it to hear only the other host.
 
 ### Spatial
 
-Spatial uses HRIR convolution to give stereo headphones a wider, more speaker-like sound. The library includes `NeutralSH1.0`, `RoomSH1.0`, and `StageSH1.0`. Open Spatial's controls and click a preset to hear it while audio plays. Use the power button to compare it with the dry signal.
-
 <p align="center">
-  <img src="docs/images/v3-spatial.png" alt="Spatial controls with a library of HRIR presets" width="410" />
+  <img src="docs/images/v3-spatial.png" alt="Spatial Audio Unit controls" width="410" />
 </p>
 
-To add your own HRIR, click **Import…** and select a compatible HeSuVi WAV file. Bundled and imported presets share the same library. The ellipsis contains the preset management actions. The [HeSuVi HRTF Database](https://airtable.com/embed/appac4r1cu9UpBNAN/shrpUAbtyZxhDDMjg/tblopH2GznvFipWjq/viwnouWPGDuYEd8Go) has more datasets.
+Spatial applies HRIR convolution so stereo headphones sound closer to speakers. Use it with stereo headphones, because HRIR convolution can sound unnatural on speakers.
+
+Spatial ships with `NeutralSH1.0`, `RoomSH1.0`, and `StageSH1.0`. Click a preset while audio plays to preview it, and toggle the power button to compare against the unprocessed signal. Click **Import…** to add compatible HeSuVi WAV files. More datasets are available in the [HeSuVi HRTF Database](https://airtable.com/embed/appac4r1cu9UpBNAN/shrpUAbtyZxhDDMjg/tblopH2GznvFipWjq/viwnouWPGDuYEd8Go).
 
 ### Equalizer
 
-Equalizer imports Equalizer APO text presets and displays the frequency response for the preset in use. It includes Bass Booster, Bass Reducer, Treble Booster, Treble Reducer, and Vocal Booster. Use the preset picker in the controls window to switch presets. Use the effect power button to compare with the original signal, or **Clear Preset** to clear the selection in that instance.
-
 <p align="center">
-  <img src="docs/images/v3-equalizer.png" alt="Equalizer controls and the stereo frequency response" width="570" />
+  <img src="docs/images/v3-equalizer.png" alt="Equalizer Audio Unit controls and frequency response graph" width="570" />
 </p>
 
-Click **Import…** for an Equalizer APO text file, folder, or Airwave `.apo` archive. **Paste Preset** takes Equalizer APO text from the clipboard. Use a folder import when a config calls `Include` or `Convolution`. Select the folder containing `config.txt` and all companion files. Keep relative paths inside it. If Airwave asks for access to companion files after you select the config directly, choose the folder that contains them. [AutoEq](https://autoeq.app/) is a source of headphone presets.
+Equalizer loads Equalizer APO presets and plots the live stereo frequency response. It includes five built-in presets: Bass Booster, Bass Reducer, Treble Booster, Treble Reducer, and Vocal Booster. You can find headphone presets on [AutoEq](https://autoeq.app/).
 
-The importer supports `Preamp`, `GraphicEQ`, and common biquad filters such as peaking, pass, notch, and shelf filters. Use Q, octave bandwidth, or shelf slope where the filter accepts it. Write frequencies in decimal Hz or as ungrouped integers such as `6000`.
+Click **Import…** to load an Equalizer APO text file, a folder, or an Airwave `.apo` archive. Click **Paste Preset** to import Equalizer APO text from the clipboard. When a config uses `Include` or `Convolution`, import the folder containing `config.txt` and its companion files with relative paths preserved.
 
-For presets with routing or device-dependent instructions:
+<details>
+<summary>Supported Equalizer APO syntax and limits</summary>
 
-- `Channel`, `Copy`, and `Delay` operate in config order on Equalizer's stereo signal. Use `L`, `R`, `1`, or `2` to reference a channel. `Channel: all` selects both channels. Delay accepts milliseconds or samples.
-- `Convolution` accepts WAV impulse responses up to 0.5 seconds. The WAV sample rate must match the output. The combined graphic EQ and convolution response limit is 96,000 frames through 48 kHz, 48,000 frames through 96 kHz, and 32,768 frames above 96 kHz.
-- `If`, `ElseIf`, `Else`, `EndIf`, `Eval`, and backtick expressions can use output information supplied by Airwave. Available values include sample rate, channel counts, and device name or UID. If a preset targets a Windows device name or GUID, replace it with the macOS output name or UID. `Stage: post-mix` selects playback. Airwave skips `pre-mix` and `capture` sections.
-- `Filter: ON IIR` accepts stable filters of order 1 through 32. The combined order limit for a preset is 512. Use a sample-rate condition when your coefficients vary by rate.
-- `Include` and `Convolution` paths must be literal and available at import, including files referenced inside conditions. Windows registry functions, Windows VST plug-ins, and system-volume loudness correction are outside the supported config syntax.
+- Supported filters include `Preamp`, `GraphicEQ`, and standard biquad filters such as peaking, pass, notch, and shelf filters with Q, octave bandwidth, or shelf slope. Write frequencies in decimal Hz or as ungrouped integers such as `6000`.
+- `Channel`, `Copy`, and `Delay` run in config order on Equalizer's stereo signal. Reference channels with `L`, `R`, `1`, `2`, or `Channel: all`. `Delay` accepts milliseconds or samples.
+- `Convolution` accepts WAV impulse responses up to 0.5 seconds whose sample rate matches the active output. The combined graphic equalizer and convolution response limit is 96,000 frames up to 48 kHz, 48,000 frames up to 96 kHz, and 32,768 frames above 96 kHz.
+- `If`, `ElseIf`, `Else`, `EndIf`, `Eval`, and backtick expressions can read the active output's sample rate, channel counts, device name, and UID. Replace Windows device names or GUIDs with the macOS output name or UID. `Stage: post-mix` selects playback; Airwave skips `pre-mix` and `capture` sections.
+- `Filter: ON IIR` accepts stable filters from order 1 to 32, up to a combined order of 512 per preset. Use a sample-rate condition when coefficients depend on output rate.
+- `Include` and `Convolution` paths must be literal and present at import, including paths inside conditional branches. Windows registry functions, Windows VST plug-ins, and system-volume loudness correction are unsupported.
 
-### Use them in another Audio Unit host
-
-Install Airwave in Applications, open it once, and look for Spatial and Equalizer under **Airwave** in the other app's Audio Unit list. Rescan Audio Units or reopen that host if the effects are missing. Choose the effect on the track or output you want to process. If both hosts process the same playback, bypass Airwave's system-wide processing or quit Airwave to hear the other host's processing by itself.
+</details>
 
 ## App Mixer
 
 <p align="center">
-  <img src="docs/images/v3-app-mixer.png" alt="App Mixer showing different volume settings for two audio sources" width="760" />
+  <img src="docs/images/v3-app-mixer.png" alt="App Mixer with per-app volume sliders" width="760" />
 </p>
 
-Play audio in an app so it appears in **Playing & Recent**. Move its slider to set the volume and click the speaker button to mute or unmute it. Muting keeps the slider's current value. **System Sounds** is the row for macOS sound effects after one plays.
+The App Mixer sets volume and mute per application before audio reaches your output's effect chain. Those adjustments stay active when you switch headphones or speakers.
 
-Airwave keeps apps in **Playing & Recent** for about 45 seconds after they stop producing audio. When an adjusted app drops out of that list, it moves to **Saved Adjustments**. You can change its volume or mute there before it plays again. Right-click a saved row and choose **Clear Saved Adjustment** to return it to 100% and unmute it.
+- Start playback in an app to see it under **Playing & Recent**. macOS alert effects appear under **System Sounds** after a sound plays.
+- Drag the slider to change an app's volume, or click its speaker button to mute it without losing the slider position.
+- Apps stay in **Playing & Recent** for about 45 seconds after playback stops. Any app with a changed volume or mute state moves to **Saved Adjustments**, where you can edit it later or right-click and choose **Clear Saved Adjustment** to reset it to 100% and unmuted.
+- Use the menu bar popover for quick adjustments to playing and recent apps, or click **Open App Mixer** to manage saved adjustments.
 
-The menu bar mixer is for quick access. It lists playing and recent apps and uses the same controls and saved values as the main window. Click **Open App Mixer** to manage saved adjustments. Changing the macOS master volume still affects the whole output.
+## Running in the background
 
-For example, if you keep music playing during a call, you can lower the music app in the mixer and leave the call at 100%. Airwave applies those settings again the next time either app plays. If you switch to headphones, their saved effects apply to the mix at the new output.
+Closing the Airwave window leaves processing active. The main power button in the window pauses both the effect chain and the App Mixer while keeping your saved settings intact.
 
-## Running Airwave
-
-The main window's power control pauses both the effect chain and the App Mixer. Switch it back on to resume with the same chain, sliders, and mute settings.
-
-Closing the window leaves Airwave running. Choose **Quit Airwave** from the menu bar or use the exit button in the window to stop processing and quit. If you hide the menu bar icon, reopen Airwave from Applications or Spotlight to bring its window back.
-
-### Settings
-
-- **Launch at Login** starts Airwave after you sign in.
-- **Show in Menu Bar** gives you access to the quick mixer and Quit Airwave. Airwave can run in the background with this setting off.
-- **Setup & Troubleshooting** reopens setup so you can run the capture test again.
-- **Software Update** checks for a newer published version when the installed build supports updates.
-- **Version** shows the installed version.
-
-<p align="center">
-  <img src="docs/images/v3-settings.png" alt="Airwave settings for login, menu bar access, setup, and software updates" width="700" />
-</p>
+To quit Airwave and stop processing, choose **Quit Airwave** from the menu bar or use the exit button in the main window. If you disable **Show in Menu Bar** in Settings, reopen Airwave from Applications or Spotlight whenever you want to bring the window back.
 
 ## Upgrading from Airwave 2
 
-Airwave 3 uses the same application identity. Install it over Airwave 2 or use the normal updater once Airwave 3 is published. Open it so it can import your existing configuration.
+Airwave 3 uses the same bundle identifier as Airwave 2. Install it over Airwave 2 and open it once to migrate your setup.
 
-Airwave imports saved output profiles, channel assignments, and compatible presets. An output that used both Spatial and EQ gets a chain with Spatial first and Equalizer second. Open each effect's controls to find imported presets. Airwave leaves the original preset files on disk. If an assigned preset cannot be loaded, the affected effect stays bypassed until you choose a replacement. Other saved effects remain available.
+Airwave imports saved output profiles, interface channel pairs, compatible presets, and your menu bar preference. Outputs that used both Spatial and Equalizer receive a chain with Spatial first and Equalizer second. Original preset files remain on disk. If an imported preset fails to load, Airwave leaves that effect bypassed until you pick a replacement.
 
-After an upgrade, open **Effects** and select your usual output. Verify the effect order and open each effect to check its selected preset. If you used a custom interface channel pair in Airwave 2, check that pair in the device menu before you play through the interface. Your saved menu bar choice carries over.
+After upgrading, check your active output in **Effects** to confirm the effect order, selected presets, and any custom interface channel pair.
 
 ## Troubleshooting
 
 ### System audio access fails
 
-Open **Settings**, then **Setup & Troubleshooting**, and choose **Test Audio Access**. If macOS prompts for permission, allow Airwave to capture system audio. If access is already denied, use **Open System Settings** on the test page and update Airwave's permission under **Privacy & Security**. Run the test again.
+Open **Settings**, select **Setup & Troubleshooting**, and click **Test Audio Access**. If macOS already denied permission, click **Open System Settings** on that page, enable Airwave under **Privacy & Security**, and run the test again.
 
-### An effect has no audible result
+### Effects make no audible change
 
-Check the macOS output and the output selected in **Effects**. Use **Live Output** to edit the chain that is playing. Check that the main power control and the effect's power control are both on. Open the effect's controls and check its preset. For Spatial, listen through stereo headphones. Try bypassing the effect while a track plays to compare the two signals.
+Confirm that the active macOS output matches the device selected in **Effects** by clicking **Live Output**. Check that both the main power switch and the effect's power button are on, and open the effect's controls to verify that a preset is selected. For Spatial, listen on stereo headphones and toggle bypass while audio plays.
 
-### Audio reaches the wrong channels
+### Audio plays through the wrong interface channels
 
-Choose the physical output in macOS. In **Effects**, open the device menu and choose **Configure Output…**. Confirm the two channel numbers correspond to the jacks you are using, then save the left and right assignments together.
+Select the physical interface in macOS Sound settings. In Airwave's **Effects** tab, open the device ellipsis menu, click **Configure Output…**, verify that the left and right channel numbers match your wired jacks, and save the pair.
 
-### An output or Audio Unit is missing
+### An output device or Audio Unit is missing
 
-Reconnect the output and check that it appears under macOS sound outputs. Airwave lists supported physical outputs and retains saved profiles for disconnected devices. For a missing Audio Unit, check the installation, clear the search and publisher filter in **Add Effect…**, then click **Rescan**.
+Airwave only lists supported physical outputs and keeps saved profiles for disconnected ones. Reconnect the device and verify that macOS lists it as a sound output. For a missing Audio Unit, clear the search box and publisher filter in **Add Effect…**, then click **Rescan**.
 
-### An app is missing from the mixer
+### An app does not appear in the App Mixer
 
-Start playback in the app, then look in **Playing & Recent**. A short system alert can appear as **System Sounds**. If you previously muted the app or changed its volume, look under **Saved Adjustments** in the main window as well. Open the menu bar mixer again to refresh its list of recent apps.
+Start audio playback in that app, then check **Playing & Recent**. Short macOS alerts appear as **System Sounds**. If you changed the app's volume earlier, check **Saved Adjustments** in the main window. Reopen the menu bar popover to refresh its list.
 
 ## Build from source
 
-Open `Airwave.xcodeproj` in full Xcode and choose the **Airwave3** scheme. It builds the host and embeds the Spatial and Equalizer Audio Units. The **Airwave** scheme builds the Airwave 2 app for compatibility checks. See the [Airwave 3 release rehearsal](docs/airwave-3-release.md) for build, packaging, and upgrade verification.
+Open `Airwave.xcodeproj` in full Xcode and select the **Airwave3** scheme. That scheme builds the app and embeds both bundled Audio Units. The **Airwave** scheme builds Airwave 2 for upgrade and compatibility testing. See [docs/airwave-3-release.md](docs/airwave-3-release.md) for packaging and release verification steps.
 
 ## License
 
@@ -207,12 +168,12 @@ Airwave is licensed under the [GNU General Public License v3](LICENSE).
 
 ## Credits
 
-- Spatial is inspired by [HeSuVi](https://sourceforge.net/projects/hesuvi/). Third-party HRIR datasets remain subject to their respective licenses.
+- Spatial is inspired by [HeSuVi](https://sourceforge.net/projects/hesuvi/). Third-party HRIR datasets remain under their respective licenses.
 - [AutoEq](https://autoeq.app/) provides headphone equalizer presets.
-- The Airwave mark uses [Material Symbols](https://fonts.google.com/icons).
+- The Airwave icon uses [Material Symbols](https://fonts.google.com/icons).
 
 ## Support
 
-For bugs and feature requests, [open an issue on GitHub](https://github.com/sallliisa/Airwave/issues). For audio issues, include your Airwave version, macOS version, output device, and the affected effect or app.
+Report bugs or request features in [GitHub Issues](https://github.com/sallliisa/Airwave/issues). For audio issues, include your Airwave version, macOS version, output device, and the affected effect or app.
 
-If Airwave is useful to you, you can [support its development on Ko-fi](https://ko-fi.com/Q5Q51RNAGT).
+You can also [support Airwave on Ko-fi](https://ko-fi.com/Q5Q51RNAGT).
