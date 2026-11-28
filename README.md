@@ -23,8 +23,6 @@ You keep using the normal macOS volume controls and sound output picker. Each ph
 
 ## Install
 
-This README documents the Airwave 3 release candidate. The Homebrew and GitHub Releases links below install the latest published release. To run the release candidate today, see [Build from source](#build-from-source).
-
 ### Homebrew
 
 ```sh
