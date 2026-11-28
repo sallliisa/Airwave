@@ -1,0 +1,133 @@
+name: Airwave upgrade rehearsal
+on:
+  push:
+    branches: [codex/upgrade-rehearsal]
+permissions:
+  contents: read
+jobs:
+  candidate:
+    runs-on: macos-26
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+      SCHEME: Airwave3
+      VERSION: 3.0.0
+      BUILD_NUMBER: 3000000
+      TAG: v3.0.0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build universal release
+        run: |
+          xcodebuild archive \
+            -project Airwave.xcodeproj \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -derivedDataPath build/ReleaseDerivedData \
+            -archivePath "$PWD/build/Airwave.xcarchive" \
+            -destination 'generic/platform=macOS' \
+            ARCHS='arm64 x86_64' \
+            ONLY_ACTIVE_ARCH=NO \
+            MARKETING_VERSION="$VERSION" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY=- \
+            DEVELOPMENT_TEAM= \
+            archive
+
+      - name: Re-sign Sparkle helpers ad-hoc
+        run: |
+          app="$PWD/build/Airwave.xcarchive/Products/Applications/Airwave.app"
+          framework="$app/Contents/Frameworks/Sparkle.framework/Versions/B"
+          codesign --force --sign - --options runtime "$framework/XPCServices/Installer.xpc"
+          codesign --force --sign - --options runtime --preserve-metadata=entitlements "$framework/XPCServices/Downloader.xpc"
+          codesign --force --sign - --options runtime "$framework/Autoupdate"
+          codesign --force --sign - --options runtime "$framework/Updater.app"
+          codesign --force --sign - --options runtime "$app/Contents/Frameworks/Sparkle.framework"
+          codesign --force --sign - --options runtime --preserve-metadata=identifier,entitlements,requirements,flags "$app"
+
+      - name: Verify release bundle
+        run: |
+          app="$PWD/build/Airwave.xcarchive/Products/Applications/Airwave.app"
+          test "$(defaults read "$app/Contents/Info.plist" CFBundleIdentifier)" = com.southneuhof.Airwave
+          test "$(defaults read "$app/Contents/Info.plist" CFBundleShortVersionString)" = "$VERSION"
+          test "$(defaults read "$app/Contents/Info.plist" CFBundleVersion)" = "$BUILD_NUMBER"
+          test "$(defaults read "$app/Contents/Info.plist" SUPublicEDKey)" = 't7ScyDMhT5qnuQx9OROZBaprpFgmZKXS7hbsm9FVvRY='
+          test "$(defaults read "$app/Contents/Info.plist" SUAutomaticallyUpdate)" = 0
+          test "$(defaults read "$app/Contents/Info.plist" LSMinimumSystemVersion)" = 15.0
+          architectures=$(lipo -archs "$app/Contents/MacOS/Airwave")
+          for architecture in arm64 x86_64; do
+            [[ " $architectures " == *" $architecture "* ]] || {
+              echo "Missing $architecture slice. Found: $architectures" >&2
+              exit 1
+            }
+          done
+          codesign --verify --strict --verbose=2 "$app"
+          test -f "$app/Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle"
+          if (( ${VERSION%%.*} < 3 )); then
+            scripts/verify-bundled-presets.sh "$app"
+          fi
+
+      - name: Prepare private rehearsal feed
+        run: |
+          mkdir -p build
+          echo 'Airwave 3 upgrade rehearsal.' > build/release-notes.md
+      - name: Package and sign update
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          test -n "$SPARKLE_ED_PRIVATE_KEY" || { echo 'SPARKLE_ED_PRIVATE_KEY is not configured' >&2; exit 1; }
+          mkdir -p build/update
+          archive="Airwave_v$VERSION.zip"
+          ditto -c -k --sequesterRsrc --keepParent \
+            build/Airwave.xcarchive/Products/Applications/Airwave.app \
+            "build/update/$archive"
+          cp build/release-notes.md "build/update/Airwave_v$VERSION.md"
+          tools="$PWD/build/ReleaseDerivedData/SourcePackages/artifacts/sparkle/Sparkle/bin"
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle-private-key"
+          chmod 600 "$RUNNER_TEMP/sparkle-private-key"
+          "$tools/generate_appcast" \
+            --ed-key-file "$RUNNER_TEMP/sparkle-private-key" \
+            --download-url-prefix "http://127.0.0.1:48171/" \
+            --embed-release-notes \
+            --maximum-deltas 0 \
+            build/update
+          grep -Eq '<sparkle:minimumSystemVersion>15\.0(\.0)?</sparkle:minimumSystemVersion>' \
+            build/update/appcast.xml || { echo 'appcast does not require macOS 15' >&2; exit 1; }
+          shasum -a 256 "build/update/Airwave_v$VERSION.zip" \
+            > "build/update/Airwave_v$VERSION.zip.sha256"
+          rm -f "$RUNNER_TEMP/sparkle-private-key"
+
+      - name: Verify candidate archive
+        run: scripts/verify-release-audio-unit.sh build/update/Airwave_v3.0.0.zip 3.0.0 3000000 --package-only
+      - name: Encrypt rehearsal artifact for the requesting Mac
+        run: |
+          umask 077
+          mkdir -p build/encrypted
+          cat > "$RUNNER_TEMP/rehearsal-public.pem" <<'PEM'
+          -----BEGIN PUBLIC KEY-----
+          MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEA6/cf4RNZAD91SKIoF+fP
+          pTuk3l6sSfxevka1idfS5rfFhSoz6l2NxB3/KfiGrBvXNBGwpVUaeK93VoOh0Z+N
+          SvoSf38h4ukL0FMtEXDUiXYtrMul5SDC+9Z4sL5UoLLdqpAtdJ2UnMZuICjYxVFU
+          ZMeQf/QuR2XGEczG4+wxRrb8rYaKrO2dC9RcgKuLY0+e0Q51q1bdD9bpbi4iodgT
+          Ma5AoDMPl3Fa5bRC8ejsHh5VKSm99ZlZ0SoL4c4WYKVrbKK3J843coRyJFSHp1Kw
+          +/fQ4CJo6XLlKxhBqJAYpJIiMFW7HBsJweEaeeFpnDY9rC3EPvKD4Ybk6aUot2pz
+          70iq/P1HMzLZlr3IpRYRg0NNFHteIHzg1CHltU7+lKkfn0BBEsmIpWc/CMnWqlrt
+          +FCp521Zt/yWKNIHD4svM95iko6E037tG+/90t5bhrsWEs0n68UkrC6E9zIKordo
+          msvOC65LVKeeqxWGrQqZrDAUK5sn+RrOl8EGEDUHh95xAgMBAAE=
+          -----END PUBLIC KEY-----
+          PEM
+          openssl rand -hex 32 > "$RUNNER_TEMP/rehearsal-passphrase"
+          openssl pkeyutl -encrypt -pubin -inkey "$RUNNER_TEMP/rehearsal-public.pem" \
+            -pkeyopt rsa_padding_mode:oaep \
+            -in "$RUNNER_TEMP/rehearsal-passphrase" -out build/encrypted/passphrase.rsa
+          tar -czf - -C build/update Airwave_v3.0.0.zip appcast.xml | \
+            openssl enc -aes-256-cbc -pbkdf2 -iter 100000 \
+            -pass "file:$RUNNER_TEMP/rehearsal-passphrase" -out build/encrypted/candidate.enc
+      - uses: actions/upload-artifact@v4
+        with:
+          name: encrypted-upgrade-candidate
+          path: build/encrypted
+          retention-days: 1
+      - name: Remove temporary key files
+        if: always()
+        run: rm -f "$RUNNER_TEMP/sparkle-private-key" "$RUNNER_TEMP/rehearsal-passphrase"
