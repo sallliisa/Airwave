@@ -105,15 +105,15 @@ jobs:
           mkdir -p build/encrypted
           cat > "$RUNNER_TEMP/rehearsal-public.pem" <<'PEM'
           -----BEGIN PUBLIC KEY-----
-          MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEA6/cf4RNZAD91SKIoF+fP
-          pTuk3l6sSfxevka1idfS5rfFhSoz6l2NxB3/KfiGrBvXNBGwpVUaeK93VoOh0Z+N
-          SvoSf38h4ukL0FMtEXDUiXYtrMul5SDC+9Z4sL5UoLLdqpAtdJ2UnMZuICjYxVFU
-          ZMeQf/QuR2XGEczG4+wxRrb8rYaKrO2dC9RcgKuLY0+e0Q51q1bdD9bpbi4iodgT
-          Ma5AoDMPl3Fa5bRC8ejsHh5VKSm99ZlZ0SoL4c4WYKVrbKK3J843coRyJFSHp1Kw
-          +/fQ4CJo6XLlKxhBqJAYpJIiMFW7HBsJweEaeeFpnDY9rC3EPvKD4Ybk6aUot2pz
-          70iq/P1HMzLZlr3IpRYRg0NNFHteIHzg1CHltU7+lKkfn0BBEsmIpWc/CMnWqlrt
-          +FCp521Zt/yWKNIHD4svM95iko6E037tG+/90t5bhrsWEs0n68UkrC6E9zIKordo
-          msvOC65LVKeeqxWGrQqZrDAUK5sn+RrOl8EGEDUHh95xAgMBAAE=
+          MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEA4kxrmp2U7duiAOSKODFO
+          hYCPzm6+QuUx9vmUWi/2vaV/PtbO8RsR0QSbXQVQ221jvDOPfYfjHgaspRT2493r
+          WU+uVTmTI5TbClcbUk3xABJMfYBv+rjQ7o2NB3AqYm8tdh5geVwIckglVZ/y/kcm
+          Mygczo8PCV5tRxpra8UQEFlYwjiHN7MkiJcOn1viAs4yApto+IY31oaz2gZfJ6U6
+          WGxTzFVxuMDVpoKxYGUEzkXBLY6WVgQO2qDTkhFMIKy4sGV5LhxVr6xphqkadZQh
+          uyi1d1JM+nuoeGrmcTuKoy/OOy83MGO2XzHZMgIurWq6xFOvsqSAeFk0n55KIeO/
+          Y48aVOlUqLNYEJDX8AvjF7kiPe0DLiGzxpQu/AP9ftpemWAVWaT6pF9L+uuVLYws
+          g+xudhr+8RLL9WO8iJL+BYQm5jujCsMazLOiPtjfT6Rj2XfNi7dRuYUEz2Ix2IJU
+          nKB2b/6SqC55Ijn5KI5tOXFBbBhjFHzfAL9zOmWmbcARAgMBAAE=
           -----END PUBLIC KEY-----
           PEM
           openssl rand -hex 32 > "$RUNNER_TEMP/rehearsal-passphrase"
